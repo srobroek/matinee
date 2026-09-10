@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "c366de9fbf170b3cf8bb0435b1f77d80294f9973",
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "package-name": "matinee",
+      "include-v-in-tag": true
+    }
+  }
+}
