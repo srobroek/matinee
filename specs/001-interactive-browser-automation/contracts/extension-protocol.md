@@ -87,10 +87,9 @@ Delivery acknowledgment does not imply browser-effect completion.
 |---|---|
 | `browser.describe` | Return redacted browser, profile, window, and tab candidates owned by this extension identity |
 | `permission.request` | Show the Chrome runtime host-permission prompt from a user gesture |
-| `session.create_tab` | Create one visible tab in the selected browser and return its opaque tab reference |
 | `session.bind` | Establish exclusive tab ownership and inject the content script |
 | `session.rebind` | Prove the same browser tab and document generation after reconnect |
-| `session.release` | Remove indicators and release ownership |
+| `session.create_tab` | Create one visible tab for the selected browser, opaque profile, and opaque window references, then return its opaque tab reference |
 | `page.observe` | Return a bounded semantic tree and document generation |
 | `operation.dispatch` | Validate generation and execute one authorized operation |
 | `operation.reconcile` | Inspect declared postconditions without repeating an effect |

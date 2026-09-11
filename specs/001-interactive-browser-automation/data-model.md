@@ -380,7 +380,7 @@ attention request. It does not mutate the approved scope in place.
 
 ### Fields
 
-- `artifact_id`, `request_id`, optional `operation_id`
+- `artifact_id`, `principal_id`, `request_id`, optional `operation_id`
 - `kind`, `media_type`, `byte_size`, `content_digest`
 - `redaction_state`: `not_required`, `redacted`, `unsafe`, or `failed`
 - `state`

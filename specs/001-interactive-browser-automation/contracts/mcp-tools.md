@@ -66,12 +66,17 @@ by those requests. It cannot read or mutate another MCP principal's objects, adm
 principals, or submit extension events. Unknown and unauthorized identifiers return the
 same `object.not_found` failure. The adapter filters status and events before encoding.
 
-## Selection Rules
+## Selection rules
 
-`session_open` accepts exact `browser_id`, `window_id`, and `tab_id` candidates returned
-by `browser_list`, or a URL matcher that must resolve to exactly one eligible tab. It
-never selects the first candidate implicitly. Candidate references expire after 30
-seconds or any `browser.changed` event.
+`browser_list` returns a `candidate_revision`, expiry, and bounded candidates. A
+`session_open` request supplies that revision and exactly one selection:
+
+- `candidate` names one returned `candidate_id` and its document generation.
+- `new_tab` names one returned `browser_id`, opaque `profile_ref`, and opaque `window_ref`.
+
+Matinee never selects a candidate, browser, profile, or window implicitly. It accepts no
+URL matcher. An expired revision, a mismatched revision, or a `browser.changed` event
+returns `selection.stale`. The client must call `browser_list` again.
 
 ## Observation Rules
 

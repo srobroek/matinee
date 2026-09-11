@@ -251,8 +251,9 @@ diagnostic bundle. Neither request affects the other.
 - **FR-019**: Matinee MUST use the user's existing browser process and authenticated
   profile. It MUST NOT copy, parse, or export the profile's credential stores.
 - **FR-020**: Session open MUST either adopt one listed candidate or create one visible
-  tab in an explicitly selected browser. Selection MUST be explicit whenever more than
-  one eligible candidate or browser exists.
+  tab in an explicitly selected browser, authenticated profile, and window. Selection
+  MUST be explicit whenever more than one eligible candidate, browser, profile, or window
+  exists.
 - **FR-021**: One tab MUST have at most one mutating Matinee session owner. Read-only
   inspection MAY be shared when the returned state identifies the owner and age.
 - **FR-022**: A session MUST retain a stable identity across extension reconnects and
@@ -273,7 +274,8 @@ diagnostic bundle. Neither request affects the other.
 - **FR-028**: The first operation set MUST cover browser and tab discovery, session
   open and close, navigation, semantic observation, element activation, text entry,
   key input, scrolling, selection, trusted-user file selection and upload, waiting,
-  and screenshots. An MCP request MUST NOT provide or receive a local path or file bytes.
+  and screenshots. A `file_upload` request MUST NOT provide or receive a local source
+  path or source-file bytes. Authorized Matinee-generated artifact resources are separate.
 - **FR-029**: Every mutating operation MUST declare its target, expected document
   generation, timeout, and idempotency key. The daemon and extension MUST compute the
   effective effect class. A client hint can only raise that class. A persisted screenshot

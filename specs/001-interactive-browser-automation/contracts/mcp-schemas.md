@@ -109,13 +109,18 @@ Arrays state their bounds below. All string lengths count UTF-8 bytes.
 
 | Field | Shape |
 |---|---|
-| `attention_id`, `operation_id` | `Id` |
+| `attention_id`, `request_id`, `operation_id` | `Id` |
+| `operation` | `OperationSummary` without result data |
+| `reason_code`, `operation_digest` | String |
+| `target_summary`, `value_summary` | Redacted string, at most 2,048 characters each |
+| `allowed_decisions` | Nonempty subset of `approve`, `deny`, `edit`, and `cancel` |
+| `trusted_surface_principal_id` | Extension principal `Id` |
 | `state` | Attention state-machine value |
-| `reason_code` | String |
-| `effect_class` | Authoritative effect enum |
-| `origin` | `Origin` |
-| `redacted_summary` | String, at most 2,048 characters |
 | `created_at`, `expires_at` | Timestamp |
+| `decided_at` | Nullable timestamp |
+| `decision` | Nullable allowed-decision value |
+| `edited_operation_digest` | Nullable string |
+| `revision` | Integer |
 
 This shape excludes credentials, file data, raw typed values, and unredacted page text.
 
@@ -123,7 +128,7 @@ This shape excludes credentials, file data, raw typed values, and unredacted pag
 
 | Field | Shape |
 |---|---|
-| `artifact_id`, `request_id` | `Id` |
+| `artifact_id`, `principal_id`, `request_id` | `Id` |
 | `operation_id` | Nullable `Id` |
 | `kind`, `media_type`, `content_digest` | String |
 | `byte_size` | Integer from 0 to 33,554,432 |
@@ -207,9 +212,11 @@ integer`, `degraded: Failure[]`, and `configuration: ResolvedConfigValue[]`.
 
 - All `MutationContext` fields.
 - `selection`: exactly one of:
-  - `candidate` with `candidate_id: Id` and current `expected_document_generation`.
-  - `new_tab` with `browser_id: Id` and optional `initial_url` of at most 4,096
-    characters; the default URL is `about:blank`.
+  - `candidate` with `candidate_id: Id`, current `candidate_revision`, and current
+    `expected_document_generation`.
+  - `new_tab` with `browser_id: Id`, opaque `profile_ref`, opaque `window_ref`, current
+    `candidate_revision`, and optional `initial_url` of at most 4,096 characters. The
+    default URL is `about:blank`.
 - `close_created_tab_on_release`: optional boolean. It defaults to `false` for an adopted
   candidate and `true` for a new tab.
 

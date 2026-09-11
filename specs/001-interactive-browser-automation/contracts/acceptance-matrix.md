@@ -24,8 +24,8 @@ Each proof must show the stated behavior and fail when that behavior changes.
 | FR-016 | `CON-01`: the fixed `matinee.secure-channel.v1` context signs one application-contract selection; intersection succeeds while disjoint ranges, downgraded selection, cross-version replay, and substituted first frames fail before mutation |
 | FR-017 | `SEC-04`: two MCP principals, one extension principal, and one administrator probe every route, tool, resource, event stream, status view, object type, capability ceiling, extension grant, and administrator-only action; unauthorized probes return indistinguishable `object.not_found` or `authorization.denied` without data |
 | FR-018 | `EXT-02`: declared Chrome and Chromium versions pass; unsupported engines return `compatibility` failures |
-| FR-019 | `SEC-05`: profile fixture proves operation through existing authentication while filesystem and API probes detect no browser credential-store reads; daemon storage contains principal public keys but no private client keys |
-| FR-020 | `OWN-01`: zero, one, and multiple-candidate fixtures prove stable explicit adoption; a selected-browser fixture creates one visible Matinee-owned tab |
+| FR-019 | `SEC-05`: two authenticated profile fixtures remain distinguishable by opaque reference while filesystem and API probes detect no browser credential-store reads; daemon storage contains principal public keys but no private client keys |
+| FR-020 | `OWN-01`: fixtures prove explicit adoption; one browser with two profiles and windows rejects an omitted or stale selection; an exact browser-profile-window tuple creates one visible Matinee-owned tab |
 | FR-021 | `SES-01`: concurrent ownership race produces one mutating owner and a structured conflict for the loser |
 | FR-022 | `SES-02`: extension and daemon restart rebind the same session identifier and tab |
 | FR-023 | `UI-01`: real-browser evidence shows tab indicator, cursor, and pre-activation target highlight |
@@ -33,7 +33,7 @@ Each proof must show the stated behavior and fail when that behavior changes.
 | FR-025 | `SES-03`: closing adopted and Matinee-created sessions applies their distinct tab-close defaults |
 | FR-026 | `OBS-01`: bounded observation fixtures verify generation, stable references, truncation reason, and limits |
 | FR-027 | `OBS-02`: navigation invalidates every prior reference before an extension action is sent |
-| FR-028 | `OPS-01`: one browser journey exercises every operation kind; upload requires trusted user file selection and returns no local path or bytes to MCP |
+| FR-028 | `OPS-01`: one browser journey exercises every operation kind; upload requires trusted user file selection and exposes no local source path or source-file bytes; authorized generated-artifact retrieval still succeeds |
 | FR-029 | `OPS-02`: schema and preflight tests reject missing required context; client and extension attempts to lower the daemon-assigned effect class fail closed |
 | FR-030 | `CONC-01`: four-tab run permits cross-tab concurrency and detects no per-tab reorder |
 | FR-031 | `IDEM-01`: equivalent duplicate keys return one result; conflicting bodies return a conflict without a second effect |

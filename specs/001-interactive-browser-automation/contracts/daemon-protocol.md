@@ -11,10 +11,13 @@ authenticated encrypted WebSocket channel.
 
 The daemon has one ECDSA P-256 identity keypair. Its private key lives in the platform
 credential store. SQLite holds only its public key fingerprint. Every native or extension
-principal has a separate ECDSA P-256 keypair. The principal stores its private key and
-pinned daemon public key in the platform credential store or `chrome.storage.local`.
-The daemon stores only each principal's public key, fingerprint, authentication epoch,
-and revocation state in SQLite. Private keys never enter SQLite or a network message.
+principal has a separate ECDSA P-256 keypair. A key fingerprint is lowercase hexadecimal
+SHA-256 over the exact 65-byte uncompressed SEC1 public key, with no prefix or separators.
+
+The principal stores its private key and pinned daemon public key in the platform
+credential store or `chrome.storage.local`. The daemon stores only each principal's
+public key, fingerprint, authentication epoch, and revocation state in SQLite. Private
+keys never enter SQLite or a network message.
 
 ## Secure channel
 
@@ -43,6 +46,43 @@ This exchange authenticates both peers and hides every product payload from a pr
 that squats on or observes the loopback port. A relay sees only authenticated ciphertext
 and cannot alter it. The implementation uses reviewed cryptographic-library primitives
 and fixed test vectors; it does not implement a cipher primitive.
+
+## Wire encoding
+
+All integers use unsigned big-endian encoding. `LP(x)` is a four-byte big-endian length
+followed by the exact bytes of `x`. Protocol strings use UTF-8 without a terminator.
+Identifiers use their 16 raw UUID bytes. A P-256 public key uses the 65-byte uncompressed
+SEC1 form `0x04 || X || Y`. An ECDSA signature uses the fixed 64-byte IEEE P1363 form
+`r || s`, with each integer left-padded to 32 bytes. DER signatures are invalid.
+
+The client hello is the following concatenation, in order:
+
+1. `LP("matinee.secure-channel.v1")` and `LP("client-hello")`.
+2. `LP(endpoint)`, using the exact endpoint bytes stored during setup.
+3. `LP(principal_selector)`, encoded as `id:<uuid>` or `fingerprint:<sha256-hex>`.
+4. The eight-byte authentication epoch.
+5. `LP(application_min)` and `LP(application_max)`.
+6. `LP(client_nonce)` with exactly 32 random bytes.
+7. `LP(client_ephemeral_key)` with exactly 65 SEC1 bytes.
+
+The daemon signs `LP("server-proof") || client_hello` followed by these fields:
+
+1. `LP(selected_application_contract)`.
+2. `LP(daemon_id)` with 16 UUID bytes.
+3. `LP(server_nonce)` with exactly 32 random bytes.
+4. `LP(server_ephemeral_key)` with exactly 65 SEC1 bytes.
+5. `LP(connection_id)` with 16 UUID bytes.
+
+The client verifies the 64-byte server signature. It then signs
+`LP("client-proof") || SHA256(server_proof_input) || LP(server_signature)`. The daemon
+verifies that 64-byte client signature with the registered principal public key.
+
+P-256 ECDH produces the 32-byte input key material. HKDF-Extract uses
+`SHA256(client_proof_input || client_signature)` as salt. HKDF-Expand uses
+`LP("matinee.secure-channel.v1") || LP(selected_application_contract) || LP(direction)`
+as info and returns one 32-byte AES key for each direction. `direction` is exactly
+`client-to-daemon` or `daemon-to-client`. Contract fixtures include valid bytes and one
+mutation at every field boundary for Rust and WebCrypto.
 
 ## First native principal
 
@@ -105,20 +145,44 @@ actions to an MCP client or approval decisions to a native principal.
 
 ## Encrypted frame
 
-The WebSocket carries binary frames with this outer header:
+The WebSocket carries binary frames with this layout:
 
-```json
-{
-  "connection_id": "0199...",
-  "counter": 42,
-  "ciphertext": "base64url-aes-gcm"
-}
-```
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 1 | Frame version `0x01` |
+| 1 | 16 | Raw connection UUID |
+| 17 | 8 | Counter, unsigned big-endian |
+| 25 | remaining | AES-GCM ciphertext followed by its 16-byte tag |
 
-`connection_id`, counter, direction, `matinee.secure-channel.v1`, selected application
-contract, and authentication epoch form the authenticated associated data. The decrypted
-payload is one command, response, event, or bounded stream chunk. Frames cannot exceed
-1 MiB and decrypted messages cannot exceed 4 MiB.
+The counter starts at zero and increases by one per direction. The 12-byte AES-GCM nonce
+is a four-byte direction value followed by the counter. The direction value is
+`0x00000000` for client-to-daemon and `0x00000001` for daemon-to-client.
+
+Authenticated associated data is the first 25 frame bytes followed by
+`LP("matinee.secure-channel.v1")`, `LP(selected_application_contract)`, the eight-byte
+authentication epoch, and `LP(direction)`. The decrypted payload is one command,
+response, event, or bounded stream chunk. A frame cannot exceed 1 MiB. A decrypted
+message cannot exceed 4 MiB.
+
+Every decrypted frame starts with a one-byte payload kind. `0x01` contains one UTF-8 JSON
+command, response, or event envelope. `0x02` contains an artifact chunk with this binary
+layout: 16-byte stream UUID, four-byte sequence, eight-byte offset, four-byte content
+length, then that many content bytes. Chunk integers are unsigned big-endian. Content is
+at most 1,000,000 bytes and its declared length must consume the frame exactly.
+
+An authorized artifact read starts with a JSON `stream.open` response containing:
+
+- stream ID and artifact ID;
+- media type and total byte count;
+- content digest and chunk limit.
+
+Chunk sequence starts at zero, and offset starts at zero. Neither value can skip or
+repeat. A JSON `stream.complete` event contains stream ID, final chunk count, and digest.
+A JSON `stream.abort` event contains stream ID and a safe failure.
+
+The receiver exposes bytes only after it verifies the final byte count and digest. A
+disconnect abandons the stream. A later authorized read creates a new stream. The daemon
+permits at most four streams and 32 MiB in flight for each principal.
 
 
 ## Command envelope
