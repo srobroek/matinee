@@ -39,15 +39,17 @@ Run:
 matinee setup --browser chrome --mcp-client acceptance --output json
 ```
 
-Install or open the extension when prompted. Confirm the displayed pairing code in the
-extension. Grant access only to the fixture site's origin.
+Install or open the expected store extension when prompted. Transfer the single-use
+enrollment bundle through its trusted pairing surface and grant access only to the fixture
+site's origin.
 
 Expected results:
 
-- Setup completes within 10 minutes of the first command.
-- The extension reports the same daemon identity as setup.
-- Setup prints valid MCP client configuration without printing the reusable credential
-  in human-visible logs or shell history.
+- Setup bootstraps the first native principal through inherited OS pipes and completes
+  within 10 minutes of the first command.
+- The extension reports the same pinned daemon identity as setup.
+- Setup prints valid MCP client configuration without exposing a reusable private key.
+  The one-time enrollment seed appears only in the dedicated pairing transfer surface.
 - `matinee status --output json` reports one ready daemon, one paired extension, no
   active session, and no pending attention.
 
@@ -82,14 +84,18 @@ Run these operations against the fixture site:
 3. Reuse the pre-navigation element reference and confirm a stale-state failure.
 4. Observe the new document.
 5. Use `element_type`, `keyboard_press`, `page_scroll`, `element_select`,
-   `file_upload`, `page_wait`, and `page_screenshot` on their fixture controls.
+   `file_upload`, `page_wait`, and `page_screenshot` on their fixture controls. Select the
+   upload fixture only through the trusted extension file picker. Retry the screenshot
+   with the same idempotency key.
 
 Expected results:
 
 - The synthetic pointer and target highlight appear before each activation.
 - Operations execute in submission order for the tab.
 - Observation reports truncation metadata when a bound is reached.
-- The screenshot masks fixture fields marked sensitive.
+- The screenshot masks fixture fields marked sensitive, and its equivalent retry returns
+  the same artifact without a second capture.
+- The upload result exposes selected-file metadata but no local path, handle, or bytes.
 - The stale reference causes no browser action.
 
 ## 6. Exercise Human Attention
@@ -136,7 +142,7 @@ fixture browser failure in the other. Run:
 ```sh
 matinee status --requests all --output json
 matinee doctor --output json
-matinee diagnostics export --request <failed-request-id> --output ./diagnostics.zip
+matinee diagnostics export --request <failed-request-id> --destination ./diagnostics.zip
 ```
 
 Read the same bundle through `diagnostic_export` from the MCP client.

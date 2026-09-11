@@ -6,6 +6,7 @@
 |---|---|---|
 | Daemon | The single active process that owns one Matinee state directory | An MCP client subprocess |
 | Principal | One registered MCP client or paired browser extension identity | An operating-system user account |
+| Extension enrollment | One expiring, single-use authority to activate the expected extension package | A reusable extension credential |
 | Connection | One transient authenticated channel from a principal to the daemon | A durable request or session |
 | Browser target | A paired browser, profile reference, window, frame, or tab candidate | Copied browser profile data |
 | Session | Durable exclusive mutating ownership of one tab | A WebSocket connection |
@@ -66,6 +67,7 @@ session, request, operation, attention request, approval, artifact, or idempoten
 
 - `daemon_id`
 - `state_directory_id`
+- `identity_public_key_fingerprint`
 - `process_id`
 - `started_at`
 - `protocol_min` and `protocol_max`
@@ -104,30 +106,57 @@ starting -> recovering -> ready -> draining -> stopped
 ### Principal Fields
 
 - `principal_id`
-- `kind`: `mcp_client` or `browser_extension`
+- `kind`: `native_admin`, `mcp_client`, or `browser_extension`
 - `display_name`
-- `credential_fingerprint`
+- `ecdsa_p256_public_key` and `credential_fingerprint`
+- `authentication_epoch`
 - `paired_extension_origin` when kind is `browser_extension`
+- `extension_install_channel`, ID, version, and update URL when kind is `browser_extension`
+- `extension_grants` when kind is `mcp_client`
 - `created_at`, `last_authenticated_at`, `revoked_at`
 - `capability_ceiling`
 
 ### Connection State Machine
 
 ```text
-connecting -> authenticating -> negotiating -> ready -> closing -> closed
-      |              |              |
-      +------------->rejected<------+
+connecting -> selecting_contract -> authenticating -> capability_negotiating -> ready
+    |                 |                   |                    |
+    +-----------------+-------------------+-------------------> rejected
+ready -> closing -> closed
 ```
 
 ### Invariants
-
-1. A connection reads no daemon state before authentication succeeds.
-2. An extension connection also matches the exact paired origin and WebSocket
-   subprotocol.
-3. Negotiated capabilities are the intersection of daemon, principal, and peer
+1. Every handshake uses fixed channel context `matinee.secure-channel.v1`.
+2. The signed transcript selects one application contract before key derivation.
+3. A connection reads no daemon state before both peers authenticate and derive
+   directional encryption keys.
+4. An extension connection matches the pinned daemon identity, approved extension
+   origin, authentication epoch, and WebSocket subprotocol.
+5. Negotiated capabilities are the intersection of daemon, principal, and peer
    capabilities.
-4. Connection closure does not cancel confirmed requests or close durable sessions.
-5. A revoked principal cannot create or resume a connection.
+6. Connection closure does not cancel confirmed requests or close durable sessions.
+7. Rotation or revocation increments the authentication epoch and closes every live
+   connection for that principal. A stale epoch cannot send an accepted message.
+8. Object access checks capability, owner, and extension grant before existence disclosure.
+
+## Extension Enrollment
+
+### Fields
+
+- `enrollment_id`
+- `one_time_ecdsa_p256_public_key` and fingerprint
+- expected extension origin, install channel, version range, update URL, daemon identity
+  fingerprint, and endpoint
+- `created_at`, `expires_at`, optional `consumed_at`
+- failed proof count and state: `pending`, `consumed`, `expired`, or `revoked`
+
+### Invariants
+
+1. SQLite contains the one-time public key but never its PKCS#8 private key.
+2. Only a matching browser-supplied origin and one-time transcript signature can consume
+   a pending enrollment.
+3. Consumption and long-term extension-principal creation commit atomically.
+4. A consumed, expired, revoked, or rate-limited enrollment can never authenticate.
 
 ## Browser Target
 
@@ -156,6 +185,7 @@ connecting -> authenticating -> negotiating -> ready -> closing -> closed
 - `owner_principal_id`
 - `browser_id`, `window_id`, `tab_id`
 - `created_by_matinee`
+- `close_created_tab_on_release`
 - `state`
 - `document_generation`
 - `opened_at`, `last_bound_at`, `rebind_deadline`, `closed_at`
@@ -216,6 +246,7 @@ received -> confirmed -> queued -> running -----------------> succeeded
     |           |          |         |            |
     |           |          |         |            +-> running
     |           |          |         |            +-> cancelling
+    |           |          |         |            +-> expired
     |           |          |         +------> reconciliation_required
     |           |          |                      |
     |           |          |                      +-> running
@@ -239,6 +270,9 @@ Every state from `confirmed` onward is durable.
 6. Client disconnect does not change a confirmed request's state.
 7. A request becomes `succeeded` only when all required operations succeeded and no
    unresolved attention or reconciliation remains.
+8. When attention reaches its deadline, one transaction moves the pending attention,
+   associated operation, and owning request to `expired`. It moves undispatched sibling
+   operations to `cancelled` and forbids later browser dispatch for that request.
 
 ## Operation
 
@@ -249,7 +283,8 @@ Every state from `confirmed` onward is durable.
 - `kind`
 - `target` and `expected_document_generation`
 - `input_digest` and redacted `input_summary`
-- `effect_class`: `read_only`, `local_reversible`, `external_idempotent`,
+- `client_effect_hint`, optional `extension_effect_observation`, and authoritative
+  `effective_effect_class`: `read_only`, `local_reversible`, `external_idempotent`,
   `external_sensitive`, or `uncertain`
 - `state`
 - `attempt_count` and `retry_policy`
@@ -260,11 +295,15 @@ Every state from `confirmed` onward is durable.
 ### State Machine
 
 ```text
-planned -> queued -> preflight -> dispatching -> reconciling -> succeeded
-   |         |          |             |              |            failed
-   |         |          +-> awaiting_attention       |            cancelled
-   |         |                    |                   +----------> uncertain
-   |         |                    +-> preflight
+planned -> queued -> preflight -> dispatching -> succeeded
+   |         |          |             +-------> failed
+   |         |          |             +-------> uncertain -> reconciling
+   |         |          |                                      |  |  |
+   |         |          +-> awaiting_attention                 |  |  +-> uncertain
+   |         |                    |  |  |                       |  +----> failed
+   |         |                    |  |  +-> expired              +-------> succeeded
+   |         |                    |  +----> cancelled (deny or cancel)
+   |         |                    +-------> preflight (approve)
    |         +-----------------------------------------------> cancelled
    +---------------------------------------------------------> cancelled
 ```
@@ -273,14 +312,19 @@ planned -> queued -> preflight -> dispatching -> reconciling -> succeeded
 
 1. Operation ordinals are unique and strictly ordered within a request.
 2. `preflight` validates session ownership, document generation, target freshness,
-   authorization, attention policy, and cancellation state.
+   authorization, attention policy, cancellation state, and effective effect class.
 3. The daemon persists `effect_started_at` before dispatching a mutating operation.
 4. A read-only safe operation may retry within its declared limit.
-5. An `external_sensitive` or `uncertain` operation never retries automatically after
+5. Daemon policy and extension preflight compute the effective effect class. A client
+   or extension can raise but cannot lower it. Disagreement becomes `uncertain`.
+6. An `external_sensitive` or `uncertain` operation never retries automatically after
    dispatch begins.
-6. Completion persists before a success result is returned.
-7. `uncertain` requires reconciliation and cannot be treated as success or failure by
+7. A persisted screenshot is a local durable mutation keyed by idempotency record.
+8. Completion persists before a success result is returned.
+9. `uncertain` requires reconciliation and cannot be treated as success or failure by
    inference.
+10. An edit cancels the original operation with reason `edited` and creates a replacement
+    operation in `planned`. The replacement passes classification and attention again.
 
 ## Attention Request and Approval
 
@@ -322,13 +366,16 @@ attention request. It does not mutate the approved scope in place.
 ### Invariants
 
 1. One operation has at most one pending attention request.
-2. Only the designated trusted extension principal can decide a pending request.
+2. Only the designated, approved, non-revoked extension principal can decide a request.
 3. Approval scope equals the exact operation digest presented to the user.
-4. An approval can be consumed once.
-5. Expiry, denial, cancellation, edit, or invalidation never authorizes dispatch.
-6. Restart and connection loss preserve `pending`, never convert it to `approved`.
-7. A changed operation digest invalidates any existing approval before dispatch.
-
+4. File approval also binds destination, control, browser-selected metadata, content
+   digests, volatile handles, and one upload.
+5. An approval can be consumed once.
+6. Expiry, denial, cancellation, edit, or invalidation never authorizes dispatch.
+7. Restart and connection loss preserve `pending`, never convert it to `approved`.
+8. A changed operation digest invalidates any existing approval before dispatch.
+9. Principal rotation or revocation invalidates unconsumed approvals and fails attention
+   assigned to that principal.
 ## Artifact
 
 ### Fields

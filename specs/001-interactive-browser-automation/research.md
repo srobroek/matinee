@@ -41,17 +41,20 @@ versions. Matinee should implement product semantics behind that standard bounda
 
 ## Local Control Transport
 
-**Decision**: Expose one authenticated loopback HTTP and WebSocket server from the
-daemon using Axum 0.8.x. Native CLI and MCP clients use bounded HTTP requests plus an
-event WebSocket. The extension uses a WebSocket subprotocol and a paired credential.
-The default endpoint is `127.0.0.1:3210`; configuration may select another loopback
-address or port.
+**Decision**: Expose liveness HTTP plus authenticated encrypted WebSocket control from
+one loopback Axum 0.8.x server. Native clients and the extension use the same binary
+frame and message contracts. The default endpoint is `127.0.0.1:3210`; only trusted
+user configuration or an explicit CLI argument can select another loopback endpoint.
+
+Each channel uses ephemeral P-256 ECDH, ECDSA P-256 transcript signatures,
+HKDF-SHA-256, and AES-256-GCM. Rust uses reviewed cryptographic-library primitives;
+the extension uses WebCrypto. The protocol binds daemon ID, principal, endpoint,
+contract, authentication epoch, nonces, direction, and frame counters.
 
 **Rationale**: The browser extension cannot use Unix sockets or Windows named pipes.
-One loopback protocol avoids a second transport and preserves cross-platform behavior.
-Axum supports middleware authentication, WebSocket subprotocol selection, message-size
-limits, and graceful shutdown. A warm loopback request is compatible with the 100 ms
-median product target, which the benchmark must verify.
+Application-layer authenticated encryption prevents a loopback impostor or observer from
+reading credentials and operation payloads. One bounded protocol preserves cross-platform
+behavior. The benchmark must verify the 100 ms warm median target.
 
 **Alternatives considered**:
 
@@ -69,26 +72,38 @@ median product target, which the benchmark must verify.
 
 ## Authentication and Pairing
 
-**Decision**: Create independent 256-bit random bearer credentials for each MCP client
-registration and extension pairing. Store native client credentials in the platform
-credential store through `keyring` 4.x. The extension stores its credential in
-`chrome.storage.local`. Persist credential identifiers, hashes, rotation metadata,
-and revocation state in SQLite. A pairing code expires after 10 minutes and works once.
+**Decision**: Create an ECDSA P-256 identity keypair for the daemon and an independent
+keypair for each native client and extension principal. Platform credential storage holds
+the daemon private key and native client private keys. The extension holds its private
+key in `chrome.storage.local`. SQLite holds public keys, fingerprints, authentication
+epochs, rotation metadata, and revocation state only. Clients pin the expected daemon
+public key and identity.
 
-The daemon accepts only loopback peers. Native requests require a bearer credential.
-Extension upgrades require the bearer credential, an exact paired extension origin,
-and the `matinee.v1` WebSocket subprotocol. Logs retain only credential fingerprints.
+The first native administrator exchanges public keys with the daemon through inherited
+anonymous OS pipes at daemon creation. Extension setup creates a pending enrollment with
+a one-time ECDSA P-256 keypair. The database stores its public key. The PKCS#8 private
+key travels through the authenticated native channel and user-visible enrollment bundle.
+After a secure pairing handshake, the extension generates a fresh long-term keypair and
+discards the one-time key. Production enrollment binds Chrome Web Store identity metadata.
 
-**Rationale**: Separate credentials permit revocation and attribution. Reusable
-plaintext tokens stay out of project configuration and SQLite. The daemon needs only
-credential hashes. Origin validation binds an extension credential to the paired
-extension package.
+**Rationale**: Separate signing keys permit revocation, object authorization, and
+attribution without storing a verifier-equivalent shared secret in SQLite. Mutual
+transcript signatures authenticate the daemon and client before any product payload.
+The user's installed extension runtime remains a trust boundary.
 
 **Alternatives considered**:
 
-- One machine-wide token prevents per-client revocation and attribution.
+- Shared HMAC keys require the daemon to retain each reusable secret outside SQLite.
 - Plaintext token files require platform-specific permission and ACL handling.
-- Mutual TLS adds certificate lifecycle work to a loopback-only product.
+- Self-signed TLS is pin-able by native clients but not by an extension WebSocket without
+  changing the user's browser trust store.
+- Native platform sockets still require a separate extension transport.
+
+**Sources**:
+
+- [WebCrypto ECDSA signatures](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/sign#ecdsa)
+- [WebCrypto ECDH and HKDF](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/deriveKey)
+- [WebCrypto AES-GCM](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/encrypt#aes-gcm)
 
 ## Browser Extension
 
@@ -102,8 +117,21 @@ render or submit that decision surface.
 Declare `storage`, `scripting`, `tabs`, and `sidePanel` permissions. Declare HTTP and
 HTTPS patterns under `optional_host_permissions`; request an origin when the user opens
 a session for that site. Do not request `cookies`, `webRequest`, `debugger`, or permanent
-all-site host access. Persist only pairing metadata and resumable connection state in
-`chrome.storage.local`.
+all-site host access. Persist only the extension signing key, pinned daemon identity,
+pairing metadata, and resumable connection state in `chrome.storage.local`.
+
+Production pairing checks the exact Origin, Chrome Web Store update URL, version, and
+`installType: normal` returned by `chrome.management.getSelf()`. That method needs no
+`management` permission. Development builds use a different ID and require an explicit
+interactive allowance. These checks distinguish supported store and development installs;
+they do not attest an extension runtime that the user already allowed an attacker to
+replace.
+
+File upload is a trusted-user disclosure flow. The MCP schema carries constraints but
+no path or bytes. The side panel opens the browser file picker, validates selected-file
+metadata against those constraints, binds approval to origin, element, generation, and
+one upload, and returns no path or content to the MCP client. This removes ambient local
+filesystem authority from the agent-facing interface.
 
 **Rationale**: Chrome 116 extends the extension service-worker lifetime when WebSocket
 messages are sent or received. The service worker must still recover from suspension.
@@ -123,6 +151,7 @@ avoid sharing JavaScript state with the page.
 - [Extension service-worker lifecycle](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle)
 - [Extension permissions](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions)
 - [Content-script isolated worlds](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)
+- [Chrome `management.getSelf()` and install metadata](https://developer.chrome.com/docs/extensions/reference/api/management#method-getSelf)
 
 ## Persistence and Single-Writer State
 
@@ -198,19 +227,21 @@ tabs and 32 queued operations by default. Reject additional work with a resource
 failure. Apply cancellation tokens at queue wait, preflight, attention wait, browser
 wait, and post-operation reconciliation boundaries.
 
-Retry transport delivery and read-only observations at most twice with bounded jitter.
-Do not automatically retry activations, text submission, uploads, permission grants,
-or any operation classified as an external effect. Idempotency lookup precedes queueing.
+Retry channel delivery and read-only observations at most twice with bounded jitter.
+Daemon policy and extension preflight compute the effective effect class. A client hint
+can only raise it; disagreement becomes uncertain. Do not automatically retry
+activations, text submission, file disclosure, permission grants, persisted screenshots,
+or an external effect. Idempotency lookup precedes queueing.
 
 **Rationale**: Per-tab serialization matches browser ordering while preserving useful
-cross-tab concurrency. Bounded queues make overload visible. Effect-aware retries avoid
-turning network ambiguity into duplicate actions.
+cross-tab concurrency. Bounded queues make overload visible. Independent classification
+prevents a client from making a dangerous operation retryable or bypassing attention.
 
 ## Artifacts, Redaction, and Audit
 
 **Decision**: Apply redaction before serialization or filesystem writes. Use structured
-field sensitivity plus conservative pattern redaction. Screenshots require an explicit
-request or diagnostic policy and pass through browser-side masking for known sensitive
+field sensitivity plus conservative pattern redaction. Persisted screenshots are
+idempotent local mutations. They pass through browser-side masking for known sensitive
 fields before capture. If masking cannot be confirmed, mark the artifact unsafe and do
 not persist or return it.
 
@@ -238,12 +269,12 @@ logs.
 
 ## Packaging and Upgrade
 
-**Decision**: Keep crates.io publication for the Rust package and add checksummed or
-signed platform archives through GitHub Releases. Publish `server.json` to the official
-MCP Registry with the crates.io package as its package source. Publish the extension
-through the Chrome Web Store and provide an unpacked development build for contributors.
-Use schema-versioned SQLite migrations and retain one pre-migration backup until the
-new daemon reaches readiness.
+**Decision**: Keep crates.io publication for the Rust package and add signed platform
+archives plus checksums through GitHub Releases. Publish `server.json` to the official
+MCP Registry with the crates.io package as its source. Publish the extension through the
+Chrome Web Store; signed release metadata binds its production ID. Keep unpacked builds
+development-only through an explicit local override. Use schema-versioned SQLite
+migrations and retain one pre-migration backup until the new daemon reaches readiness.
 
 **Rationale**: The MCP Registry gives compatible clients a vendor-neutral discovery
 record. Cargo preserves the existing package channel. Platform archives serve users

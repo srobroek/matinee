@@ -195,10 +195,13 @@ diagnostic bundle. Neither request affects the other.
 
 - **FR-001**: Matinee MUST ship a published MCP Registry entry and an installation path
   that provides the CLI, daemon, and stdio MCP adapter without a source checkout.
-- **FR-002**: The CLI MUST provide `setup`, `doctor`, `status`, `stop`, `help`, and
-  `version` commands with human-readable output and a versioned JSON output mode.
-- **FR-003**: Setup MUST install or locate the extension package, create local runtime
-  state, guide explicit browser pairing, and print MCP client configuration.
+- **FR-002**: The CLI MUST provide `setup`, `doctor`, `status`, `stop`, `mcp`,
+  `diagnostics export`, `version`, `uninstall`, and `help` commands with human-readable
+  output where applicable and a versioned JSON output mode.
+- **FR-003**: Setup MUST bootstrap the first native principal only through inherited OS
+  IPC, resume safely across crashes before or after principal commit, install or locate
+  an approved extension package, bind enrollment to its expected identity, create local
+  runtime state, and print MCP client configuration.
 - **FR-004**: Doctor MUST check supported browser availability, extension pairing,
   local endpoint reachability, storage integrity, protocol compatibility, and file
   permissions without mutating browser or request state.
@@ -215,8 +218,10 @@ diagnostic bundle. Neither request affects the other.
 
 - **FR-008**: A persistent local daemon MUST own sessions, requests, operations,
   attention requests, artifacts, configuration resolution, and recovery.
-- **FR-009**: Each stdio MCP adapter MUST translate one client connection into daemon
-  requests and MUST terminate without terminating daemon-owned work.
+- **FR-009**: Each stdio MCP adapter MUST require one non-secret MCP principal ID,
+  resolve exactly that principal's private key and pinned daemon identity from the platform
+  credential store, translate one client connection into daemon requests, and terminate
+  without terminating daemon-owned work. It MUST reject an administrator principal.
 - **FR-010**: The extension MUST mediate browser discovery, tab ownership, semantic
   observation, visible indicators, browser actions, and trusted user decisions.
 - **FR-011**: The CLI MUST manage installation and runtime lifecycle. It MUST NOT
@@ -225,15 +230,19 @@ diagnostic bundle. Neither request affects the other.
 
 #### Pairing, Connections, and Compatibility
 
-- **FR-013**: The daemon MUST bind control endpoints to loopback interfaces only.
-- **FR-014**: Setup MUST create separate credentials for each paired extension and
-  MCP client registration. Stored credentials MUST support rotation and revocation.
-- **FR-015**: Every connection MUST authenticate before reading state or invoking an
-  operation. The extension connection MUST also pass an origin check.
+- **FR-013**: The daemon MUST bind control endpoints to loopback interfaces only. Every
+  state-bearing peer MUST authenticate the daemon and establish encryption before sending
+  a product payload. First-principal bootstrap MUST use inherited OS IPC, not loopback.
+- **FR-014**: Setup MUST create separate ECDSA P-256 keypairs for the daemon, each extension,
+  and each MCP client. Private keys MUST remain in their owning platform credential store
+  or extension storage. Identity MUST support rotation and live revocation.
+- **FR-015**: Every state-bearing connection MUST mutually authenticate and encrypt
+  payloads before reading state or invoking an operation. Every route, tool, event, and
+  object lookup MUST authorize capability and ownership before disclosing object existence.
 - **FR-016**: Peers MUST negotiate a protocol range and capability set before mutation.
   Incompatible peers MUST receive a structured upgrade error.
-- **FR-017**: Reconnection MUST bind only to durable identities owned by the same
-  authenticated principal and pairing grant.
+- **FR-017**: Reconnection and object access MUST bind only to durable identities owned
+  by the same principal or to an explicit extension grant for that principal's session.
 
 #### Browser and Session Ownership
 
@@ -241,8 +250,9 @@ diagnostic bundle. Neither request affects the other.
   versions through the paired extension. Other engines MUST report unsupported.
 - **FR-019**: Matinee MUST use the user's existing browser process and authenticated
   profile. It MUST NOT copy, parse, or export the profile's credential stores.
-- **FR-020**: Browser, profile, window, and tab selection MUST be explicit whenever
-  more than one eligible candidate exists.
+- **FR-020**: Session open MUST either adopt one listed candidate or create one visible
+  tab in an explicitly selected browser. Selection MUST be explicit whenever more than
+  one eligible candidate or browser exists.
 - **FR-021**: One tab MUST have at most one mutating Matinee session owner. Read-only
   inspection MAY be shared when the returned state identifies the owner and age.
 - **FR-022**: A session MUST retain a stable identity across extension reconnects and
@@ -262,16 +272,20 @@ diagnostic bundle. Neither request affects the other.
   references. An invalid reference MUST fail before an action is sent.
 - **FR-028**: The first operation set MUST cover browser and tab discovery, session
   open and close, navigation, semantic observation, element activation, text entry,
-  key input, scrolling, selection, file upload, waiting, and screenshots.
+  key input, scrolling, selection, trusted-user file selection and upload, waiting,
+  and screenshots. An MCP request MUST NOT provide or receive a local path or file bytes.
 - **FR-029**: Every mutating operation MUST declare its target, expected document
-  generation, timeout, idempotency key, and effect class.
+  generation, timeout, and idempotency key. The daemon and extension MUST compute the
+  effective effect class. A client hint can only raise that class. A persisted screenshot
+  is a local durable mutation.
 - **FR-030**: Matinee MUST serialize mutating operations per tab and MAY execute
   operations concurrently on different tabs subject to configured limits.
 - **FR-031**: A client retry with the same idempotency key and equivalent request MUST
   return the authoritative prior result. A different request body with that key MUST
   fail as a conflict.
-- **FR-032**: Matinee MUST retry only operations classified as safe and transient.
-  Retry limits and backoff MUST be visible in the request record.
+- **FR-032**: Matinee MUST retry only operations that its effective policy classifies as
+  safe and transient. Disagreement or insufficient evidence MUST classify as uncertain.
+  Retry limits and backoff MUST remain visible in the request record.
 
 #### Requests, Attention, and Cancellation
 
@@ -280,17 +294,20 @@ diagnostic bundle. Neither request affects the other.
 - **FR-034**: A request MUST have exactly one terminal outcome: succeeded, failed,
   cancelled, or expired.
 - **FR-035**: Matinee MUST request human attention before credential entry, payment
-  confirmation, destructive action, legal acceptance, permission grant, or an
-  external effect whose safety classification is uncertain.
+  confirmation, destructive action, legal acceptance, permission grant, local-file
+  disclosure, or an external effect whose safety classification is uncertain.
 - **FR-036**: An attention request MUST identify the pending operation, reason,
-  redacted target and value summary, requested decisions, creation time, deadline,
-  and trusted decision surface.
-- **FR-037**: User decisions MUST be approve, deny, edit, or cancel. Approval MUST be
-  scoped to the exact operation content and MUST be consumed at most once.
-- **FR-038**: MCP clients MUST NOT self-assert trusted user approval. The daemon MUST
-  accept decisions only from a paired trusted surface.
-- **FR-039**: Attention timeout, client disconnect, daemon restart, and extension
-  reconnect MUST preserve a non-approved state until a trusted decision arrives.
+  redacted target and value summary, destination origin, requested decisions, creation
+  time, deadline, and trusted decision surface. File disclosure MUST also identify the
+  selected control plus each file's name, media type, size, and content digest.
+- **FR-037**: User decisions MUST be approve, deny, edit, or cancel. Approval MUST bind
+  to exact operation content and, for upload, one user-selected immutable file identity
+  and destination. The daemon MUST consume the approval at most once.
+- **FR-038**: MCP clients MUST NOT self-assert trusted approval or choose local file
+  paths. The daemon MUST accept decisions only from a paired approved extension identity.
+- **FR-039**: Timeout, disconnect, restart, and reconnect MUST preserve a non-approved
+  state. Credential revocation MUST close live channels, invalidate unconsumed approvals,
+  and prevent later decisions from that principal.
 - **FR-040**: Cancellation MUST be idempotent, persist intent before interrupting work,
   and reconcile any operation already crossing an effect boundary.
 
@@ -305,7 +322,8 @@ diagnostic bundle. Neither request affects the other.
 - **FR-044**: Matinee MUST retain structured request history for 30 days by default.
   Users MUST be able to configure shorter or longer retention.
 - **FR-045**: Screenshots and page-derived artifacts MUST be opt-in per request or
-  generated for a declared diagnostic reason. Their default retention MUST be 7 days.
+  generated for a declared diagnostic reason. A persisted capture MUST be idempotent and
+  return its prior artifact on equivalent retry. Default artifact retention is 7 days.
 - **FR-046**: Artifact metadata MUST include owner, request, operation, media type,
   byte size, digest, redaction status, creation time, and expiry time.
 - **FR-047**: Deleting or expiring an artifact MUST preserve a tombstone while its
@@ -315,11 +333,13 @@ diagnostic bundle. Neither request affects the other.
 
 #### Configuration and Diagnostics
 
-- **FR-049**: Configuration precedence MUST be defaults, user configuration, project
-  configuration, environment variables, then command-line arguments. Higher layers
-  override only keys they define.
-- **FR-050**: Project configuration MUST NOT weaken authentication, loopback binding,
-  redaction, or approval requirements below product minimums.
+- **FR-049**: Ordinary configuration precedence MUST be defaults, user configuration,
+  project configuration, environment variables, then command-line arguments. Higher
+  layers override only allowed keys they define.
+- **FR-050**: Only user configuration or an explicit CLI argument MAY select the state
+  directory, daemon endpoint, native principal, or development extension identity.
+  Project and environment configuration MUST NOT set these keys or weaken mutual
+  authentication, loopback binding, redaction, authorization, or approval requirements.
 - **FR-051**: Resolved non-secret configuration and each value's source MUST be
   available through status diagnostics.
 - **FR-052**: Failures MUST use one primary class: input, selection, authentication,
@@ -328,27 +348,29 @@ diagnostic bundle. Neither request affects the other.
 - **FR-053**: Every structured failure MUST include a stable code, class, summary,
   failed boundary, retryability, request and operation identifiers when assigned,
   and safe next actions.
-- **FR-054**: Logs and exported diagnostics MUST redact connection tokens, pairing
-  secrets, cookies, authorization headers, credentials, secret form values, and page
-  content marked sensitive before writing to disk.
-- **FR-055**: The daemon MUST expose health, readiness, active-count, queue-depth,
-  operation-duration, reconnect, retry, recovery, redaction, and failure metrics
-  through a local authenticated diagnostics surface.
+- **FR-054**: Logs and exported diagnostics MUST redact connection material, enrollment
+  keys, private keys, cookies, authorization headers, credentials, secret form values,
+  and page content marked sensitive before writing to disk.
+- **FR-055**: Matinee MUST expose bounded local metrics for request latency, queue depth,
+  retry count, attention wait, recovery, and failures through a local authenticated
+  diagnostics surface.
 
 #### Stability, Packaging, and Upgrade
 
-- **FR-056**: Public MCP tool names and schemas, CLI JSON schemas, daemon protocol
-  messages, state transitions, failure codes, and artifact metadata MUST carry an
-  explicit compatibility version.
+- **FR-056**: Every persisted schema and external contract MUST have an explicit
+  compatibility version. This includes the state schema, fixed secure-channel context,
+  selected daemon and extension application contracts, CLI JSON, MCP tools, failure
+  codes, state transitions, and artifact metadata.
 - **FR-057**: The initial public contract is unstable before 1.0. Every release MUST
   document contract changes and reject incompatible peers; it MUST NOT retain silent
   aliases for removed contracts.
 - **FR-058**: Upgrades MUST preserve supported durable state through an explicit,
   transactional migration. Downgrade over migrated state MUST fail unless declared
   safe by that release.
-- **FR-059**: The supported installation path MUST provide signed or checksummed
-  platform artifacts for macOS, Linux, and Windows, plus extension installation
-  instructions for the supported browser channel.
+- **FR-059**: The supported installation path MUST provide signed platform artifacts
+  plus matching checksums for macOS, Linux, and Windows. Production pairing MUST match
+  the configured Origin, Chrome Web Store update URL, `normal` install type, and version.
+  An unpacked build MUST use a distinct ID and an explicit interactive allowance.
 - **FR-060**: Uninstall MUST stop the daemon, revoke local registrations, and offer a
   separate explicit choice to retain or delete history and artifacts.
 
@@ -399,6 +421,8 @@ diagnostic bundle. Neither request affects the other.
 
 - The user controls the local account, browser profile, extension installation, and
   MCP client configuration.
+- The extension runtime selected and installed by the user is trusted to report its
+  Chrome-provided self metadata faithfully.
 - The supported browser permits the Matinee extension to inspect and act on tabs the
   user explicitly grants.
 - Websites can change between observation and action; document generation and target
@@ -422,3 +446,5 @@ diagnostic bundle. Neither request affects the other.
   legal acceptance.
 - Compatibility with arbitrary extensions or every browser profile arrangement.
 - Replacing website-specific authorization or abuse controls.
+- Defending against a browser or installed extension runtime already replaced by an
+  attacker with the user's local-account authority.

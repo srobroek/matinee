@@ -7,7 +7,8 @@ matinee [--config <path>] [--state-dir <path>] [--output human|json] <command>
 ```
 
 `--output json` emits one `matinee.cli.v1` envelope to stdout. Human output goes to
-stdout. Diagnostics go to stderr. The CLI never prints a reusable credential.
+stdout. Diagnostics go to stderr. The CLI never prints a reusable private key. A
+single-use enrollment value appears only in the dedicated interactive pairing flow.
 
 ## Commands
 
@@ -15,12 +16,20 @@ stdout. Diagnostics go to stderr. The CLI never prints a reusable credential.
 
 ```text
 matinee setup [--browser chrome|chromium] [--mcp-client <name>]
+              [--allow-development-extension <id>]
 ```
 
-Creates the state directory, starts the daemon, creates a ten-minute pairing code,
-opens or prints the extension pairing location, waits for pairing, registers an MCP
-client credential, and prints the client configuration. Re-running setup preserves
-healthy registrations and supports explicit rotation for stale ones.
+Setup performs these steps:
+
+1. Create the state directory.
+2. Bootstrap the first native principal and start one daemon.
+3. Create a ten-minute enrollment and open the expected extension's pairing surface.
+4. Wait for extension activation.
+5. Register or reuse the uniquely named MCP client.
+6. Print client configuration containing its principal ID.
+
+Re-running setup preserves healthy registrations. Rotating a stale credential requires an
+explicit rotation action.
 
 ### `matinee doctor`
 
@@ -52,14 +61,22 @@ operations requiring reconciliation. The command does not force-kill a daemon.
 
 ### `matinee mcp`
 
+```text
+matinee mcp --client <principal-id>
+```
+
 Runs the stdio MCP adapter. stdout is reserved for MCP frames. Logs go to stderr. The
-adapter connects to or guardedly starts the daemon, completes negotiation, and serves
-until stdin closes or the MCP client disconnects.
+adapter resolves exactly one credential-store entry under service `matinee` and account
+`<state-directory-fingerprint>:<principal-id>`. That entry contains the client's private
+key and pinned daemon identity. A missing, mismatched, or revoked entry fails before MCP
+initialization. Setup emits this exact argument in each client configuration. The adapter
+connects to or guardedly starts the daemon, completes negotiation, and serves until stdin
+closes or the MCP client disconnects.
 
 ### `matinee diagnostics export`
 
 ```text
-matinee diagnostics export --request <request-id> --output <path>
+matinee diagnostics export --request <request-id> --destination <path>
 ```
 
 Creates one redacted diagnostic bundle for an authorized retained request. The command
@@ -69,7 +86,8 @@ byte size, redaction status, and expiry.
 ### `matinee version`
 
 Returns package version, Rust minimum version, state-schema version, CLI JSON version,
-daemon protocol range, extension protocol range, and MCP tool contract version.
+secure-channel version and cipher suite, daemon application-contract range, extension
+application-contract range, and MCP tool contract version.
 
 ### `matinee uninstall`
 

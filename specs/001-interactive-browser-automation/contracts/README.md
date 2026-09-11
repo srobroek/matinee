@@ -12,6 +12,7 @@ This directory defines the first public Matinee contract family.
 | Extension protocol | `matinee-daemon` and extension | Paired Chrome extension | `matinee.extension.v1` |
 | Persistence schema | `matinee-store` | Newer Matinee releases | integer schema version |
 | Artifact metadata | `matinee-daemon` | CLI and MCP clients | `matinee.artifact.v1` |
+| MCP schemas | `matinee-protocol` | MCP adapter and clients | `matinee.tools.v1` |
 
 ## Rules
 

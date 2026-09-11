@@ -19,11 +19,11 @@ attention surfaces.
 browser extension
 
 **Primary Dependencies**: `tokio` 1.x, `rmcp` 3.x, `axum` 0.8.x, `rusqlite` 0.40.x,
-`keyring` 4.x, `serde` 1.x, `uuid` 1.x, `clap` 4.x, `tracing` 0.1.x; Chrome Extension
-Manifest V3; pnpm with TypeScript, esbuild, Vitest, and Playwright
+`keyring` 4.x, `ring` 0.17.x, `serde` 1.x, `uuid` 1.x, `clap` 4.x, `tracing` 0.1.x;
+Chrome Extension Manifest V3; pnpm with TypeScript, esbuild, Vitest, and Playwright
 
 **Storage**: SQLite in WAL mode for durable state; content-addressed local files for
-artifacts; platform credential store for reusable bearer credentials
+artifacts; platform credential store for daemon and native-client private signing keys
 
 **Testing**: Rust unit and integration tests, cargo-nextest where installed, Vitest,
 JSON Schema conformance, Playwright with a temporary Chrome profile, deterministic
@@ -92,6 +92,7 @@ specs/001-interactive-browser-automation/
     ├── cli.md
     ├── daemon-protocol.md
     ├── extension-protocol.md
+    ├── mcp-schemas.md
     └── mcp-tools.md
 ```
 
@@ -193,13 +194,14 @@ extension remains a separate TypeScript package because Chrome executes JavaScri
 
 ### Stage 3 - Authenticated Local Protocol
 
-- Implement loopback HTTP and WebSocket routes with message, frame, queue, and connection
-  limits.
-- Implement per-principal credentials, pairing codes, origin checks, rotation, revocation,
+- Implement liveness HTTP and authenticated encrypted WebSocket control with bounded
+  messages, queues, streams, connections, and cryptographic test vectors.
+- Implement inherited-pipe first-principal bootstrap, per-principal keys, secure pairing,
+  extension identity and origin checks, object authorization, rotation, live revocation,
   protocol negotiation, and capability negotiation.
 - Implement CLI daemon client, JSON output envelopes, setup, doctor, status, and stop.
-- Exit condition: allowed and denied matrices pass for every endpoint, origin, credential,
-  protocol range, and lifecycle command.
+- Exit condition: allowed, denied, impersonation, replay, wrong-direction, malicious
+  listener, authorization, and revocation matrices pass for every principal and route.
 
 ### Stage 4 - Browser Extension and Session Ownership
 
@@ -214,7 +216,8 @@ extension remains a separate TypeScript package because Chrome executes JavaScri
 
 ### Stage 5 - MCP Interaction
 
-- Implement the `rmcp` stdio server and tool schemas from `contracts/mcp-tools.md`.
+- Implement the `rmcp` stdio server and generated tool schemas from
+  `contracts/mcp-tools.md` and `contracts/mcp-schemas.md`.
 - Translate tool calls into durable daemon requests before browser mutation.
 - Implement event polling, bounded results, cancellation propagation, and adapter exit
   independence.
@@ -223,28 +226,31 @@ extension remains a separate TypeScript package because Chrome executes JavaScri
 
 ### Stage 6 - Attention, Cancellation, and Reconciliation
 
-- Classify effects, create attention requests, accept trusted extension decisions, and
-  consume exact-scope approvals once. Support edit, deny, cancel, and expiry outcomes.
+- Independently classify effects, create attention requests, accept trusted extension
+  decisions, and consume exact-scope approvals once. Support edit, deny, cancel, expiry,
+  and user-selected file disclosure without MCP filesystem authority.
 - Persist cancellation at safe boundaries. Reconcile uncertain effects without retry.
 - Add browser fixtures for credentials, purchase confirmation, deletion, permission,
-  legal acceptance, and ambiguous network completion.
-- Exit condition: the sensitive-action matrix records zero untrusted approvals and zero
-  automatic retries of uncertain effects.
+  legal acceptance, file upload, and ambiguous network completion.
+- Exit condition: the sensitive-action matrix records zero untrusted approvals, zero
+  client-lowered classifications, and zero automatic retries of uncertain effects.
 
 ### Stage 7 - Artifacts, Diagnostics, and Operations
 
 - Implement browser-side sensitive-field masking, daemon-side structured redaction,
-  content-addressed artifacts, tombstones, cleanup, diagnostic export, local metrics,
-  and safe next-action mapping.
+  idempotent screenshots, content-addressed artifacts, tombstones, cleanup, diagnostic
+  export, local metrics, and safe next-action mapping.
 - Enforce retention with immutable security minimums and report each value's source.
-- Exit condition: seeded secrets do not appear in any persisted or exported surface, and
-  every injected failure yields the required diagnostic fields.
+- Exit condition: seeded secrets do not appear in any persisted or exported surface,
+  duplicate capture keys return one artifact, and every injected failure yields the
+  required diagnostic fields.
 
 ### Stage 8 - Packaging, Upgrade, and Release Proof
 
-- Produce macOS, Linux, and Windows artifacts with checksums or signatures. Validate
-  and publish `server.json` to the MCP Registry.
-- Package the extension for Chrome Web Store review and unpacked development use.
+- Produce signed macOS, Linux, and Windows artifacts plus checksums. Validate and publish
+  `server.json` to the MCP Registry.
+- Package the extension for Chrome Web Store review with signed production-ID metadata;
+  keep unpacked builds behind the explicit development-extension setup path.
 - Implement transactional state migrations, pre-migration backup, downgrade rejection,
   and uninstall retention choices.
 - Run the quickstart, full acceptance matrix, latency benchmark, four-tab concurrency run,
