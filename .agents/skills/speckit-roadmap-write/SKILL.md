@@ -1,11 +1,9 @@
 ---
 name: speckit-roadmap-write
-description: Create or amend the project spec roadmap after the constitution — capturing
-  spec-specific decisions, outcomes, constraints, and the intent of specs not yet
-  written so they are not lost.
+description: Create or amend the project spec roadmap after the constitution — capturing spec-specific decisions, outcomes, constraints, and the intent of specs not yet written so they are not lost.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: srobroek
   source: roadmap:commands/speckit.roadmap.write.md
 ---
 

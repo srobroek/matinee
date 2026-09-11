@@ -1,10 +1,9 @@
 ---
 name: speckit-qa-run
-description: Run systematic QA testing against the implemented feature, validating
-  acceptance criteria through browser-driven or CLI-based testing.
+description: Run systematic QA testing against the implemented feature, validating acceptance criteria through browser-driven or CLI-based testing.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: arunt14
   source: qa:commands/run.md
 ---
 

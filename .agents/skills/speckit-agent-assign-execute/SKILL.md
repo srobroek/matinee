@@ -3,7 +3,7 @@ name: speckit-agent-assign-execute
 description: Execute tasks by spawning the assigned agent for each task
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: xuyang
   source: agent-assign:commands/execute.md
 ---
 

@@ -1,10 +1,9 @@
 ---
 name: speckit-review-simplify
-description: Code simplification suggestions — clarity, unnecessary complexity, redundant
-  abstractions. Advisory only.
+description: Code simplification suggestions — clarity, unnecessary complexity, redundant abstractions. Advisory only.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: ismaelJimenez
   source: review:commands/simplify.md
 ---
 

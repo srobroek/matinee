@@ -1,10 +1,9 @@
 ---
 name: speckit-refine-diff
-description: Show what changed in spec.md and predict downstream impact on plan and
-  tasks
+description: Show what changed in spec.md and predict downstream impact on plan and tasks
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: Quratulain-bilal
   source: refine:commands/speckit.refine.diff.md
 ---
 

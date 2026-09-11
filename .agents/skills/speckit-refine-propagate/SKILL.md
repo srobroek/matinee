@@ -3,7 +3,7 @@ name: speckit-refine-propagate
 description: Propagate spec changes downstream to plan.md and tasks.md
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: Quratulain-bilal
   source: refine:commands/speckit.refine.propagate.md
 ---
 

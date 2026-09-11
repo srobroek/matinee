@@ -3,7 +3,7 @@ name: speckit-security-review-staged
 description: Security review of staged changes only (git diff --cached)
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-review-staged.md
 ---
 

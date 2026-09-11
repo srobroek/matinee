@@ -1,10 +1,9 @@
 ---
 name: speckit-review-errors
-description: Error handling review — silent failure detection, catch block analysis,
-  error logging.
+description: Error handling review — silent failure detection, catch block analysis, error logging.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: ismaelJimenez
   source: review:commands/errors.md
 ---
 

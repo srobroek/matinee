@@ -1,11 +1,9 @@
 ---
 name: speckit-roadmap-debrief
-description: Read-only post-implementation review — check the implemented spec against
-  its roadmap entry's outcome and scope, classify any drift, and propose marking the
-  entry verified.
+description: Read-only post-implementation review — check the implemented spec against its roadmap entry's outcome and scope, classify any drift, and propose marking the entry verified.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: srobroek
   source: roadmap:commands/speckit.roadmap.debrief.md
 ---
 

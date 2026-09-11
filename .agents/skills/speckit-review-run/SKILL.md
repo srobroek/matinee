@@ -1,10 +1,9 @@
 ---
 name: speckit-review-run
-description: Comprehensive code review using specialized agents — orchestrates code,
-  comments, tests, errors, types, and simplify agents sequentially.
+description: Comprehensive code review using specialized agents — orchestrates code, comments, tests, errors, types, and simplify agents sequentially.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: ismaelJimenez
   source: review:commands/run.md
 ---
 

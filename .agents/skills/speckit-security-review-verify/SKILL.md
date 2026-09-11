@@ -1,10 +1,9 @@
 ---
 name: speckit-security-review-verify
-description: Re-verify security findings against source code, classify exploitability,
-  and generate safe Proof-of-Concept (PoC) reproductions.
+description: Re-verify security findings against source code, classify exploitability, and generate safe Proof-of-Concept (PoC) reproductions.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-verify.md
 ---
 

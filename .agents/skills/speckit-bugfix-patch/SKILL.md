@@ -3,7 +3,7 @@ name: speckit-bugfix-patch
 description: Surgically update spec, plan, and tasks to address the reported bug
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: Quratulain-bilal
   source: bugfix:commands/speckit.bugfix.patch.md
 ---
 

@@ -1,11 +1,9 @@
 ---
 name: speckit-roadmap-sync
-description: Read-only reconciliation — detect drift between the roadmap ledger and
-  the specs on disk (orphans, phantom entries, status drift, dependency contradictions,
-  superseded ADRs).
+description: Read-only reconciliation — detect drift between the roadmap ledger and the specs on disk (orphans, phantom entries, status drift, dependency contradictions, superseded ADRs).
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: srobroek
   source: roadmap:commands/speckit.roadmap.sync.md
 ---
 

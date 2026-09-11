@@ -1,10 +1,9 @@
 ---
 name: speckit-retro-run
-description: Conduct a structured retrospective analysis of the completed development
-  cycle with metrics, learnings, and improvement suggestions.
+description: Conduct a structured retrospective analysis of the completed development cycle with metrics, learnings, and improvement suggestions.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: arunt14
   source: retro:commands/run.md
 ---
 

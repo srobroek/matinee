@@ -1,10 +1,9 @@
 ---
 name: speckit-security-review-plan
-description: Security review of technical planning artifacts and supporting design
-  docs
+description: Security review of technical planning artifacts and supporting design docs
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-review-plan.md
 ---
 

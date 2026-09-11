@@ -1,11 +1,9 @@
 ---
 name: speckit-cleanup-run
-description: Post-implementation quality gate that reviews changes, fixes small issues
-  (scout rule), creates tasks for medium issues, and generates analysis for large
-  issues.
+description: Post-implementation quality gate that reviews changes, fixes small issues (scout rule), creates tasks for medium issues, and generates analysis for large issues.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: dsrednicki
   source: cleanup:commands/cleanup.md
 ---
 

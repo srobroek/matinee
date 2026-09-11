@@ -3,7 +3,7 @@ name: speckit-refine-status
 description: Show sync status between spec, plan, and tasks — identify stale artifacts
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: Quratulain-bilal
   source: refine:commands/speckit.refine.status.md
 ---
 

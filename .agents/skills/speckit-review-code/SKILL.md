@@ -1,10 +1,9 @@
 ---
 name: speckit-review-code
-description: General code quality review — project guideline compliance, bug detection,
-  code quality analysis.
+description: General code quality review — project guideline compliance, bug detection, code quality analysis.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: ismaelJimenez
   source: review:commands/code.md
 ---
 

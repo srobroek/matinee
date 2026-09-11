@@ -3,7 +3,7 @@ name: speckit-refine-update
 description: Update an existing spec.md in-place based on new requirements or feedback
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: Quratulain-bilal
   source: refine:commands/speckit.refine.update.md
 ---
 

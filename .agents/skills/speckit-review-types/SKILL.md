@@ -1,10 +1,9 @@
 ---
 name: speckit-review-types
-description: Type design analysis — encapsulation, invariant expression, usefulness,
-  and enforcement.
+description: Type design analysis — encapsulation, invariant expression, usefulness, and enforcement.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: ismaelJimenez
   source: review:commands/types.md
 ---
 

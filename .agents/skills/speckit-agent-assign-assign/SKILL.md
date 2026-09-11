@@ -3,7 +3,7 @@ name: speckit-agent-assign-assign
 description: Scan available Claude Code agents and assign them to tasks in tasks.md
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: xuyang
   source: agent-assign:commands/assign.md
 ---
 

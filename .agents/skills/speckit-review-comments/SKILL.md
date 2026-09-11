@@ -1,10 +1,9 @@
 ---
 name: speckit-review-comments
-description: Code comment accuracy verification, documentation completeness assessment,
-  comment rot detection.
+description: Code comment accuracy verification, documentation completeness assessment, comment rot detection.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: ismaelJimenez
   source: review:commands/comments.md
 ---
 

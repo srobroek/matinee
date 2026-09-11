@@ -1,10 +1,9 @@
 ---
 name: speckit-security-review-audit
-description: Performs broader or full-system security review across the codebase.
-  Recommended for milestone reviews, release reviews, or major architecture validation.
+description: Performs broader or full-system security review across the codebase. Recommended for milestone reviews, release reviews, or major architecture validation.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-audit.md
 ---
 

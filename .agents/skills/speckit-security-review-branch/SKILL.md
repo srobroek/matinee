@@ -1,10 +1,9 @@
 ---
 name: speckit-security-review-branch
-description: Reviews security risks introduced by the current branch or implementation
-  changes. Recommended for normal feature development workflows.
+description: Reviews security risks introduced by the current branch or implementation changes. Recommended for normal feature development workflows.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-review-branch.md
 ---
 

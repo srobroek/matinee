@@ -1,10 +1,9 @@
 ---
 name: speckit-bugfix-report
-description: Capture a bug and trace it back to the relevant spec, plan, and task
-  artifacts
+description: Capture a bug and trace it back to the relevant spec, plan, and task artifacts
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: Quratulain-bilal
   source: bugfix:commands/speckit.bugfix.report.md
 ---
 

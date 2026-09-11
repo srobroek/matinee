@@ -3,7 +3,7 @@ name: speckit-fix-findings-run
 description: Iteratively analyze and fix spec findings until no issues remain
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: Quratulain-bilal
   source: fix-findings:commands/fix-findings.md
 ---
 

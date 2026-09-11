@@ -3,7 +3,7 @@ name: speckit-security-review-apply
 description: Apply approved security follow-up items into planning and task artifacts
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-review-apply.md
 ---
 

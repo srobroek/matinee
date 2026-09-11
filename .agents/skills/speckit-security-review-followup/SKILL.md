@@ -1,10 +1,9 @@
 ---
 name: speckit-security-review-followup
-description: Create remediation plans or technical-debt tasks from security review
-  findings
+description: Create remediation plans or technical-debt tasks from security review findings
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-review-followup.md
 ---
 

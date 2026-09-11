@@ -1,10 +1,9 @@
 ---
 name: speckit-review-tests
-description: Test coverage quality analysis — behavioral coverage, critical gap identification,
-  test resilience evaluation.
+description: Test coverage quality analysis — behavioral coverage, critical gap identification, test resilience evaluation.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: ismaelJimenez
   source: review:commands/tests.md
 ---
 

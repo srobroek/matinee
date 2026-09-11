@@ -1,10 +1,9 @@
 ---
 name: speckit-security-review-export
-description: Export security review findings as a formal Executive and Technical Pentest
-  Report.
+description: Export security review findings as a formal Executive and Technical Pentest Report.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-review-export.md
 ---
 

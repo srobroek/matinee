@@ -3,7 +3,7 @@ name: speckit-security-review-init
 description: Initialize or update the Security Constitution for the project.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/init.md
 ---
 

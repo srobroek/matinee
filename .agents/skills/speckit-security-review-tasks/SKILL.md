@@ -3,7 +3,7 @@ name: speckit-security-review-tasks
 description: Security review of task artifacts and implementation sequencing
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: DyanGalih
   source: security-review:commands/security-review-tasks.md
 ---
 

@@ -1,10 +1,9 @@
 ---
 name: speckit-critique-run
-description: Perform a dual-lens critical review of the specification and plan from
-  both product strategy and engineering risk perspectives before implementation.
+description: Perform a dual-lens critical review of the specification and plan from both product strategy and engineering risk perspectives before implementation.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: arunt14
   source: critique:commands/run.md
 ---
 

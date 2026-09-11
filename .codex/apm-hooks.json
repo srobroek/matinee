@@ -57,18 +57,6 @@
       "_apm_source": "srobroek/agentic-packages/packages/beads"
     }
   ],
-  "UserPromptSubmit": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": ".codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py",
-          "timeout": 10
-        }
-      ],
-      "_apm_source": "srobroek/speckit-conductor"
-    }
-  ],
   "SubagentStart": [
     {
       "matcher": "",
@@ -81,6 +69,18 @@
         }
       ],
       "_apm_source": "srobroek/agentic-packages/packages/beads"
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
     }
   ]
 }

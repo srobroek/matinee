@@ -3,7 +3,7 @@ name: speckit-agent-assign-validate
 description: Validate that all agent assignments are correct and agents exist
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: xuyang
   source: agent-assign:commands/validate.md
 ---
 

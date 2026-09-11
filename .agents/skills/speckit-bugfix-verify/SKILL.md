@@ -3,7 +3,7 @@ name: speckit-bugfix-verify
 description: Verify that bugfix patches are consistent across all spec artifacts
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: Quratulain-bilal
   source: bugfix:commands/speckit.bugfix.verify.md
 ---
 

@@ -1,11 +1,9 @@
 ---
 name: speckit-roadmap-brief
-description: Read-only pre-implementation briefing — surface what the roadmap expects
-  for the spec about to be implemented (outcome, scope, governing decisions, dependencies)
-  and flag pre-implementation drift.
+description: Read-only pre-implementation briefing — surface what the roadmap expects for the spec about to be implemented (outcome, scope, governing decisions, dependencies) and flag pre-implementation drift.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: srobroek
   source: roadmap:commands/speckit.roadmap.brief.md
 ---
 
