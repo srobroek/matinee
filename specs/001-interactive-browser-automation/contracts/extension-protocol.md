@@ -89,6 +89,7 @@ Delivery acknowledgment does not imply browser-effect completion.
 | `permission.request` | Show the Chrome runtime host-permission prompt from a user gesture |
 | `session.bind` | Establish exclusive tab ownership and inject the content script |
 | `session.rebind` | Prove the same browser tab and document generation after reconnect |
+| `session.release` | Remove extension ownership and indicators, then apply the daemon-authorized tab-close decision |
 | `session.create_tab` | Create one visible tab for the selected browser, opaque profile, and opaque window references, then return its opaque tab reference |
 | `page.observe` | Return a bounded semantic tree and document generation |
 | `operation.dispatch` | Validate generation and execute one authorized operation |
@@ -104,12 +105,25 @@ Delivery acknowledgment does not imply browser-effect completion.
 | `browser.changed` | Browser, window, tab, or permission candidates changed |
 | `session.bound` | Content surface established ownership and indicators |
 | `session.lost` | Tab, frame, content script, or permission became unavailable |
+| `session.released` | Ownership ended; reports whether indicators were removed and the tab was closed |
 | `document.changed` | Navigation or replacement advanced document generation |
 | `operation.started` | Target validation passed and dispatch began |
 | `operation.completed` | Declared result and postconditions are available |
 | `operation.uncertain` | Dispatch crossed an effect boundary without a reliable result |
 | `attention.decided` | The trusted side panel produced approve, deny, edit, or cancel |
 | `artifact.ready` | Masked bytes and metadata are available for daemon ingestion |
+
+## Session release
+
+Before dispatch, the daemon commits the session to `releasing`. A `session.release`
+command contains session ID, current document generation, and the authorized `close_tab`
+decision. The extension removes its ownership and visible indicators. It then closes the
+tab only when `close_tab` is true.
+
+The extension returns `session.released` with session ID, `indicators_removed`, and
+`tab_closed`. The daemon commits `closed` only after this event. A release failure moves
+the session to `failed`; cleanup can retry from that state. Repeating the same release
+command returns the recorded outcome without closing another tab.
 
 The daemon authorizes every event against extension identity, authentication epoch,
 session binding, pending command, operation digest, and expected document generation

@@ -71,7 +71,8 @@ same `object.not_found` failure. The adapter filters status and events before en
 `browser_list` returns a `candidate_revision`, expiry, and bounded candidates. A
 `session_open` request supplies that revision and exactly one selection:
 
-- `candidate` names one returned `candidate_id` and its document generation.
+- `candidate` names one returned `candidate_id`, current `candidate_revision`, and document
+  generation.
 - `new_tab` names one returned `browser_id`, opaque `profile_ref`, and opaque `window_ref`.
 
 Matinee never selects a candidate, browser, profile, or window implicitly. It accepts no

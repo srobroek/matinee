@@ -115,6 +115,7 @@ Arrays state their bounds below. All string lengths count UTF-8 bytes.
 | `target_summary`, `value_summary` | Redacted string, at most 2,048 characters each |
 | `allowed_decisions` | Nonempty subset of `approve`, `deny`, `edit`, and `cancel` |
 | `trusted_surface_principal_id` | Extension principal `Id` |
+| `trusted_surface_label` | Redacted string, at most 128 characters |
 | `state` | Attention state-machine value |
 | `created_at`, `expires_at` | Timestamp |
 | `decided_at` | Nullable timestamp |
@@ -241,8 +242,9 @@ opaque `tab_ref` identifies the created visible tab.
 
 - All `MutationContext` fields.
 - `session_id: Id`.
-- `close_tab`: optional boolean; default false. It requires explicit authorization for
-  an adopted tab.
+- `close_tab`: optional boolean. When omitted, the session's
+  `close_created_tab_on_release` policy applies. `true` for an adopted tab requires a
+  trusted attention decision.
 
 **Result**
 

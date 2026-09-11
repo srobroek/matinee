@@ -220,6 +220,9 @@ opening -> active -> releasing -> closed
 4. An adopted tab remains open when the session closes unless the user explicitly
    authorized closure.
 5. A session cannot return from `closed`.
+6. The daemon commits `releasing` before it sends `session.release`.
+7. The session reaches `closed` only after the extension reports that ownership and
+   indicators ended and whether the authorized tab-close action completed.
 
 ## Request
 
@@ -340,6 +343,7 @@ planned -> queued -> preflight -> dispatching -> succeeded
 - `created_at`, `expires_at`, `decided_at`
 - `decision` and optional `edited_operation_digest`
 - `revision`
+- allowed decisions, trusted surface principal ID, and redacted surface label
 
 ### Attention State Machine
 
