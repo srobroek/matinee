@@ -1,0 +1,86 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".codex/hooks/speckit-conductor/scripts/speckit-pr-title.py",
+          "timeout": 30
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    },
+    {
+      "matcher": "apply_patch|Edit|Write|MultiEdit|Bash|Skill",
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".codex/hooks/speckit-conductor/scripts/speckit-tasks-guard.py",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    },
+    {
+      "matcher": "Skill",
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    },
+    {
+      "matcher": "apply_patch|Write|Edit|MultiEdit|NotebookEdit",
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".codex/hooks/adr-as-beads/scripts/adr-write-guard.py",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/agentic-packages/packages/adr-as-beads"
+    },
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".codex/hooks/beads/scripts/beads-gh-issue-guard.py",
+          "statusMessage": "Checking gh issue command against beads policy...",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/agentic-packages/packages/beads"
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    }
+  ],
+  "SubagentStart": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".codex/hooks/beads/scripts/beads-subagent-reminder.py",
+          "statusMessage": "Injecting beads work contract...",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/agentic-packages/packages/beads"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "matinee",
+  "project_id": "d5751c40-eb7a-491a-91e0-da31ec11bc07"
+}
