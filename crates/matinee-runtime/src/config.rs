@@ -363,7 +363,7 @@ struct TomlScanner<'a> {
     assignments: usize,
     table_prefix: Vec<String>,
     active_array_scope: Option<usize>,
-    array_table_root: Option<Vec<String>>,
+    latest_array_scopes: Vec<(Vec<String>, usize)>,
     next_array_scope: usize,
     definitions: Vec<StructuralDefinition>,
 }
@@ -376,7 +376,7 @@ impl<'a> TomlScanner<'a> {
             assignments: 0,
             table_prefix: Vec::new(),
             active_array_scope: None,
-            array_table_root: None,
+            latest_array_scopes: Vec::new(),
             next_array_scope: 0,
             definitions: Vec::new(),
         }
@@ -437,14 +437,12 @@ impl<'a> TomlScanner<'a> {
                 self.register_table(&path, array_table, scope)?;
                 self.table_prefix = path.clone();
                 if array_table {
-                    self.active_array_scope = Some(self.next_array_scope);
+                    let array_scope = self.next_array_scope;
                     self.next_array_scope += 1;
-                    self.array_table_root = Some(path);
+                    self.active_array_scope = Some(array_scope);
+                    self.remember_array_scope(&path, array_scope);
                 } else {
                     self.active_array_scope = scope;
-                    if scope.is_none() {
-                        self.array_table_root = None;
-                    }
                 }
                 self.skip_line(position);
                 return Ok(());
@@ -870,11 +868,24 @@ impl<'a> TomlScanner<'a> {
         left.is_none() || right.is_none() || left == right
     }
 
-    fn array_scope_for_path(&self, path: &[String]) -> Option<usize> {
-        match (&self.array_table_root, self.active_array_scope) {
-            (Some(root), Some(scope)) if path.starts_with(root) => Some(scope),
-            _ => None,
+    fn remember_array_scope(&mut self, path: &[String], scope: usize) {
+        if let Some((_, latest_scope)) = self
+            .latest_array_scopes
+            .iter_mut()
+            .find(|(root, _)| root == path)
+        {
+            *latest_scope = scope;
+        } else {
+            self.latest_array_scopes.push((path.to_vec(), scope));
         }
+    }
+
+    fn array_scope_for_path(&self, path: &[String]) -> Option<usize> {
+        self.latest_array_scopes
+            .iter()
+            .filter(|(root, _)| path.starts_with(root))
+            .max_by_key(|(root, _)| root.len())
+            .map(|(_, scope)| *scope)
     }
 
     fn limit_failure(&self) -> ConfigurationFailure {
@@ -1210,6 +1221,14 @@ mod tests {
         let failure = toml_lexical_preflight(b"[first]\nvalue = 1\nvalue = 2\n", source)
             .expect_err("a repeated key in one table scope is rejected");
         assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    }
+
+    #[test]
+    fn lexical_preflight_accepts_array_table_scope_after_intervening_header() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let document = b"[[items]]\n[unrelated]\nflag = 1\n[items.meta]\nvalue = 1\n[[items]]\n[items.meta]\nvalue = 2\n";
+
+        assert_eq!(toml_lexical_preflight(document, source), Ok(()));
     }
 
     #[test]
