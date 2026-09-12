@@ -8,6 +8,7 @@
 use crate::environment::{AcceptedKey, ConfigurationSource};
 use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
 use std::io::Read;
+use toml::Value as TomlValue;
 
 /// The maximum number of descriptors accepted by one registry.
 #[allow(dead_code)]
@@ -58,6 +59,36 @@ pub(crate) enum Normalizer {
     Identity,
     TrimAsciiWhitespace,
     LowercaseAscii,
+}
+impl Normalizer {
+    fn apply(self, value: TomlValue) -> Option<TomlValue> {
+        match self {
+            Self::Identity => Some(value),
+            Self::TrimAsciiWhitespace => match value {
+                TomlValue::String(text) => Some(TomlValue::String(text.trim_ascii().to_owned())),
+                _ => None,
+            },
+            Self::LowercaseAscii => match value {
+                TomlValue::String(mut text) => {
+                    text.make_ascii_lowercase();
+                    Some(TomlValue::String(text))
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
+impl ValueKind {
+    fn accepts(self, value: &TomlValue) -> bool {
+        matches!(
+            (self, value),
+            (Self::Text | Self::Path, TomlValue::String(_))
+                | (Self::Boolean, TomlValue::Boolean(_))
+                | (Self::Integer, TomlValue::Integer(_))
+                | (Self::Float, TomlValue::Float(_))
+        )
+    }
 }
 
 /// The owner that is allowed to define a protected descriptor.
@@ -206,6 +237,33 @@ pub(crate) enum RegistryError {
     TooManyDescriptors,
 }
 
+/// A validated value paired with the descriptor that accepted it.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolvedValue<'a> {
+    descriptor: &'a KeyDescriptor,
+    value: TomlValue,
+}
+
+#[allow(dead_code)]
+impl<'a> ResolvedValue<'a> {
+    pub(crate) fn descriptor(&self) -> &'a KeyDescriptor {
+        self.descriptor
+    }
+    pub(crate) fn name(&self) -> &str {
+        self.descriptor.name()
+    }
+    pub(crate) fn material_class(&self) -> MaterialClass {
+        self.descriptor.material_class()
+    }
+    pub(crate) fn value(&self) -> &TomlValue {
+        &self.value
+    }
+    pub(crate) fn into_value(self) -> TomlValue {
+        self.value
+    }
+}
+
 /// A closed descriptor registry.
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
@@ -271,7 +329,8 @@ impl DescriptorRegistry {
         &self,
         name: &str,
         source: ConfigurationSource,
-    ) -> Result<&KeyDescriptor, ConfigurationFailure> {
+        value: TomlValue,
+    ) -> Result<ResolvedValue<'_>, ConfigurationFailure> {
         let descriptor = self.descriptor(name).ok_or_else(|| {
             ConfigurationFailure::unknown_key(FailureSource::Layer(source.layer_class()))
         })?;
@@ -287,7 +346,19 @@ impl DescriptorRegistry {
                 FailureSource::Layer(source.layer_class()),
             ));
         }
-        Ok(descriptor)
+        if !descriptor.value_kind.accepts(&value) {
+            return Err(ConfigurationFailure::new(
+                ConfigurationFailureCode::ValueInvalid,
+                FailureSource::Layer(source.layer_class()),
+            ));
+        }
+        let value = descriptor.normalizer.apply(value).ok_or_else(|| {
+            ConfigurationFailure::new(
+                ConfigurationFailureCode::ValueInvalid,
+                FailureSource::Layer(source.layer_class()),
+            )
+        })?;
+        Ok(ResolvedValue { descriptor, value })
     }
 }
 
@@ -977,6 +1048,9 @@ mod tests {
             MaterialClass::NonSecret,
         )
     }
+    fn text(value: &str) -> TomlValue {
+        TomlValue::String(value.to_owned())
+    }
     fn registry_with_count(count: usize) -> DescriptorRegistry {
         DescriptorRegistry::new(
             (0..count)
@@ -1016,16 +1090,28 @@ mod tests {
         let registry = DescriptorRegistry::production();
         assert!(
             registry
-                .resolve("state_dir", ConfigurationSource::UserFile)
+                .resolve(
+                    "state_dir",
+                    ConfigurationSource::UserFile,
+                    text("/tmp/state"),
+                )
                 .is_ok()
         );
         assert!(
             registry
-                .resolve("state_dir", ConfigurationSource::CommandLine)
+                .resolve(
+                    "state_dir",
+                    ConfigurationSource::CommandLine,
+                    text("/tmp/state"),
+                )
                 .is_ok()
         );
         let failure = registry
-            .resolve("state_dir", ConfigurationSource::ProjectFile)
+            .resolve(
+                "state_dir",
+                ConfigurationSource::ProjectFile,
+                text("/tmp/state"),
+            )
             .expect_err("project files cannot select state_dir");
         assert_eq!(failure.code(), ConfigurationFailureCode::SourceForbidden);
     }
@@ -1039,7 +1125,7 @@ mod tests {
         )])
         .expect("secret fixture is structurally valid");
         let failure = registry
-            .resolve("secret", ConfigurationSource::UserFile)
+            .resolve("secret", ConfigurationSource::UserFile, text("hidden"))
             .expect_err("secret material is forbidden by spec 005");
         assert_eq!(failure.code(), ConfigurationFailureCode::SecretForbidden);
         assert_eq!(failure.source().as_str(), "user-file");
@@ -1054,7 +1140,7 @@ mod tests {
         )])
         .expect("secret-reference fixture is structurally valid");
         let failure = registry
-            .resolve("reference", ConfigurationSource::Environment)
+            .resolve("reference", ConfigurationSource::Environment, text("ref"))
             .expect_err("opaque secret references are not accepted by spec 005");
         assert_eq!(failure.code(), ConfigurationFailureCode::SecretForbidden);
     }
@@ -1071,7 +1157,7 @@ mod tests {
         ])
         .expect("mixed fixture registry is structurally valid");
         let resolved = registry
-            .resolve("ordinary", ConfigurationSource::Environment)
+            .resolve("ordinary", ConfigurationSource::Environment, text("ok"))
             .expect("unrelated ordinary key remains resolvable");
         assert_eq!(resolved.name(), "ordinary");
     }
@@ -1080,7 +1166,7 @@ mod tests {
         let registry = DescriptorRegistry::new(vec![descriptor("api.token")])
             .expect("ordinary descriptor with token-like name is valid");
         let resolved = registry
-            .resolve("api.token", ConfigurationSource::UserFile)
+            .resolve("api.token", ConfigurationSource::UserFile, text("ordinary"))
             .expect("descriptor class, not raw text, controls classification");
         assert_eq!(resolved.material_class(), MaterialClass::NonSecret);
     }
@@ -1088,11 +1174,244 @@ mod tests {
     fn unknown_keys_fail_before_material_or_source_checks() {
         let registry = DescriptorRegistry::production();
         let failure = registry
-            .resolve("reserved.future", ConfigurationSource::ProjectFile)
+            .resolve(
+                "daemon.endpoint",
+                ConfigurationSource::ProjectFile,
+                TomlValue::Boolean(false),
+            )
             .expect_err("unregistered reserved keys are unknown");
         assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
         assert_eq!(failure.source().as_str(), "project-file");
     }
+    #[test]
+    fn text_value_accepts_string_and_rejects_boolean() {
+        let registry = DescriptorRegistry::new(vec![descriptor("text")]).unwrap();
+        let resolved = registry
+            .resolve("text", ConfigurationSource::UserFile, text("hello"))
+            .expect("text descriptors accept TOML strings");
+        assert_eq!(resolved.value(), &text("hello"));
+
+        let failure = registry
+            .resolve(
+                "text",
+                ConfigurationSource::UserFile,
+                TomlValue::Boolean(true),
+            )
+            .expect_err("text descriptors reject TOML booleans");
+        assert_eq!(failure.code(), ConfigurationFailureCode::ValueInvalid);
+    }
+
+    #[test]
+    fn boolean_value_accepts_boolean_and_rejects_integer() {
+        let registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "enabled",
+            ValueKind::Boolean,
+            AllowedSources::all(),
+            MaterialClass::NonSecret,
+        )])
+        .unwrap();
+        let resolved = registry
+            .resolve(
+                "enabled",
+                ConfigurationSource::UserFile,
+                TomlValue::Boolean(true),
+            )
+            .expect("boolean descriptors accept TOML booleans");
+        assert_eq!(resolved.value(), &TomlValue::Boolean(true));
+
+        let failure = registry
+            .resolve(
+                "enabled",
+                ConfigurationSource::UserFile,
+                TomlValue::Integer(1),
+            )
+            .expect_err("boolean descriptors reject TOML integers");
+        assert_eq!(failure.code(), ConfigurationFailureCode::ValueInvalid);
+    }
+
+    #[test]
+    fn integer_value_accepts_integer_and_rejects_float() {
+        let registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "retries",
+            ValueKind::Integer,
+            AllowedSources::all(),
+            MaterialClass::NonSecret,
+        )])
+        .unwrap();
+        let resolved = registry
+            .resolve(
+                "retries",
+                ConfigurationSource::UserFile,
+                TomlValue::Integer(3),
+            )
+            .expect("integer descriptors accept TOML integers");
+        assert_eq!(resolved.value(), &TomlValue::Integer(3));
+
+        let failure = registry
+            .resolve(
+                "retries",
+                ConfigurationSource::UserFile,
+                TomlValue::Float(3.0),
+            )
+            .expect_err("integer descriptors reject TOML floats");
+        assert_eq!(failure.code(), ConfigurationFailureCode::ValueInvalid);
+    }
+
+    #[test]
+    fn float_value_accepts_float_and_rejects_integer() {
+        let registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "ratio",
+            ValueKind::Float,
+            AllowedSources::all(),
+            MaterialClass::NonSecret,
+        )])
+        .unwrap();
+        let resolved = registry
+            .resolve(
+                "ratio",
+                ConfigurationSource::UserFile,
+                TomlValue::Float(0.5),
+            )
+            .expect("float descriptors accept TOML floats");
+        assert_eq!(resolved.value(), &TomlValue::Float(0.5));
+
+        let failure = registry
+            .resolve(
+                "ratio",
+                ConfigurationSource::UserFile,
+                TomlValue::Integer(1),
+            )
+            .expect_err("float descriptors reject TOML integers");
+        assert_eq!(failure.code(), ConfigurationFailureCode::ValueInvalid);
+    }
+
+    #[test]
+    fn path_value_accepts_string_and_rejects_boolean() {
+        let registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "path",
+            ValueKind::Path,
+            AllowedSources::all(),
+            MaterialClass::NonSecret,
+        )])
+        .unwrap();
+        let resolved = registry
+            .resolve("path", ConfigurationSource::UserFile, text("relative/path"))
+            .expect("path descriptors accept TOML strings");
+        assert_eq!(resolved.value(), &text("relative/path"));
+
+        let failure = registry
+            .resolve(
+                "path",
+                ConfigurationSource::UserFile,
+                TomlValue::Boolean(false),
+            )
+            .expect_err("path descriptors reject TOML booleans");
+        assert_eq!(failure.code(), ConfigurationFailureCode::ValueInvalid);
+    }
+
+    #[test]
+    fn identity_normalizer_preserves_an_accepted_value() {
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("identity").with_normalizer(Normalizer::Identity),
+        ])
+        .unwrap();
+        let resolved = registry
+            .resolve("identity", ConfigurationSource::UserFile, text("  Keep  "))
+            .expect("identity normalization accepts text");
+        assert_eq!(resolved.value(), &text("  Keep  "));
+    }
+
+    #[test]
+    fn trim_normalizer_removes_ascii_whitespace() {
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("trim").with_normalizer(Normalizer::TrimAsciiWhitespace),
+        ])
+        .unwrap();
+        let resolved = registry
+            .resolve("trim", ConfigurationSource::UserFile, text(" \ttrim\n "))
+            .expect("trim normalization accepts text");
+        assert_eq!(resolved.value(), &text("trim"));
+    }
+
+    #[test]
+    fn lowercase_normalizer_lowercases_ascii_letters() {
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("lower").with_normalizer(Normalizer::LowercaseAscii),
+        ])
+        .unwrap();
+        let resolved = registry
+            .resolve("lower", ConfigurationSource::UserFile, text("MiXeD"))
+            .expect("lowercase normalization accepts text");
+        assert_eq!(resolved.value(), &text("mixed"));
+    }
+
+    #[test]
+    fn unknown_key_beats_invalid_value() {
+        let registry = DescriptorRegistry::production();
+        let failure = registry
+            .resolve(
+                "not.registered",
+                ConfigurationSource::UserFile,
+                TomlValue::Boolean(true),
+            )
+            .expect_err("lookup failure precedes value validation");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+    }
+
+    #[test]
+    fn secret_class_beats_forbidden_source_and_invalid_value() {
+        let registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "secret",
+            ValueKind::Text,
+            AllowedSources::user_and_command_line(),
+            MaterialClass::SecretMaterial,
+        )])
+        .unwrap();
+        let failure = registry
+            .resolve(
+                "secret",
+                ConfigurationSource::ProjectFile,
+                TomlValue::Boolean(true),
+            )
+            .expect_err("material classification precedes source and value checks");
+        assert_eq!(failure.code(), ConfigurationFailureCode::SecretForbidden);
+    }
+
+    #[test]
+    fn forbidden_source_beats_invalid_value() {
+        let registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "protected",
+            ValueKind::Text,
+            AllowedSources::user_and_command_line(),
+            MaterialClass::NonSecret,
+        )])
+        .unwrap();
+        let failure = registry
+            .resolve(
+                "protected",
+                ConfigurationSource::ProjectFile,
+                TomlValue::Boolean(true),
+            )
+            .expect_err("source authorization precedes value validation");
+        assert_eq!(failure.code(), ConfigurationFailureCode::SourceForbidden);
+    }
+
+    #[test]
+    fn invalid_value_failure_uses_only_closed_layer_source() {
+        let registry = DescriptorRegistry::new(vec![descriptor("ordinary")]).unwrap();
+        let failure = registry
+            .resolve(
+                "ordinary",
+                ConfigurationSource::Environment,
+                TomlValue::Integer(7),
+            )
+            .expect_err("integer is invalid for a text descriptor");
+        assert_eq!(failure.code(), ConfigurationFailureCode::ValueInvalid);
+        assert_eq!(failure.source().as_str(), "environment");
+        assert!(!failure.source().as_str().contains("ordinary"));
+        assert!(!failure.source().as_str().contains('7'));
+    }
+
     #[test]
     fn registry_accepts_exactly_100_descriptors() {
         let registry = registry_with_count(MAX_REGISTERED_KEYS);
