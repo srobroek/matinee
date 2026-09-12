@@ -392,39 +392,34 @@ mod tests {
     #[test]
     fn provenance_debug_projects_source_and_origin_without_internal_types() {
         let cases = [
-            (Provenance::built_in(), "source: \"default\"", None),
+            (
+                Provenance::built_in(),
+                r#"Provenance { source: "default" }"#,
+            ),
+            (
+                Provenance::user_file("user.toml").expect("relative path is safe"),
+                r#"Provenance { source: "user_file", origin: "user.toml" }"#,
+            ),
             (
                 Provenance::project_file("config.toml").expect("relative path is safe"),
-                "origin: \"config.toml\"",
-                Some("config.toml"),
+                r#"Provenance { source: "project_file", origin: "config.toml" }"#,
             ),
             (
                 Provenance::environment(
                     AcceptedKey::new("MATINEE_LOG_LEVEL").expect("key is safe"),
                 )
                 .expect("key is present"),
-                "origin: \"MATINEE_LOG_LEVEL\"",
-                Some("MATINEE_LOG_LEVEL"),
+                r#"Provenance { source: "environment", origin: "MATINEE_LOG_LEVEL" }"#,
+            ),
+            (
+                Provenance::command_line(AcceptedKey::new("MATINEE_PROFILE").expect("key is safe"))
+                    .expect("key is present"),
+                r#"Provenance { source: "command_line", origin: "MATINEE_PROFILE" }"#,
             ),
         ];
 
-        for (provenance, expected, origin) in cases {
-            let formatted = format!("{provenance:?}");
-            assert!(formatted.contains(expected), "{formatted}");
-            if let Some(origin) = origin {
-                assert!(formatted.contains(origin), "{formatted}");
-            }
-            for forbidden in [
-                "Provenance(",
-                "ProvenanceKind",
-                "RelativePath",
-                "AcceptedKey",
-            ] {
-                assert!(
-                    !formatted.contains(forbidden),
-                    "{formatted} contains {forbidden}"
-                );
-            }
+        for (provenance, expected) in cases {
+            assert_eq!(format!("{provenance:?}"), expected);
         }
     }
 }
