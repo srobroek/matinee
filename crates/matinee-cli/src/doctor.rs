@@ -1,6 +1,7 @@
 use std::{
     env,
     ffi::OsString,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -37,22 +38,53 @@ struct DoctorResult {
     outcome: ExitCode,
 }
 
+struct DoctorOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    outcome: ExitCode,
+}
+
 pub(crate) fn doctor() -> ExitCode {
     let discoveries = BROWSERS.map(|browser| DiscoveryEnvironment {
         fixed_paths: (browser.fixed_paths)(),
         path: env::var_os("PATH"),
     });
     let result = doctor_with_discovery(discoveries);
+    let output = render_doctor_output(&result);
 
-    for row in result.rows {
-        println!("{row}");
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(&output.stdout)
+        .expect("write doctor stdout");
+    drop(stdout);
+
+    let mut stderr = io::stderr().lock();
+    stderr
+        .write_all(&output.stderr)
+        .expect("write doctor stderr");
+
+    output.outcome
+}
+
+fn render_doctor_output(result: &DoctorResult) -> DoctorOutput {
+    let mut stdout = Vec::new();
+    for row in &result.rows {
+        stdout.extend_from_slice(row.as_bytes());
+        stdout.push(b'\n');
     }
 
-    if let Some(diagnostic) = result.diagnostic {
-        eprintln!("{diagnostic}");
-    }
+    let stderr = result.diagnostic.map_or_else(Vec::new, |diagnostic| {
+        let mut stderr = Vec::with_capacity(diagnostic.len() + 1);
+        stderr.extend_from_slice(diagnostic.as_bytes());
+        stderr.push(b'\n');
+        stderr
+    });
 
-    result.outcome
+    DoctorOutput {
+        stdout,
+        stderr,
+        outcome: result.outcome,
+    }
 }
 
 fn doctor_with_discovery(discoveries: [DiscoveryEnvironment; 2]) -> DoctorResult {
@@ -317,58 +349,36 @@ mod tests {
         create_executable(&firefox_path);
         create_executable(&chrome_path);
 
-        let result = doctor_with_discovery([
+        let output = render_doctor_output(&doctor_with_discovery([
             discovery(vec![firefox_path.clone()], None),
             discovery(vec![chrome_path.clone()], None),
-        ]);
+        ]));
 
         assert_eq!(
-            result.rows,
-            [
-                format!("Firefox\t{}", firefox_path.display()),
-                format!("Google Chrome\t{}", chrome_path.display()),
-            ]
+            output.stdout,
+            format!(
+                "Firefox\t{}\nGoogle Chrome\t{}\n",
+                firefox_path.display(),
+                chrome_path.display()
+            )
+            .into_bytes()
         );
-        assert_eq!(result.diagnostic, None);
-        assert_eq!(result.outcome, ExitCode::SUCCESS);
+        assert_eq!(output.stderr, b"");
+        assert_eq!(output.outcome, ExitCode::SUCCESS);
     }
 
     #[test]
     fn doctor_reports_no_browser_failure_through_injected_discovery() {
-        let result = doctor_with_discovery([
+        let output = render_doctor_output(&doctor_with_discovery([
             discovery(Vec::new(), None),
             discovery(Vec::new(), None),
-        ]);
+        ]));
 
-        assert_eq!(result.rows, ["Firefox\tnot found", "Google Chrome\tnot found"]);
+        assert_eq!(output.stdout, b"Firefox\tnot found\nGoogle Chrome\tnot found\n");
         assert_eq!(
-            result.diagnostic,
-            Some("no supported browser found; install Firefox or Google Chrome")
+            output.stderr,
+            b"no supported browser found; install Firefox or Google Chrome\n"
         );
-        assert_eq!(result.outcome, ExitCode::FAILURE);
-    }
-
-    #[test]
-    fn doctor_reaches_no_browser_outcome_through_injected_discovery() {
-        let result = doctor_with_discovery([
-            discovery(Vec::new(), None),
-            discovery(Vec::new(), None),
-        ]);
-
-        assert_eq!(result.rows, ["Firefox\tnot found", "Google Chrome\tnot found"]);
-        assert_eq!(result.outcome, ExitCode::FAILURE);
-    }
-
-    #[test]
-    fn doctor_reports_no_browser_diagnostic_through_injected_discovery() {
-        let result = doctor_with_discovery([
-            discovery(Vec::new(), None),
-            discovery(Vec::new(), None),
-        ]);
-
-        assert_eq!(
-            result.diagnostic,
-            Some("no supported browser found; install Firefox or Google Chrome")
-        );
+        assert_eq!(output.outcome, ExitCode::FAILURE);
     }
 }
