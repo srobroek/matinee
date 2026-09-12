@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// The configuration layers with an explicit, stable precedence rank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ConfigurationSource {
+pub enum ConfigurationSource {
     Default,
     UserFile,
     ProjectFile,
@@ -24,7 +24,7 @@ pub(crate) enum ConfigurationSource {
 
 impl ConfigurationSource {
     /// Returns the stable precedence rank from lowest to highest.
-    pub(crate) const fn precedence(self) -> u8 {
+    pub const fn precedence(self) -> u8 {
         match self {
             Self::Default => 0,
             Self::UserFile => 1,
@@ -35,12 +35,12 @@ impl ConfigurationSource {
     }
 
     /// Returns whether this source is higher than the other source.
-    pub(crate) const fn is_higher_than(self, other: Self) -> bool {
+    pub const fn is_higher_than(self, other: Self) -> bool {
         self.precedence() > other.precedence()
     }
 
     /// Returns the contract spelling used in successful provenance.
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Default => "default",
             Self::UserFile => "user_file",
@@ -120,9 +120,9 @@ impl AcceptedKey {
     }
 }
 
-/// A successful source location with only its safe projection retained.
+/// A private successful source payload retained behind the public projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Provenance {
+enum ProvenanceKind {
     BuiltIn,
     UserFile(RelativePath),
     ProjectFile(RelativePath),
@@ -130,48 +130,60 @@ pub(crate) enum Provenance {
     CommandLine(AcceptedKey),
 }
 
+/// A successful source location with only its safe projection retained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Provenance(ProvenanceKind);
+
 impl Provenance {
     pub(crate) const fn built_in() -> Self {
-        Self::BuiltIn
+        Self(ProvenanceKind::BuiltIn)
     }
 
     pub(crate) fn user_file(path: impl Into<PathBuf>) -> Option<Self> {
-        RelativePath::new(path).map(Self::UserFile)
+        RelativePath::new(path).map(|path| Self(ProvenanceKind::UserFile(path)))
     }
 
     pub(crate) fn project_file(path: impl Into<PathBuf>) -> Option<Self> {
-        RelativePath::new(path).map(Self::ProjectFile)
+        RelativePath::new(path).map(|path| Self(ProvenanceKind::ProjectFile(path)))
     }
 
     pub(crate) fn environment(key: AcceptedKey) -> Option<Self> {
-        Some(Self::Environment(key))
+        Some(Self(ProvenanceKind::Environment(key)))
     }
 
     pub(crate) fn command_line(key: AcceptedKey) -> Option<Self> {
-        Some(Self::CommandLine(key))
+        Some(Self(ProvenanceKind::CommandLine(key)))
     }
 
-    pub(crate) const fn source(&self) -> ConfigurationSource {
-        match self {
-            Self::BuiltIn => ConfigurationSource::Default,
-            Self::UserFile(_) => ConfigurationSource::UserFile,
-            Self::ProjectFile(_) => ConfigurationSource::ProjectFile,
-            Self::Environment(_) => ConfigurationSource::Environment,
-            Self::CommandLine(_) => ConfigurationSource::CommandLine,
+    pub const fn source(&self) -> ConfigurationSource {
+        match &self.0 {
+            ProvenanceKind::BuiltIn => ConfigurationSource::Default,
+            ProvenanceKind::UserFile(_) => ConfigurationSource::UserFile,
+            ProvenanceKind::ProjectFile(_) => ConfigurationSource::ProjectFile,
+            ProvenanceKind::Environment(_) => ConfigurationSource::Environment,
+            ProvenanceKind::CommandLine(_) => ConfigurationSource::CommandLine,
         }
     }
 
-    pub(crate) fn relative_path(&self) -> Option<&Path> {
-        match self {
-            Self::UserFile(path) | Self::ProjectFile(path) => Some(path.as_path()),
-            Self::BuiltIn | Self::Environment(_) | Self::CommandLine(_) => None,
+    pub fn relative_path(&self) -> Option<&Path> {
+        match &self.0 {
+            ProvenanceKind::UserFile(path) | ProvenanceKind::ProjectFile(path) => {
+                Some(path.as_path())
+            }
+            ProvenanceKind::BuiltIn
+            | ProvenanceKind::Environment(_)
+            | ProvenanceKind::CommandLine(_) => None,
         }
     }
 
-    pub(crate) fn key(&self) -> Option<&str> {
-        match self {
-            Self::Environment(key) | Self::CommandLine(key) => Some(key.as_str()),
-            Self::BuiltIn | Self::UserFile(_) | Self::ProjectFile(_) => None,
+    pub fn key(&self) -> Option<&str> {
+        match &self.0 {
+            ProvenanceKind::Environment(key) | ProvenanceKind::CommandLine(key) => {
+                Some(key.as_str())
+            }
+            ProvenanceKind::BuiltIn
+            | ProvenanceKind::UserFile(_)
+            | ProvenanceKind::ProjectFile(_) => None,
         }
     }
 }
@@ -183,14 +195,14 @@ impl Provenance {
 /// contract. Resolution owns normalizing and validating these paths without
 /// mutating the filesystem.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct EnvironmentInput {
+pub struct EnvironmentInput {
     project_root: PathBuf,
     config_path: Option<PathBuf>,
     state_dir: Option<PathBuf>,
 }
 
 impl EnvironmentInput {
-    pub(crate) fn new(project_root: impl Into<PathBuf>) -> Self {
+    pub fn new(project_root: impl Into<PathBuf>) -> Self {
         Self {
             project_root: project_root.into(),
             config_path: None,
@@ -198,32 +210,32 @@ impl EnvironmentInput {
         }
     }
 
-    pub(crate) fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
+    pub fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.config_path = Some(path.into());
         self
     }
 
-    pub(crate) fn with_state_dir(mut self, path: impl Into<PathBuf>) -> Self {
+    pub fn with_state_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.state_dir = Some(path.into());
         self
     }
 
-    pub(crate) fn project_root(&self) -> &Path {
+    pub fn project_root(&self) -> &Path {
         &self.project_root
     }
 
-    pub(crate) fn config_path(&self) -> Option<&Path> {
+    pub fn config_path(&self) -> Option<&Path> {
         self.config_path.as_deref()
     }
 
-    pub(crate) fn state_dir(&self) -> Option<&Path> {
+    pub fn state_dir(&self) -> Option<&Path> {
         self.state_dir.as_deref()
     }
 }
 
 /// All resolver outcomes use the closed failure type; no alternate error
 /// channel can leak raw operating-system or parser text.
-pub(crate) type EnvironmentResult<T> = Result<T, ConfigurationFailure>;
+pub type EnvironmentResult<T> = Result<T, ConfigurationFailure>;
 
 #[cfg(test)]
 mod tests {

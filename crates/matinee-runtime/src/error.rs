@@ -223,7 +223,7 @@ impl ConfigurationFailure {
     ///
     /// Raw errors, paths, values, excerpts, and secret material are intentionally
     /// absent from this signature and therefore cannot be retained by the type.
-    pub const fn new(code: ConfigurationFailureCode, source: FailureSource) -> Self {
+    pub(crate) const fn new(code: ConfigurationFailureCode, source: FailureSource) -> Self {
         Self {
             code,
             summary: SafeSummary::for_code(code),
@@ -233,7 +233,7 @@ impl ConfigurationFailure {
     }
 
     /// Constructs the unknown-key failure without accepting the rejected key.
-    pub const fn unknown_key(source: FailureSource) -> Self {
+    pub(crate) const fn unknown_key(source: FailureSource) -> Self {
         Self::new(ConfigurationFailureCode::KeyUnknown, source)
     }
 
@@ -245,7 +245,7 @@ impl ConfigurationFailure {
         self.summary.as_str()
     }
 
-    pub const fn source(self) -> FailureSource {
+    pub(crate) const fn source(self) -> FailureSource {
         self.source
     }
 
