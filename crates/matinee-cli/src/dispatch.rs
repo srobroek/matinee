@@ -27,9 +27,7 @@ where
         {
             Dispatch::Help
         }
-        (Some(argument), None) if argument == "-V" || argument == "--version" => {
-            Dispatch::Version
-        }
+        (Some(argument), None) if argument == "-V" || argument == "--version" => Dispatch::Version,
         (Some(argument), None) if argument == "doctor" => Dispatch::Doctor,
         (Some(argument), _) => Dispatch::Invalid(argument),
         (None, Some(argument)) => Dispatch::Invalid(argument),

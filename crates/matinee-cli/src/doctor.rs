@@ -47,18 +47,14 @@ fn emit_doctor_output<W: Write, E: Write>(
         stdout
             .write_all(row.as_bytes())
             .expect("write doctor stdout");
-        stdout
-            .write_all(b"\n")
-            .expect("write doctor stdout");
+        stdout.write_all(b"\n").expect("write doctor stdout");
     }
 
     if let Some(diagnostic) = result.diagnostic {
         stderr
             .write_all(diagnostic.as_bytes())
             .expect("write doctor stderr");
-        stderr
-            .write_all(b"\n")
-            .expect("write doctor stderr");
+        stderr.write_all(b"\n").expect("write doctor stderr");
     }
 
     result.outcome
@@ -209,10 +205,8 @@ mod tests {
     impl TempDir {
         fn new() -> Self {
             let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
-            let path = env::temp_dir().join(format!(
-                "matinee-doctor-tests-{}-{id}",
-                std::process::id()
-            ));
+            let path =
+                env::temp_dir().join(format!("matinee-doctor-tests-{}-{id}", std::process::id()));
             fs::create_dir(&path).expect("create temporary test directory");
             Self(path)
         }
@@ -324,7 +318,10 @@ mod tests {
 
         let found = find_browser(
             &BROWSERS[0],
-            discovery(vec![fixed_path.clone()], Some(path_temp.path().to_path_buf())),
+            discovery(
+                vec![fixed_path.clone()],
+                Some(path_temp.path().to_path_buf()),
+            ),
         );
 
         assert_eq!(found, Some(fixed_path));
@@ -361,10 +358,8 @@ mod tests {
 
     #[test]
     fn doctor_reports_no_browser_failure_through_injected_discovery() {
-        let result = doctor_with_discovery([
-            discovery(Vec::new(), None),
-            discovery(Vec::new(), None),
-        ]);
+        let result =
+            doctor_with_discovery([discovery(Vec::new(), None), discovery(Vec::new(), None)]);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let outcome = emit_doctor_output(&result, &mut stdout, &mut stderr);

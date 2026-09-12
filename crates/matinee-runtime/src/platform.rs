@@ -234,9 +234,8 @@ impl Platform for HostPlatform {
         if snapshot.byte_length > MAX_FILE_BYTES as u64 {
             return Err(file_too_large());
         }
-        let mut contents = Vec::with_capacity(
-            snapshot.byte_length.min((MAX_FILE_BYTES + 1) as u64) as usize,
-        );
+        let mut contents =
+            Vec::with_capacity(snapshot.byte_length.min((MAX_FILE_BYTES + 1) as u64) as usize);
         file.take((MAX_FILE_BYTES + 1) as u64)
             .read_to_end(&mut contents)
             .map_err(|_| file_unreadable())?;
@@ -300,9 +299,7 @@ impl FixtureEntry {
     }
 
     fn next_snapshot(&mut self) -> Result<Option<FileSnapshot>, ConfigurationFailure> {
-        self.snapshots
-            .pop_front()
-            .unwrap_or_else(|| self.snapshot_fallback.clone())
+        self.snapshots.pop_front().unwrap_or(self.snapshot_fallback)
     }
 
     fn next_read(&mut self) -> Result<FileRead, ConfigurationFailure> {
@@ -403,22 +400,14 @@ impl FixturePlatform {
         self
     }
 
-    pub(crate) fn with_snapshot(
-        self,
-        path: impl Into<PathBuf>,
-        snapshot: FileSnapshot,
-    ) -> Self {
+    pub(crate) fn with_snapshot(self, path: impl Into<PathBuf>, snapshot: FileSnapshot) -> Self {
         self.entries
             .borrow_mut()
             .insert(path.into(), FixtureEntry::snapshot_only(snapshot));
         self
     }
 
-    pub(crate) fn with_snapshot_results<I>(
-        self,
-        path: impl Into<PathBuf>,
-        results: I,
-    ) -> Self
+    pub(crate) fn with_snapshot_results<I>(self, path: impl Into<PathBuf>, results: I) -> Self
     where
         I: IntoIterator<Item = Result<Option<FileSnapshot>, ConfigurationFailure>>,
     {
@@ -428,7 +417,9 @@ impl FixturePlatform {
             .cloned()
             .unwrap_or_else(|| Err(file_unreadable()));
         let mut entries = self.entries.borrow_mut();
-        let entry = entries.entry(path.into()).or_insert_with(FixtureEntry::empty);
+        let entry = entries
+            .entry(path.into())
+            .or_insert_with(FixtureEntry::empty);
         entry.snapshots = results.into();
         entry.snapshot_fallback = fallback;
         drop(entries);
@@ -445,7 +436,9 @@ impl FixturePlatform {
             .cloned()
             .unwrap_or_else(|| Err(file_unreadable()));
         let mut entries = self.entries.borrow_mut();
-        let entry = entries.entry(path.into()).or_insert_with(FixtureEntry::empty);
+        let entry = entries
+            .entry(path.into())
+            .or_insert_with(FixtureEntry::empty);
         entry.reads = results.into();
         entry.read_fallback = fallback;
         drop(entries);
@@ -668,19 +661,17 @@ fn flip_ascii_case(component: &OsStr) -> Option<OsString> {
 
 fn flipped_path(path: &Path) -> Option<PathBuf> {
     let components: Vec<_> = path.components().collect();
-    for index in (0..components.len()).rev() {
-        let replacement = flip_ascii_case(components[index].as_os_str())?;
-        let mut flipped = PathBuf::new();
-        for (component_index, component) in components.iter().enumerate() {
-            if component_index == index {
-                flipped.push(&replacement);
-            } else {
-                flipped.push(component.as_os_str());
-            }
+    let index = components.len().checked_sub(1)?;
+    let replacement = flip_ascii_case(components[index].as_os_str())?;
+    let mut flipped = PathBuf::new();
+    for (component_index, component) in components.iter().enumerate() {
+        if component_index == index {
+            flipped.push(&replacement);
+        } else {
+            flipped.push(component.as_os_str());
         }
-        return Some(flipped);
     }
-    None
+    Some(flipped)
 }
 
 fn probe_case_behavior(anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
@@ -766,11 +757,7 @@ mod tests {
     use super::*;
 
     fn snapshot(file: u64, bytes: u64, marker: u128) -> FileSnapshot {
-        FileSnapshot::regular(
-            FileIdentity { volume: 7, file },
-            bytes,
-            Some(marker),
-        )
+        FileSnapshot::regular(FileIdentity { volume: 7, file }, bytes, Some(marker))
     }
 
     fn independent_identity(path: &Path) -> Result<Option<FileIdentity>, ConfigurationFailure> {
@@ -910,16 +897,29 @@ mod tests {
         platform: &P,
         anchor: &Path,
     ) -> Result<bool, ConfigurationFailure> {
-        Ok(platform.components_equal(anchor, "Config", "config")?)
+        platform.components_equal(anchor, "Config", "config")
     }
 
     fn propagate_unicode_query<P: Platform>(
         platform: &P,
         anchor: &Path,
     ) -> Result<UnicodeNormalization, ConfigurationFailure> {
-        Ok(platform.unicode_normalization(anchor)?)
+        platform.unicode_normalization(anchor)
     }
 
+    #[test]
+    fn flipped_path_flips_final_component_only() {
+        let original = Path::new("/before/Middle/Final");
+        let flipped = flipped_path(original).expect("final component contains ASCII letters");
+        let original_components: Vec<_> = original.components().collect();
+        let flipped_components: Vec<_> = flipped.components().collect();
+
+        assert_eq!(flipped, Path::new("/before/Middle/fINAL"));
+        assert_eq!(flipped_components[0], original_components[0]);
+        assert_eq!(flipped_components[1], original_components[1]);
+        assert_eq!(flipped_components[2], original_components[2]);
+        assert_ne!(flipped_components[3], original_components[3]);
+    }
     #[test]
     fn fixture_covers_macos_linux_and_windows_directory_shapes() {
         let cases = [
@@ -993,7 +993,12 @@ mod tests {
         let at_bound = vec![b'a'; 1_048_576];
         let over_bound = vec![b'b'; 1_048_577];
         let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_file("/fixture/bound", FileIdentity { volume: 1, file: 1 }, at_bound, None)
+            .with_file(
+                "/fixture/bound",
+                FileIdentity { volume: 1, file: 1 },
+                at_bound,
+                None,
+            )
             .with_file(
                 "/fixture/over-bound",
                 FileIdentity { volume: 1, file: 2 },
@@ -1020,15 +1025,9 @@ mod tests {
     #[test]
     fn fixture_distinguishes_absence_from_inaccessibility_while_walking_ancestor() {
         let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_snapshot_results(
-                "/fixture/home/missing/project.toml",
-                [Ok(None)],
-            )
+            .with_snapshot_results("/fixture/home/missing/project.toml", [Ok(None)])
             .with_snapshot_results("/fixture/home/missing", [Ok(None)])
-            .with_snapshot_results(
-                "/fixture/home",
-                [Err(file_unreadable())],
-            );
+            .with_snapshot_results("/fixture/home", [Err(file_unreadable())]);
         assert_eq!(
             platform
                 .file_snapshot(Path::new("/fixture/home/missing/project.toml"))
@@ -1065,9 +1064,11 @@ mod tests {
             mac.components_equal(Path::new("/fixture/macos"), "Config", "config")
                 .expect("fixture case policy"),
         );
-        assert!(!linux
-            .components_equal(Path::new("/fixture/linux"), "Config", "config")
-            .expect("fixture case policy"));
+        assert!(
+            !linux
+                .components_equal(Path::new("/fixture/linux"), "Config", "config")
+                .expect("fixture case policy")
+        );
         assert!(
             windows
                 .components_equal(Path::new(r"C:\Users"), "Config", "config")
@@ -1079,7 +1080,8 @@ mod tests {
             UnicodeNormalization::CanonicalDecomposed
         );
         assert_eq!(
-            linux.unicode_normalization(Path::new("/fixture/linux"))
+            linux
+                .unicode_normalization(Path::new("/fixture/linux"))
                 .expect("fixture Unicode policy"),
             UnicodeNormalization::Preserve
         );
@@ -1104,20 +1106,24 @@ mod tests {
                 CaseBehavior::Insensitive,
                 UnicodeNormalization::Preserve,
             );
-        assert!(!platform
-            .components_equal(
-                Path::new("/fixture/volume-sensitive/project"),
-                "Config",
-                "config"
-            )
-            .expect("fixture case policy"));
-        assert!(platform
-            .components_equal(
-                Path::new("/fixture/volume-insensitive/project"),
-                "Config",
-                "config"
-            )
-            .expect("fixture case policy"));
+        assert!(
+            !platform
+                .components_equal(
+                    Path::new("/fixture/volume-sensitive/project"),
+                    "Config",
+                    "config"
+                )
+                .expect("fixture case policy")
+        );
+        assert!(
+            platform
+                .components_equal(
+                    Path::new("/fixture/volume-insensitive/project"),
+                    "Config",
+                    "config"
+                )
+                .expect("fixture case policy")
+        );
     }
 
     #[test]
@@ -1187,8 +1193,8 @@ mod tests {
             runtime: None,
             cache: PathBuf::from("/override/cache"),
         };
-        let overridden = FixturePlatform::new(PlatformKind::Linux)
-            .with_base_directories(override_bases.clone());
+        let overridden =
+            FixturePlatform::new(PlatformKind::Linux).with_base_directories(override_bases.clone());
         assert_eq!(overridden.base_directories(), Ok(override_bases));
         assert_eq!(
             FixturePlatform::new(PlatformKind::Linux)
@@ -1199,8 +1205,6 @@ mod tests {
             ConfigurationFailureCode::PathUnavailable
         );
     }
-
-
 
     #[test]
     fn host_case_behavior_matches_anchor_identity_probe_or_closes() {
@@ -1221,8 +1225,8 @@ mod tests {
     #[test]
     fn host_policy_queries_reject_relative_and_nonexistent_anchors() {
         let host = HostPlatform::new().expect("host platform");
-        let missing = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("__matinee_missing_policy_anchor_7c7f3d");
+        let missing =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("__matinee_missing_policy_anchor_7c7f3d");
         for anchor in [Path::new("relative"), missing.as_path()] {
             assert_eq!(
                 host.case_behavior(anchor)
