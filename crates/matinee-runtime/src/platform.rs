@@ -708,8 +708,10 @@ mod tests {
 
     #[test]
     fn fixture_read_enforces_one_mib_bound() {
-        let at_bound = vec![b'a'; MAX_FILE_BYTES];
-        let over_bound = vec![b'b'; MAX_FILE_BYTES + 1];
+        // FR-005-017 and contracts/configuration.md pin the file-read limit at 1 MiB.
+        assert_eq!(MAX_FILE_BYTES, 1_048_576);
+        let at_bound = vec![b'a'; 1_048_576];
+        let over_bound = vec![b'b'; 1_048_577];
         let platform = FixturePlatform::new(PlatformKind::Linux)
             .with_file("/fixture/bound", FileIdentity { volume: 1, file: 1 }, at_bound, None)
             .with_file(
@@ -724,7 +726,7 @@ mod tests {
                 .expect("exactly one MiB is accepted")
                 .contents
                 .len(),
-            MAX_FILE_BYTES
+            1_048_576
         );
         assert_eq!(
             platform
