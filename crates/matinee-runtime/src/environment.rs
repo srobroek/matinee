@@ -131,8 +131,21 @@ enum ProvenanceKind {
 }
 
 /// A successful source location with only its safe projection retained.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Provenance(ProvenanceKind);
+
+impl std::fmt::Debug for Provenance {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("Provenance");
+        debug.field("source", &self.source().as_str());
+        if let Some(path) = self.relative_path() {
+            debug.field("origin", &path);
+        } else if let Some(key) = self.key() {
+            debug.field("origin", &key);
+        }
+        debug.finish()
+    }
+}
 
 impl Provenance {
     pub(crate) const fn built_in() -> Self {
@@ -374,5 +387,44 @@ mod tests {
             Ok(()) => panic!("failure expected"),
         };
         assert_eq!(actual.code(), ConfigurationFailureCode::PathUnavailable);
+    }
+
+    #[test]
+    fn provenance_debug_projects_source_and_origin_without_internal_types() {
+        let cases = [
+            (Provenance::built_in(), "source: \"default\"", None),
+            (
+                Provenance::project_file("config.toml").expect("relative path is safe"),
+                "origin: \"config.toml\"",
+                Some("config.toml"),
+            ),
+            (
+                Provenance::environment(
+                    AcceptedKey::new("MATINEE_LOG_LEVEL").expect("key is safe"),
+                )
+                .expect("key is present"),
+                "origin: \"MATINEE_LOG_LEVEL\"",
+                Some("MATINEE_LOG_LEVEL"),
+            ),
+        ];
+
+        for (provenance, expected, origin) in cases {
+            let formatted = format!("{provenance:?}");
+            assert!(formatted.contains(expected), "{formatted}");
+            if let Some(origin) = origin {
+                assert!(formatted.contains(origin), "{formatted}");
+            }
+            for forbidden in [
+                "Provenance(",
+                "ProvenanceKind",
+                "RelativePath",
+                "AcceptedKey",
+            ] {
+                assert!(
+                    !formatted.contains(forbidden),
+                    "{formatted} contains {forbidden}"
+                );
+            }
+        }
     }
 }
