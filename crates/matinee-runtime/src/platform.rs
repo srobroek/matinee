@@ -131,14 +131,22 @@ pub(crate) trait Platform {
     /// Opens and reads one handle, returning the bytes and that handle's
     /// identity evidence together. The implementation enforces the bound.
     fn read_file(&self, path: &Path) -> Result<FileRead, ConfigurationFailure>;
-    fn case_behavior(&self, anchor: &Path) -> CaseBehavior;
-    fn unicode_normalization(&self, anchor: &Path) -> UnicodeNormalization;
+    fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure>;
+    fn unicode_normalization(
+        &self,
+        anchor: &Path,
+    ) -> Result<UnicodeNormalization, ConfigurationFailure>;
 
-    fn components_equal(&self, anchor: &Path, left: &str, right: &str) -> bool {
-        match self.case_behavior(anchor) {
+    fn components_equal(
+        &self,
+        anchor: &Path,
+        left: &str,
+        right: &str,
+    ) -> Result<bool, ConfigurationFailure> {
+        Ok(match self.case_behavior(anchor)? {
             CaseBehavior::Sensitive => left == right,
             CaseBehavior::Insensitive => left.to_lowercase() == right.to_lowercase(),
-        }
+        })
     }
 }
 
@@ -146,8 +154,6 @@ pub(crate) trait Platform {
 pub(crate) struct HostPlatform {
     kind: PlatformKind,
     bases: BaseDirectories,
-    default_case_behavior: CaseBehavior,
-    default_unicode_normalization: UnicodeNormalization,
 }
 
 impl HostPlatform {
@@ -163,8 +169,6 @@ impl HostPlatform {
                 runtime: base_dirs.runtime_dir().map(Path::to_path_buf),
                 cache: base_dirs.cache_dir().to_path_buf(),
             },
-            default_case_behavior: current_case_behavior(),
-            default_unicode_normalization: current_unicode_normalization(),
         })
     }
 }
@@ -242,12 +246,15 @@ impl Platform for HostPlatform {
         Ok(FileRead { snapshot, contents })
     }
 
-    fn case_behavior(&self, _anchor: &Path) -> CaseBehavior {
-        self.default_case_behavior
+    fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
+        probe_case_behavior(anchor)
     }
 
-    fn unicode_normalization(&self, _anchor: &Path) -> UnicodeNormalization {
-        self.default_unicode_normalization
+    fn unicode_normalization(
+        &self,
+        anchor: &Path,
+    ) -> Result<UnicodeNormalization, ConfigurationFailure> {
+        probe_unicode_normalization(anchor)
     }
 }
 
@@ -521,12 +528,15 @@ impl Platform for FixturePlatform {
         Ok(result)
     }
 
-    fn case_behavior(&self, anchor: &Path) -> CaseBehavior {
-        self.policy_for(anchor).case_behavior
+    fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
+        Ok(self.policy_for(anchor).case_behavior)
     }
 
-    fn unicode_normalization(&self, anchor: &Path) -> UnicodeNormalization {
-        self.policy_for(anchor).unicode_normalization
+    fn unicode_normalization(
+        &self,
+        anchor: &Path,
+    ) -> Result<UnicodeNormalization, ConfigurationFailure> {
+        Ok(self.policy_for(anchor).unicode_normalization)
     }
 }
 
@@ -591,6 +601,140 @@ fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
     }
 }
 
+fn existing_anchor(anchor: &Path) -> Result<PathBuf, ConfigurationFailure> {
+    if !anchor.is_absolute() {
+        return Err(path_unavailable());
+    }
+    let mut candidate = anchor.to_path_buf();
+    loop {
+        match fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_dir() => return Ok(candidate),
+            Ok(_) => {
+                candidate.pop();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !candidate.pop() {
+                    return Err(path_unavailable());
+                }
+            }
+            Err(_) => return Err(file_unreadable()),
+        }
+        if candidate.as_os_str().is_empty() {
+            return Err(path_unavailable());
+        }
+    }
+}
+
+fn identity_at(path: &Path) -> Result<Option<FileIdentity>, ConfigurationFailure> {
+    match fs::metadata(path) {
+        Ok(metadata) => file_identity(&metadata)
+            .map(Some)
+            .ok_or_else(file_unreadable),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(file_unreadable()),
+    }
+}
+
+fn flip_ascii_case(component: &OsStr) -> Option<OsString> {
+    let text = component.to_str()?;
+    let mut changed = false;
+    let flipped: String = text
+        .chars()
+        .map(|character| {
+            if character.is_ascii_lowercase() {
+                changed = true;
+                character.to_ascii_uppercase()
+            } else if character.is_ascii_uppercase() {
+                changed = true;
+                character.to_ascii_lowercase()
+            } else {
+                character
+            }
+        })
+        .collect();
+    changed.then(|| OsString::from(flipped))
+}
+
+fn flipped_path(path: &Path) -> Option<PathBuf> {
+    let components: Vec<_> = path.components().collect();
+    for index in (0..components.len()).rev() {
+        let replacement = flip_ascii_case(components[index].as_os_str())?;
+        let mut flipped = PathBuf::new();
+        for (component_index, component) in components.iter().enumerate() {
+            if component_index == index {
+                flipped.push(&replacement);
+            } else {
+                flipped.push(component.as_os_str());
+            }
+        }
+        return Some(flipped);
+    }
+    None
+}
+
+fn probe_case_behavior(anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
+    let ancestor = existing_anchor(anchor)?;
+    let comparison = flipped_path(&ancestor).ok_or_else(file_unreadable)?;
+    let identity = identity_at(&ancestor)?.ok_or_else(file_unreadable)?;
+    Ok(match identity_at(&comparison)? {
+        Some(comparison_identity) if comparison_identity == identity => CaseBehavior::Insensitive,
+        Some(_) | None => CaseBehavior::Sensitive,
+    })
+}
+
+fn unicode_variants(name: &str) -> Option<(OsString, OsString)> {
+    const COMPOSED: char = '\u{00e9}';
+    const DECOMPOSED: &str = "e\u{0301}";
+    if name.contains(COMPOSED) {
+        return Some((
+            OsString::from(name),
+            OsString::from(name.replace(COMPOSED, DECOMPOSED)),
+        ));
+    }
+    if name.contains(DECOMPOSED) {
+        return Some((
+            OsString::from(name.replace(DECOMPOSED, "\u{00e9}")),
+            OsString::from(name),
+        ));
+    }
+    None
+}
+
+fn probe_unicode_normalization(
+    anchor: &Path,
+) -> Result<UnicodeNormalization, ConfigurationFailure> {
+    let mut directory = existing_anchor(anchor)?;
+    loop {
+        let entries = fs::read_dir(&directory).map_err(|_| file_unreadable())?;
+        for entry in entries {
+            let entry = entry.map_err(|_| file_unreadable())?;
+            let name = entry.file_name();
+            let Some(name_text) = name.to_str() else {
+                continue;
+            };
+            let Some((composed, decomposed)) = unicode_variants(name_text) else {
+                continue;
+            };
+            let composed_identity = identity_at(&directory.join(composed))?;
+            let decomposed_identity = identity_at(&directory.join(decomposed))?;
+            return Ok(match (composed_identity, decomposed_identity) {
+                (Some(left), Some(right)) if left == right => {
+                    UnicodeNormalization::CanonicalDecomposed
+                }
+                _ => UnicodeNormalization::Preserve,
+            });
+        }
+        let Some(parent) = directory.parent() else {
+            break;
+        };
+        if parent == directory {
+            break;
+        }
+        directory = parent.to_path_buf();
+    }
+    Err(file_unreadable())
+}
+
 const fn current_platform_kind() -> PlatformKind {
     #[cfg(target_os = "macos")]
     {
@@ -603,28 +747,6 @@ const fn current_platform_kind() -> PlatformKind {
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         PlatformKind::Linux
-    }
-}
-
-const fn current_case_behavior() -> CaseBehavior {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        CaseBehavior::Insensitive
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        CaseBehavior::Sensitive
-    }
-}
-
-const fn current_unicode_normalization() -> UnicodeNormalization {
-    #[cfg(target_os = "macos")]
-    {
-        UnicodeNormalization::CanonicalDecomposed
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        UnicodeNormalization::Preserve
     }
 }
 
@@ -775,19 +897,32 @@ mod tests {
         let mac = FixturePlatform::new(PlatformKind::MacOs);
         let linux = FixturePlatform::new(PlatformKind::Linux);
         let windows = FixturePlatform::new(PlatformKind::Windows);
-        assert!(mac.components_equal(Path::new("/fixture/macos"), "Config", "config"));
-        assert!(!linux.components_equal(Path::new("/fixture/linux"), "Config", "config"));
-        assert!(windows.components_equal(Path::new(r"C:\Users"), "Config", "config"));
+        assert!(
+            mac.components_equal(Path::new("/fixture/macos"), "Config", "config")
+                .expect("fixture case policy"),
+        );
+        assert!(!linux
+            .components_equal(Path::new("/fixture/linux"), "Config", "config")
+            .expect("fixture case policy"));
+        assert!(
+            windows
+                .components_equal(Path::new(r"C:\Users"), "Config", "config")
+                .expect("fixture case policy"),
+        );
         assert_eq!(
-            mac.unicode_normalization(Path::new("/fixture/macos")),
+            mac.unicode_normalization(Path::new("/fixture/macos"))
+                .expect("fixture Unicode policy"),
             UnicodeNormalization::CanonicalDecomposed
         );
         assert_eq!(
-            linux.unicode_normalization(Path::new("/fixture/linux")),
+            linux.unicode_normalization(Path::new("/fixture/linux"))
+                .expect("fixture Unicode policy"),
             UnicodeNormalization::Preserve
         );
         assert_eq!(
-            windows.unicode_normalization(Path::new(r"C:\Users")),
+            windows
+                .unicode_normalization(Path::new(r"C:\Users"))
+                .expect("fixture Unicode policy"),
             UnicodeNormalization::Preserve
         );
     }
@@ -805,16 +940,20 @@ mod tests {
                 CaseBehavior::Insensitive,
                 UnicodeNormalization::Preserve,
             );
-        assert!(!platform.components_equal(
-            Path::new("/fixture/volume-sensitive/project"),
-            "Config",
-            "config"
-        ));
-        assert!(platform.components_equal(
-            Path::new("/fixture/volume-insensitive/project"),
-            "Config",
-            "config"
-        ));
+        assert!(!platform
+            .components_equal(
+                Path::new("/fixture/volume-sensitive/project"),
+                "Config",
+                "config"
+            )
+            .expect("fixture case policy"));
+        assert!(platform
+            .components_equal(
+                Path::new("/fixture/volume-insensitive/project"),
+                "Config",
+                "config"
+            )
+            .expect("fixture case policy"));
     }
 
     #[test]
@@ -872,6 +1011,77 @@ mod tests {
                 .expect_err("base discovery failure is expressible")
                 .code(),
             ConfigurationFailureCode::PathUnavailable
+        );
+    }
+
+
+
+    #[test]
+    fn host_reports_case_behavior_for_a_real_anchor() {
+        let host = HostPlatform::new().expect("host platform");
+        let anchor = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let behavior = host
+            .case_behavior(anchor)
+            .expect("case behavior is readable for repository anchor");
+        let probed = probe_case_behavior(anchor).expect("independent case probe");
+        assert_eq!(probed, CaseBehavior::Insensitive);
+        assert_eq!(behavior, probed);
+        assert_eq!(
+            host.components_equal(anchor, "Config", "config")
+                .expect("case comparison is readable for repository anchor"),
+            behavior == CaseBehavior::Insensitive,
+        );
+    }
+
+    #[test]
+    fn host_unicode_probe_is_read_only_and_closed_when_no_pair_exists() {
+        let host = HostPlatform::new().expect("host platform");
+        let anchor = Path::new(env!("CARGO_MANIFEST_DIR"));
+        match host.unicode_normalization(anchor) {
+            Ok(policy) => assert!(matches!(
+                policy,
+                UnicodeNormalization::Preserve | UnicodeNormalization::CanonicalDecomposed
+            )),
+            Err(failure) => assert_eq!(failure.code(), ConfigurationFailureCode::FileUnreadable),
+        }
+    }
+
+    #[test]
+    fn fixture_anchor_case_and_unicode_behaviors_can_differ() {
+        let platform = FixturePlatform::new(PlatformKind::Linux)
+            .with_anchor_policy(
+                "/fixture/volume-sensitive",
+                CaseBehavior::Sensitive,
+                UnicodeNormalization::Preserve,
+            )
+            .with_anchor_policy(
+                "/fixture/volume-insensitive",
+                CaseBehavior::Insensitive,
+                UnicodeNormalization::CanonicalDecomposed,
+            );
+        assert_eq!(
+            platform
+                .case_behavior(Path::new("/fixture/volume-sensitive/project"))
+                .expect("fixture case policy"),
+            CaseBehavior::Sensitive
+        );
+        assert_eq!(
+            platform
+                .case_behavior(Path::new("/fixture/volume-insensitive/project"))
+                .expect("fixture case policy"),
+            CaseBehavior::Insensitive
+        );
+        assert_eq!(
+            platform
+                .unicode_normalization(Path::new("/fixture/volume-sensitive/project"))
+                .expect("fixture Unicode policy"),
+            UnicodeNormalization::Preserve
+        );
+        assert_eq!(
+            platform
+                .unicode_normalization(Path::new("/fixture/volume-insensitive/project"))
+                .expect("fixture Unicode policy"),
+            UnicodeNormalization::CanonicalDecomposed
         );
     }
 
