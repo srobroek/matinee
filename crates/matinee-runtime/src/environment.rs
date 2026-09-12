@@ -12,12 +12,8 @@
 use crate::error::{ConfigurationFailure, LayerClass};
 use std::path::{Component, Path, PathBuf};
 
-/// The ordered configuration layers used by runtime resolution.
-///
-/// Declaration order is the precedence order. A larger [`Self::precedence`]
-/// value is a higher-precedence source; whether it may replace a lower source
-/// remains a descriptor policy owned by configuration resolution.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The configuration layers with an explicit, stable precedence rank.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigurationSource {
     Default,
     UserFile,
@@ -25,10 +21,6 @@ pub(crate) enum ConfigurationSource {
     Environment,
     CommandLine,
 }
-
-/// The environment-oriented spelling used by callers that do not need the
-/// longer configuration name.
-pub(crate) type EnvironmentSource = ConfigurationSource;
 
 impl ConfigurationSource {
     /// Returns the stable precedence rank from lowest to highest.
@@ -96,18 +88,47 @@ impl RelativePath {
     }
 }
 
+/// An opaque, redaction-safe key projection for provenance.
+///
+/// Descriptor lookup and acceptance belong to configuration resolution. This
+/// boundary only prevents raw paths, values, and control syntax from entering
+/// a successful provenance projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AcceptedKey(String);
+
+const MAX_ACCEPTED_KEY_LENGTH: usize = 255;
+
+impl AcceptedKey {
+    pub(crate) fn new(candidate: impl Into<String>) -> Option<Self> {
+        let candidate = candidate.into();
+        let safe = !candidate.is_empty()
+            && !candidate.starts_with('-')
+            && candidate.chars().count() <= MAX_ACCEPTED_KEY_LENGTH
+            && !candidate.chars().any(|character| {
+                character == '/'
+                    || character == '\\'
+                    || character == '='
+                    || character.is_whitespace()
+                    || character.is_control()
+            });
+
+        safe.then_some(Self(candidate))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A successful source location with only its safe projection retained.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Provenance {
     BuiltIn,
     UserFile(RelativePath),
     ProjectFile(RelativePath),
-    Environment(String),
-    CommandLine(String),
+    Environment(AcceptedKey),
+    CommandLine(AcceptedKey),
 }
-
-/// Descriptive alias for callers that use the data-model terminology.
-pub(crate) type ConfigurationProvenance = Provenance;
 
 impl Provenance {
     pub(crate) const fn built_in() -> Self {
@@ -122,14 +143,12 @@ impl Provenance {
         RelativePath::new(path).map(Self::ProjectFile)
     }
 
-    pub(crate) fn environment(key: impl Into<String>) -> Option<Self> {
-        let key = key.into();
-        (!key.is_empty()).then_some(Self::Environment(key))
+    pub(crate) fn environment(key: AcceptedKey) -> Option<Self> {
+        Some(Self::Environment(key))
     }
 
-    pub(crate) fn command_line(key: impl Into<String>) -> Option<Self> {
-        let key = key.into();
-        (!key.is_empty()).then_some(Self::CommandLine(key))
+    pub(crate) fn command_line(key: AcceptedKey) -> Option<Self> {
+        Some(Self::CommandLine(key))
     }
 
     pub(crate) const fn source(&self) -> ConfigurationSource {
@@ -151,7 +170,7 @@ impl Provenance {
 
     pub(crate) fn key(&self) -> Option<&str> {
         match self {
-            Self::Environment(key) | Self::CommandLine(key) => Some(key),
+            Self::Environment(key) | Self::CommandLine(key) => Some(key.as_str()),
             Self::BuiltIn | Self::UserFile(_) | Self::ProjectFile(_) => None,
         }
     }
@@ -212,37 +231,50 @@ mod tests {
     use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
 
     #[test]
-    fn source_precedence_is_the_contract_order_and_maps_to_closed_layers() {
-        let sources = [
-            ConfigurationSource::Default,
-            ConfigurationSource::UserFile,
-            ConfigurationSource::ProjectFile,
-            ConfigurationSource::Environment,
-            ConfigurationSource::CommandLine,
+    fn source_precedence_is_explicit_for_every_contract_source() {
+        let cases = [
+            (
+                ConfigurationSource::Default,
+                0,
+                "default",
+                LayerClass::BuiltIn,
+            ),
+            (
+                ConfigurationSource::UserFile,
+                1,
+                "user_file",
+                LayerClass::UserFile,
+            ),
+            (
+                ConfigurationSource::ProjectFile,
+                2,
+                "project_file",
+                LayerClass::ProjectFile,
+            ),
+            (
+                ConfigurationSource::Environment,
+                3,
+                "environment",
+                LayerClass::Environment,
+            ),
+            (
+                ConfigurationSource::CommandLine,
+                4,
+                "command_line",
+                LayerClass::CommandLine,
+            ),
         ];
 
-        for pair in sources.windows(2) {
-            assert!(pair[1].is_higher_than(pair[0]));
-            assert!(pair[1].precedence() > pair[0].precedence());
+        for (source, rank, spelling, layer) in cases {
+            assert_eq!(source.precedence(), rank, "rank for {spelling}");
+            assert_eq!(source.as_str(), spelling, "spelling for rank {rank}");
+            assert_eq!(source.layer_class(), layer, "layer for {spelling}");
         }
 
-        assert_eq!(ConfigurationSource::Default.as_str(), "default");
-        assert_eq!(
-            ConfigurationSource::UserFile.layer_class(),
-            LayerClass::UserFile
-        );
-        assert_eq!(
-            ConfigurationSource::ProjectFile.layer_class(),
-            LayerClass::ProjectFile
-        );
-        assert_eq!(
-            ConfigurationSource::Environment.layer_class(),
-            LayerClass::Environment
-        );
-        assert_eq!(
-            ConfigurationSource::CommandLine.layer_class(),
-            LayerClass::CommandLine
-        );
+        for pair in cases.windows(2) {
+            assert!(pair[1].0.is_higher_than(pair[0].0));
+            assert!(pair[1].0.precedence() > pair[0].0.precedence());
+        }
     }
 
     #[test]
@@ -260,18 +292,62 @@ mod tests {
     }
 
     #[test]
-    fn provenance_rejects_absolute_and_parent_paths_but_keeps_safe_key_origins() {
+    fn accepted_key_rejects_raw_paths_values_and_unsafe_text() {
+        let rejected = [
+            "",
+            "/Users/alice/private",
+            r"C:\\Users\\alice\\private",
+            "--token=secret",
+            "key=value",
+            "key name",
+            "key\tname",
+            "key\u{7f}name",
+            "-token",
+        ];
+
+        for candidate in rejected {
+            assert!(
+                AcceptedKey::new(candidate).is_none(),
+                "accepted {candidate:?}"
+            );
+        }
+
+        assert!(AcceptedKey::new("MATINEE_LOG_LEVEL").is_some());
+        assert!(AcceptedKey::new("a".repeat(MAX_ACCEPTED_KEY_LENGTH)).is_some());
+        assert!(AcceptedKey::new("a".repeat(MAX_ACCEPTED_KEY_LENGTH + 1)).is_none());
+    }
+
+    #[test]
+    fn provenance_rejects_unsafe_paths_and_maps_each_safe_origin() {
         assert!(Provenance::user_file("/Users/alice/config.toml").is_none());
         assert!(Provenance::project_file("../outside/config.toml").is_none());
+
+        let built_in = Provenance::built_in();
+        assert_eq!(built_in.source(), ConfigurationSource::Default);
+        assert_eq!(built_in.relative_path(), None);
+        assert_eq!(built_in.key(), None);
 
         let user = Provenance::user_file("config.toml").expect("relative path is safe");
         assert_eq!(user.source(), ConfigurationSource::UserFile);
         assert_eq!(user.relative_path(), Some(Path::new("config.toml")));
+        assert_eq!(user.key(), None);
 
-        let environment = Provenance::environment("MATINEE_LOG_LEVEL").expect("key is present");
+        let project = Provenance::project_file("project.toml").expect("relative path is safe");
+        assert_eq!(project.source(), ConfigurationSource::ProjectFile);
+        assert_eq!(project.relative_path(), Some(Path::new("project.toml")));
+        assert_eq!(project.key(), None);
+
+        let environment_key = AcceptedKey::new("MATINEE_LOG_LEVEL").expect("key is safe");
+        let environment = Provenance::environment(environment_key).expect("key is present");
         assert_eq!(environment.source(), ConfigurationSource::Environment);
+        assert_eq!(environment.relative_path(), None);
         assert_eq!(environment.key(), Some("MATINEE_LOG_LEVEL"));
-        assert!(Provenance::environment("").is_none());
+
+        let command_key = AcceptedKey::new("MATINEE_PROFILE").expect("key is safe");
+        let command_line = Provenance::command_line(command_key).expect("key is present");
+        assert_eq!(command_line.source(), ConfigurationSource::CommandLine);
+        assert_eq!(command_line.relative_path(), None);
+        assert_eq!(command_line.key(), Some("MATINEE_PROFILE"));
     }
 
     #[test]
