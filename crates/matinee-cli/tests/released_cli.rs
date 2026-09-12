@@ -61,3 +61,113 @@ fn doctor_lists_firefox_then_chrome_rows() {
         assert!(value == "not found" || !value.is_empty());
     }
 }
+
+#[test]
+fn help_advertises_exact_released_commands_and_options() {
+    let output = Command::new(env!("CARGO_BIN_EXE_matinee"))
+        .arg("--help")
+        .output()
+        .expect("run matinee --help");
+
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).expect("help output is UTF-8");
+
+    assert_eq!(
+        advertised_entries(&help, "Commands:"),
+        vec![
+            (
+                "doctor".to_owned(),
+                "Check for supported browser executables".to_owned()
+            ),
+            ("help".to_owned(), "Print help".to_owned()),
+        ]
+    );
+    assert_eq!(
+        advertised_entries(&help, "Options:"),
+        vec![
+            ("-h, --help".to_owned(), "Print help".to_owned()),
+            ("-V, --version".to_owned(), "Print version".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn every_advertised_command_is_recognized_when_run() {
+    let help = Command::new(env!("CARGO_BIN_EXE_matinee"))
+        .arg("--help")
+        .output()
+        .expect("run matinee --help");
+    let help_text = String::from_utf8(help.stdout).expect("help output is UTF-8");
+
+    for (command, _) in advertised_entries(&help_text, "Commands:") {
+        let output = Command::new(env!("CARGO_BIN_EXE_matinee"))
+            .arg(&command)
+            .output()
+            .expect("run advertised matinee command");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.code().is_some(),
+            "advertised command {command:?} was terminated by a signal"
+        );
+        assert_ne!(
+            output.status.code(),
+            Some(2),
+            "advertised command {command:?} was rejected"
+        );
+        assert!(
+            !stderr.contains("unrecognized argument"),
+            "advertised command {command:?} was reported as unrecognized: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn help_omits_later_spec_surface_vocabulary() {
+    let output = Command::new(env!("CARGO_BIN_EXE_matinee"))
+        .arg("--help")
+        .output()
+        .expect("run matinee --help");
+    let help = String::from_utf8(output.stdout)
+        .expect("help output is UTF-8")
+        .to_ascii_lowercase();
+
+    for term in [
+        "setup",
+        "status",
+        "stop",
+        "mcp",
+        "diagnostics",
+        "uninstall",
+        "daemon",
+        "extension",
+        "endpoint",
+        "tool",
+        "automation",
+        "workflow",
+    ] {
+        assert!(
+            !help.contains(term),
+            "help unexpectedly advertises later-spec surface term {term:?}"
+        );
+    }
+}
+
+fn advertised_entries(help: &str, heading: &str) -> Vec<(String, String)> {
+    let mut lines = help.lines();
+    assert!(
+        lines.by_ref().any(|line| line == heading),
+        "help is missing {heading:?} section"
+    );
+
+    lines
+        .take_while(|line| !line.is_empty())
+        .map(|line| {
+            let line = line.trim_start();
+            let (label, description) = line
+                .split_once("  ")
+                .expect("help entry has label and description");
+            (label.trim().to_owned(), description.trim().to_owned())
+        })
+        .collect()
+}
