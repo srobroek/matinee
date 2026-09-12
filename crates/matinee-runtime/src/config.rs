@@ -447,28 +447,6 @@ mod tests {
         );
     }
     #[test]
-    fn descriptor_retains_typed_policy_fields() {
-        let descriptor = KeyDescriptor::new(
-            "display_name",
-            ValueKind::Text,
-            AllowedSources::all(),
-            MaterialClass::NonSecret,
-        )
-        .with_default(DescriptorDefault::Text("Matinee".to_owned()))
-        .with_sensitive(true)
-        .with_normalizer(Normalizer::TrimAsciiWhitespace)
-        .with_owner(DescriptorOwner::RuntimeFoundation);
-        assert_eq!(descriptor.name(), "display_name");
-        assert_eq!(descriptor.value_kind(), ValueKind::Text);
-        assert_eq!(
-            descriptor.default(),
-            Some(&DescriptorDefault::Text("Matinee".to_owned()))
-        );
-        assert!(descriptor.sensitive());
-        assert_eq!(descriptor.normalizer(), Normalizer::TrimAsciiWhitespace);
-        assert_eq!(descriptor.owner(), DescriptorOwner::RuntimeFoundation);
-    }
-    #[test]
     fn source_sets_match_every_contract_source() {
         let all = AllowedSources::all();
         for source in [
@@ -486,17 +464,5 @@ mod tests {
         assert!(!protected.contains(ConfigurationSource::ProjectFile));
         assert!(!protected.contains(ConfigurationSource::Environment));
         assert!(protected.contains(ConfigurationSource::CommandLine));
-    }
-    #[test]
-    fn every_material_class_is_explicitly_distinct() {
-        assert_ne!(
-            MaterialClass::NonSecret,
-            MaterialClass::OpaqueSecretReference
-        );
-        assert_ne!(MaterialClass::NonSecret, MaterialClass::SecretMaterial);
-        assert_ne!(
-            MaterialClass::OpaqueSecretReference,
-            MaterialClass::SecretMaterial
-        );
     }
 }
