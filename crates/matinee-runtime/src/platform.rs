@@ -322,6 +322,8 @@ pub(crate) struct FixturePlatform {
     default_case_behavior: CaseBehavior,
     default_unicode_normalization: UnicodeNormalization,
     anchor_policies: BTreeMap<PathBuf, AnchorPolicy>,
+    case_behavior_error: Option<ConfigurationFailure>,
+    unicode_normalization_error: Option<ConfigurationFailure>,
 }
 
 impl FixturePlatform {
@@ -372,6 +374,8 @@ impl FixturePlatform {
             default_case_behavior: case_behavior,
             default_unicode_normalization: unicode_normalization,
             anchor_policies: BTreeMap::new(),
+            case_behavior_error: None,
+            unicode_normalization_error: None,
         }
     }
 
@@ -474,6 +478,19 @@ impl FixturePlatform {
         self
     }
 
+    pub(crate) fn with_case_behavior_error(mut self, failure: ConfigurationFailure) -> Self {
+        self.case_behavior_error = Some(failure);
+        self
+    }
+
+    pub(crate) fn with_unicode_normalization_error(
+        mut self,
+        failure: ConfigurationFailure,
+    ) -> Self {
+        self.unicode_normalization_error = Some(failure);
+        self
+    }
+
     fn policy_for(&self, anchor: &Path) -> AnchorPolicy {
         self.anchor_policies
             .iter()
@@ -529,6 +546,9 @@ impl Platform for FixturePlatform {
     }
 
     fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
+        if let Some(failure) = self.case_behavior_error {
+            return Err(failure);
+        }
         Ok(self.policy_for(anchor).case_behavior)
     }
 
@@ -536,6 +556,9 @@ impl Platform for FixturePlatform {
         &self,
         anchor: &Path,
     ) -> Result<UnicodeNormalization, ConfigurationFailure> {
+        if let Some(failure) = self.unicode_normalization_error {
+            return Err(failure);
+        }
         Ok(self.policy_for(anchor).unicode_normalization)
     }
 }
@@ -605,23 +628,11 @@ fn existing_anchor(anchor: &Path) -> Result<PathBuf, ConfigurationFailure> {
     if !anchor.is_absolute() {
         return Err(path_unavailable());
     }
-    let mut candidate = anchor.to_path_buf();
-    loop {
-        match fs::metadata(&candidate) {
-            Ok(metadata) if metadata.is_dir() => return Ok(candidate),
-            Ok(_) => {
-                candidate.pop();
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if !candidate.pop() {
-                    return Err(path_unavailable());
-                }
-            }
-            Err(_) => return Err(file_unreadable()),
-        }
-        if candidate.as_os_str().is_empty() {
-            return Err(path_unavailable());
-        }
+    match fs::metadata(anchor) {
+        Ok(metadata) if metadata.is_dir() => Ok(anchor.to_path_buf()),
+        Ok(_) => Err(path_unavailable()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(path_unavailable()),
+        Err(_) => Err(file_unreadable()),
     }
 }
 
@@ -762,6 +773,153 @@ mod tests {
         )
     }
 
+    fn independent_identity(path: &Path) -> Result<Option<FileIdentity>, ConfigurationFailure> {
+        match fs::metadata(path) {
+            Ok(metadata) => file_identity(&metadata)
+                .map(Some)
+                .ok_or_else(file_unreadable),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(file_unreadable()),
+        }
+    }
+
+    fn independent_case_behavior(anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
+        if !anchor.is_absolute() {
+            return Err(path_unavailable());
+        }
+        let metadata = fs::metadata(anchor).map_err(|_| file_unreadable())?;
+        if !metadata.is_dir() {
+            return Err(path_unavailable());
+        }
+        let anchor_identity = file_identity(&metadata).ok_or_else(file_unreadable)?;
+        let name = anchor
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(file_unreadable)?;
+        let mut changed = false;
+        let flipped_name: String = name
+            .chars()
+            .map(|character| {
+                if character.is_ascii_lowercase() {
+                    changed = true;
+                    character.to_ascii_uppercase()
+                } else if character.is_ascii_uppercase() {
+                    changed = true;
+                    character.to_ascii_lowercase()
+                } else {
+                    character
+                }
+            })
+            .collect();
+        if !changed {
+            return Err(file_unreadable());
+        }
+        let mut flipped = anchor.to_path_buf();
+        flipped.set_file_name(flipped_name);
+        match independent_identity(&flipped)? {
+            Some(flipped_identity) if flipped_identity == anchor_identity => {
+                Ok(CaseBehavior::Insensitive)
+            }
+            Some(_) | None => Ok(CaseBehavior::Sensitive),
+        }
+    }
+
+    fn independent_unicode_normalization(
+        anchor: &Path,
+    ) -> Result<UnicodeNormalization, ConfigurationFailure> {
+        if !anchor.is_absolute() {
+            return Err(path_unavailable());
+        }
+        let metadata = fs::metadata(anchor).map_err(|_| file_unreadable())?;
+        if !metadata.is_dir() {
+            return Err(path_unavailable());
+        }
+        let mut directory = anchor.to_path_buf();
+        loop {
+            for entry in fs::read_dir(&directory).map_err(|_| file_unreadable())? {
+                let entry = entry.map_err(|_| file_unreadable())?;
+                let name = entry.file_name();
+                let Some(text) = name.to_str() else {
+                    continue;
+                };
+                let variants = if text.contains('\u{00e9}') {
+                    Some((
+                        OsString::from(text),
+                        OsString::from(text.replace('\u{00e9}', "e\u{0301}")),
+                    ))
+                } else if text.contains("e\u{0301}") {
+                    Some((
+                        OsString::from(text.replace("e\u{0301}", "\u{00e9}")),
+                        OsString::from(text),
+                    ))
+                } else {
+                    None
+                };
+                let Some((composed, decomposed)) = variants else {
+                    continue;
+                };
+                let composed_identity = independent_identity(&directory.join(composed))?;
+                let decomposed_identity = independent_identity(&directory.join(decomposed))?;
+                return Ok(match (composed_identity, decomposed_identity) {
+                    (Some(left), Some(right)) if left == right => {
+                        UnicodeNormalization::CanonicalDecomposed
+                    }
+                    _ => UnicodeNormalization::Preserve,
+                });
+            }
+            let Some(parent) = directory.parent() else {
+                break;
+            };
+            if parent == directory {
+                break;
+            }
+            directory = parent.to_path_buf();
+        }
+        Err(file_unreadable())
+    }
+
+    fn assert_case_probe_result(
+        actual: Result<CaseBehavior, ConfigurationFailure>,
+        independent: Result<CaseBehavior, ConfigurationFailure>,
+    ) {
+        match actual {
+            Ok(actual) => assert_eq!(independent, Ok(actual)),
+            Err(failure) => assert!(matches!(
+                failure.code(),
+                ConfigurationFailureCode::FileUnreadable
+                    | ConfigurationFailureCode::PathUnavailable
+            )),
+        }
+    }
+
+    fn assert_unicode_probe_result(
+        actual: Result<UnicodeNormalization, ConfigurationFailure>,
+        independent: Result<UnicodeNormalization, ConfigurationFailure>,
+    ) {
+        match actual {
+            Ok(actual) => assert_eq!(independent, Ok(actual)),
+            Err(failure) => assert!(matches!(
+                failure.code(),
+                ConfigurationFailureCode::FileUnreadable
+                    | ConfigurationFailureCode::PathUnavailable
+            )),
+        }
+    }
+
+    fn propagate_case_query<P: Platform>(
+        platform: &P,
+        anchor: &Path,
+    ) -> Result<bool, ConfigurationFailure> {
+        Ok(platform.components_equal(anchor, "Config", "config")?)
+    }
+
+    fn propagate_unicode_query<P: Platform>(
+        platform: &P,
+        anchor: &Path,
+    ) -> Result<UnicodeNormalization, ConfigurationFailure> {
+        Ok(platform.unicode_normalization(anchor)?)
+    }
+
     #[test]
     fn fixture_covers_macos_linux_and_windows_directory_shapes() {
         let cases = [
@@ -885,6 +1043,12 @@ mod tests {
         );
         assert_eq!(
             platform
+                .file_snapshot(Path::new("/fixture/home/missing/unconfigured.toml"))
+                .expect("an unconfigured absent path is not a failure"),
+            None
+        );
+        assert_eq!(
+            platform
                 .file_snapshot(Path::new("/fixture/home"))
                 .expect_err("inaccessible existing ancestor rejects")
                 .code(),
@@ -992,6 +1156,28 @@ mod tests {
     }
 
     #[test]
+    fn fixture_policy_errors_are_closed_and_propagate_through_callers() {
+        let case_failure = file_unreadable();
+        let unicode_failure = path_unavailable();
+        let platform = FixturePlatform::new(PlatformKind::Linux)
+            .with_case_behavior_error(case_failure)
+            .with_unicode_normalization_error(unicode_failure);
+        let anchor = Path::new("/fixture/linux");
+        assert_eq!(
+            propagate_case_query(&platform, anchor)
+                .expect_err("caller must propagate scripted case failure")
+                .code(),
+            case_failure.code(),
+        );
+        assert_eq!(
+            propagate_unicode_query(&platform, anchor)
+                .expect_err("caller must propagate scripted Unicode failure")
+                .code(),
+            unicode_failure.code(),
+        );
+    }
+
+    #[test]
     fn fixture_base_directory_failure_and_override_are_scriptable() {
         let override_bases = BaseDirectories {
             home: PathBuf::from("/override/home"),
@@ -1017,32 +1203,39 @@ mod tests {
 
 
     #[test]
-    fn host_reports_case_behavior_for_a_real_anchor() {
+    fn host_case_behavior_matches_anchor_identity_probe_or_closes() {
         let host = HostPlatform::new().expect("host platform");
         let anchor = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let behavior = host
-            .case_behavior(anchor)
-            .expect("case behavior is readable for repository anchor");
-        let probed = probe_case_behavior(anchor).expect("independent case probe");
-        assert_eq!(probed, CaseBehavior::Insensitive);
-        assert_eq!(behavior, probed);
-        assert_eq!(
-            host.components_equal(anchor, "Config", "config")
-                .expect("case comparison is readable for repository anchor"),
-            behavior == CaseBehavior::Insensitive,
-        );
+        let independent = independent_case_behavior(anchor);
+        assert_case_probe_result(host.case_behavior(anchor), independent);
     }
 
     #[test]
-    fn host_unicode_probe_is_read_only_and_closed_when_no_pair_exists() {
+    fn host_unicode_normalization_matches_anchor_identity_probe_or_closes() {
         let host = HostPlatform::new().expect("host platform");
         let anchor = Path::new(env!("CARGO_MANIFEST_DIR"));
-        match host.unicode_normalization(anchor) {
-            Ok(policy) => assert!(matches!(
-                policy,
-                UnicodeNormalization::Preserve | UnicodeNormalization::CanonicalDecomposed
-            )),
-            Err(failure) => assert_eq!(failure.code(), ConfigurationFailureCode::FileUnreadable),
+        let independent = independent_unicode_normalization(anchor);
+        assert_unicode_probe_result(host.unicode_normalization(anchor), independent);
+    }
+
+    #[test]
+    fn host_policy_queries_reject_relative_and_nonexistent_anchors() {
+        let host = HostPlatform::new().expect("host platform");
+        let missing = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("__matinee_missing_policy_anchor_7c7f3d");
+        for anchor in [Path::new("relative"), missing.as_path()] {
+            assert_eq!(
+                host.case_behavior(anchor)
+                    .expect_err("relative or missing case anchor must close")
+                    .code(),
+                ConfigurationFailureCode::PathUnavailable,
+            );
+            assert_eq!(
+                host.unicode_normalization(anchor)
+                    .expect_err("relative or missing Unicode anchor must close")
+                    .code(),
+                ConfigurationFailureCode::PathUnavailable,
+            );
         }
     }
 
