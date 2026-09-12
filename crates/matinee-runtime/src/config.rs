@@ -7,13 +7,84 @@
 
 use crate::environment::{AcceptedKey, ConfigurationSource, Provenance, RelativePath};
 use crate::error::{
-    ConfigurationFailure, ConfigurationFailureCode, FailureSource, RedactedFileOrigin,
+    ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
+use crate::platform::{CaseBehavior, Platform, UnicodeNormalization};
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
+
+const ENVIRONMENT_PREFIX: &str = "MATINEE_";
+
+fn canonical_decomposed(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\u{00c9}' => result.push_str("E\u{0301}"),
+            '\u{00e9}' => result.push_str("e\u{0301}"),
+            _ => result.push(character),
+        }
+    }
+    result
+}
+
+fn normalized_environment_name<P: Platform + ?Sized>(
+    platform: &P,
+    anchor: &Path,
+    raw: &OsStr,
+) -> Result<Option<String>, ConfigurationFailure> {
+    let Some(raw) = raw.to_str() else {
+        return Ok(None);
+    };
+    let native_normalization = platform.unicode_normalization(anchor)?;
+    let case_behavior = platform.case_behavior(anchor)?;
+    let mut normalized = match native_normalization {
+        UnicodeNormalization::Preserve => raw.to_owned(),
+        UnicodeNormalization::CanonicalDecomposed => canonical_decomposed(raw),
+    };
+    if case_behavior == CaseBehavior::Insensitive {
+        normalized = normalized.to_lowercase();
+    }
+
+    let prefix_length = ENVIRONMENT_PREFIX.chars().count();
+    let candidate_prefix: String = normalized.chars().take(prefix_length).collect();
+    if candidate_prefix.chars().count() != prefix_length
+        || !platform.components_equal(anchor, &candidate_prefix, ENVIRONMENT_PREFIX)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(normalized))
+}
+
+fn environment_key(normalized_name: &str) -> Result<String, ConfigurationFailure> {
+    let prefix_length = ENVIRONMENT_PREFIX.chars().count();
+    let remainder: String = normalized_name.chars().skip(prefix_length).collect();
+    if remainder.is_empty() {
+        return Err(ConfigurationFailure::unknown_key(FailureSource::Layer(
+            LayerClass::Environment,
+        )));
+    }
+    let segments: Vec<_> = remainder.split("__").collect();
+    if segments.len() > MAX_DOTTED_SEGMENTS {
+        return Err(ConfigurationFailure::new(
+            ConfigurationFailureCode::LimitExceeded,
+            FailureSource::Layer(LayerClass::Environment),
+        ));
+    }
+    if segments.iter().any(|segment| segment.is_empty()) {
+        return Err(ConfigurationFailure::unknown_key(FailureSource::Layer(
+            LayerClass::Environment,
+        )));
+    }
+    Ok(segments
+        .into_iter()
+        .map(|segment| segment.to_lowercase())
+        .collect::<Vec<_>>()
+        .join("."))
+}
 
 /// The maximum number of descriptors accepted by one registry.
 #[allow(dead_code)]
@@ -359,6 +430,38 @@ impl ConfigurationLayer {
             LayerOrigin::Environment,
             entries,
         )
+    }
+
+    pub(crate) fn from_environment<P: Platform + ?Sized>(
+        platform: &P,
+        anchor: &Path,
+    ) -> Result<Self, ConfigurationFailure> {
+        let mut entries = Vec::new();
+        let mut first_source_by_key = BTreeMap::new();
+        for (raw_name, raw_value) in platform.environment_variables() {
+            let Some(normalized_name) = normalized_environment_name(platform, anchor, &raw_name)?
+            else {
+                continue;
+            };
+            let key = environment_key(&normalized_name)?;
+            if first_source_by_key
+                .insert(key.clone(), normalized_name)
+                .is_some()
+            {
+                return Err(ConfigurationFailure::new(
+                    ConfigurationFailureCode::KeyDuplicate,
+                    FailureSource::Layer(LayerClass::Environment),
+                ));
+            }
+            let value = raw_value.to_str().ok_or_else(|| {
+                ConfigurationFailure::new(
+                    ConfigurationFailureCode::ValueInvalid,
+                    FailureSource::Layer(LayerClass::Environment),
+                )
+            })?;
+            entries.push((key, TomlValue::String(value.to_owned())));
+        }
+        Ok(Self::environment(entries))
     }
 
     pub(crate) fn command_line(entries: impl IntoIterator<Item = (String, TomlValue)>) -> Self {
@@ -1874,6 +1977,136 @@ mod tests {
         let failure = toml_lexical_preflight(b"first.value = 1\nfirst = { value = 2 }\n", source)
             .expect_err("a dotted key and inline table cannot collide");
         assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    }
+    #[test]
+    fn environment_names_map_after_platform_normalization() {
+        let platform = crate::platform::FixturePlatform::new(crate::platform::PlatformKind::Linux)
+            .with_environment("MATINEE_DAEMON__ENDPOINT", "canonical")
+            .with_anchor_policy(
+                "/fixture/linux",
+                CaseBehavior::Sensitive,
+                UnicodeNormalization::Preserve,
+            );
+        let layer = ConfigurationLayer::from_environment(&platform, Path::new("/fixture/linux"))
+            .expect("canonical environment name should map");
+        let registry = DescriptorRegistry::new(vec![descriptor("daemon.endpoint")]).unwrap();
+        let resolved = registry
+            .merge_layers([layer])
+            .expect("mapped environment value should merge");
+        let setting = resolved
+            .get("daemon.endpoint")
+            .expect("dotted environment key should be present");
+        assert_eq!(setting.value(), &text("canonical"));
+        assert_eq!(setting.source(), ConfigurationSource::Environment);
+        assert_eq!(setting.provenance().key(), Some("daemon.endpoint"));
+    }
+
+    #[test]
+    fn environment_name_case_follows_platform_comparison() {
+        let windows = crate::platform::FixturePlatform::new(crate::platform::PlatformKind::Windows)
+            .with_environment("matinee_daemon__endpoint", "windows")
+            .with_anchor_policy(
+                "/fixture/windows",
+                CaseBehavior::Insensitive,
+                UnicodeNormalization::Preserve,
+            );
+        let windows_layer =
+            ConfigurationLayer::from_environment(&windows, Path::new("/fixture/windows"))
+                .expect("Windows name comparison should accept case aliases");
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("daemon.endpoint")
+                .with_default(DescriptorDefault::Text("default".to_owned())),
+        ])
+        .unwrap();
+        let windows_result = registry
+            .merge_layers([windows_layer])
+            .expect("Windows environment should merge");
+        assert_eq!(
+            windows_result.get("daemon.endpoint").unwrap().value(),
+            &text("windows")
+        );
+
+        let linux = crate::platform::FixturePlatform::new(crate::platform::PlatformKind::Linux)
+            .with_environment("matinee_daemon__endpoint", "linux")
+            .with_anchor_policy(
+                "/fixture/linux",
+                CaseBehavior::Sensitive,
+                UnicodeNormalization::Preserve,
+            );
+        let linux_layer = ConfigurationLayer::from_environment(&linux, Path::new("/fixture/linux"))
+            .expect("non-native case alias should be ignored");
+        let linux_result = registry
+            .merge_layers([linux_layer])
+            .expect("ignored Linux alias should leave the default");
+        assert_eq!(
+            linux_result.get("daemon.endpoint").unwrap().value(),
+            &text("default")
+        );
+    }
+
+    #[test]
+    fn environment_name_unicode_normalization_uses_platform_policy() {
+        let composed = crate::platform::FixturePlatform::new(crate::platform::PlatformKind::MacOs)
+            .with_environment("MATINEE_CAFÉ", "composed")
+            .with_anchor_policy(
+                "/fixture/macos",
+                CaseBehavior::Insensitive,
+                UnicodeNormalization::CanonicalDecomposed,
+            );
+        let decomposed =
+            crate::platform::FixturePlatform::new(crate::platform::PlatformKind::MacOs)
+                .with_environment("MATINEE_CAFE\u{0301}", "decomposed")
+                .with_anchor_policy(
+                    "/fixture/macos",
+                    CaseBehavior::Insensitive,
+                    UnicodeNormalization::CanonicalDecomposed,
+                );
+        let registry = DescriptorRegistry::new(vec![descriptor("cafe\u{0301}")]).unwrap();
+
+        for (platform, expected) in [(&composed, "composed"), (&decomposed, "decomposed")] {
+            let layer = ConfigurationLayer::from_environment(platform, Path::new("/fixture/macos"))
+                .expect("macOS Unicode aliases should normalize");
+            let resolved = registry
+                .merge_layers([layer])
+                .expect("normalized key should merge");
+            assert_eq!(
+                resolved.get("cafe\u{0301}").unwrap().value(),
+                &text(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn environment_name_aliases_fail_as_duplicate_after_normalization() {
+        let platform =
+            crate::platform::FixturePlatform::new(crate::platform::PlatformKind::Windows)
+                .with_environment("MATINEE_DAEMON__ENDPOINT", "first")
+                .with_environment("matinee_daemon__endpoint", "second")
+                .with_anchor_policy(
+                    "/fixture/windows",
+                    CaseBehavior::Insensitive,
+                    UnicodeNormalization::Preserve,
+                );
+        let failure =
+            ConfigurationLayer::from_environment(&platform, Path::new("/fixture/windows"))
+                .expect_err("native aliases must not silently choose a winner");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+        assert_eq!(failure.source().as_str(), "environment");
+    }
+
+    #[test]
+    fn environment_name_segment_limit_is_checked_before_merge() {
+        let platform = crate::platform::FixturePlatform::new(crate::platform::PlatformKind::Linux)
+            .with_environment("MATINEE_A__B__C__D__E", "too-deep")
+            .with_anchor_policy(
+                "/fixture/linux",
+                CaseBehavior::Sensitive,
+                UnicodeNormalization::Preserve,
+            );
+        let failure = ConfigurationLayer::from_environment(&platform, Path::new("/fixture/linux"))
+            .expect_err("five environment segments exceed the contract");
+        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+        assert_eq!(failure.source().as_str(), "environment");
     }
 
     #[test]
