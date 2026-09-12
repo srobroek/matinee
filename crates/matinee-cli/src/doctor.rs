@@ -38,10 +38,30 @@ struct DoctorResult {
     outcome: ExitCode,
 }
 
-struct DoctorOutput {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    outcome: ExitCode,
+fn emit_doctor_output<W: Write, E: Write>(
+    result: &DoctorResult,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> ExitCode {
+    for row in &result.rows {
+        stdout
+            .write_all(row.as_bytes())
+            .expect("write doctor stdout");
+        stdout
+            .write_all(b"\n")
+            .expect("write doctor stdout");
+    }
+
+    if let Some(diagnostic) = result.diagnostic {
+        stderr
+            .write_all(diagnostic.as_bytes())
+            .expect("write doctor stderr");
+        stderr
+            .write_all(b"\n")
+            .expect("write doctor stderr");
+    }
+
+    result.outcome
 }
 
 pub(crate) fn doctor() -> ExitCode {
@@ -50,41 +70,10 @@ pub(crate) fn doctor() -> ExitCode {
         path: env::var_os("PATH"),
     });
     let result = doctor_with_discovery(discoveries);
-    let output = render_doctor_output(&result);
 
     let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(&output.stdout)
-        .expect("write doctor stdout");
-    drop(stdout);
-
     let mut stderr = io::stderr().lock();
-    stderr
-        .write_all(&output.stderr)
-        .expect("write doctor stderr");
-
-    output.outcome
-}
-
-fn render_doctor_output(result: &DoctorResult) -> DoctorOutput {
-    let mut stdout = Vec::new();
-    for row in &result.rows {
-        stdout.extend_from_slice(row.as_bytes());
-        stdout.push(b'\n');
-    }
-
-    let stderr = result.diagnostic.map_or_else(Vec::new, |diagnostic| {
-        let mut stderr = Vec::with_capacity(diagnostic.len() + 1);
-        stderr.extend_from_slice(diagnostic.as_bytes());
-        stderr.push(b'\n');
-        stderr
-    });
-
-    DoctorOutput {
-        stdout,
-        stderr,
-        outcome: result.outcome,
-    }
+    emit_doctor_output(&result, &mut stdout, &mut stderr)
 }
 
 fn doctor_with_discovery(discoveries: [DiscoveryEnvironment; 2]) -> DoctorResult {
@@ -349,13 +338,16 @@ mod tests {
         create_executable(&firefox_path);
         create_executable(&chrome_path);
 
-        let output = render_doctor_output(&doctor_with_discovery([
+        let result = doctor_with_discovery([
             discovery(vec![firefox_path.clone()], None),
             discovery(vec![chrome_path.clone()], None),
-        ]));
+        ]);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let outcome = emit_doctor_output(&result, &mut stdout, &mut stderr);
 
         assert_eq!(
-            output.stdout,
+            stdout,
             format!(
                 "Firefox\t{}\nGoogle Chrome\t{}\n",
                 firefox_path.display(),
@@ -363,22 +355,25 @@ mod tests {
             )
             .into_bytes()
         );
-        assert_eq!(output.stderr, b"");
-        assert_eq!(output.outcome, ExitCode::SUCCESS);
+        assert_eq!(stderr, b"");
+        assert_eq!(outcome, ExitCode::SUCCESS);
     }
 
     #[test]
     fn doctor_reports_no_browser_failure_through_injected_discovery() {
-        let output = render_doctor_output(&doctor_with_discovery([
+        let result = doctor_with_discovery([
             discovery(Vec::new(), None),
             discovery(Vec::new(), None),
-        ]));
+        ]);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let outcome = emit_doctor_output(&result, &mut stdout, &mut stderr);
 
-        assert_eq!(output.stdout, b"Firefox\tnot found\nGoogle Chrome\tnot found\n");
+        assert_eq!(stdout, b"Firefox\tnot found\nGoogle Chrome\tnot found\n");
         assert_eq!(
-            output.stderr,
+            stderr,
             b"no supported browser found; install Firefox or Google Chrome\n"
         );
-        assert_eq!(output.outcome, ExitCode::FAILURE);
+        assert_eq!(outcome, ExitCode::FAILURE);
     }
 }
