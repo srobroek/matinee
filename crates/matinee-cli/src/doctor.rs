@@ -29,29 +29,50 @@ const BROWSERS: [Browser; 2] = [
     },
 ];
 
+struct DoctorResult {
+    rows: Vec<String>,
+    outcome: ExitCode,
+}
+
 pub(crate) fn doctor() -> ExitCode {
-    let mut found = 0;
+    let discoveries = BROWSERS.map(|browser| DiscoveryEnvironment {
+        fixed_paths: (browser.fixed_paths)(),
+        path: env::var_os("PATH"),
+    });
+    let result = doctor_with_discovery(discoveries);
 
-    for browser in &BROWSERS {
-        let discovery = DiscoveryEnvironment {
-            fixed_paths: (browser.fixed_paths)(),
-            path: env::var_os("PATH"),
-        };
+    for row in result.rows {
+        println!("{row}");
+    }
 
+    if result.outcome == ExitCode::FAILURE {
+        eprintln!("no supported browser found; install Firefox or Google Chrome");
+    }
+
+    result.outcome
+}
+
+fn doctor_with_discovery(discoveries: [DiscoveryEnvironment; 2]) -> DoctorResult {
+    let mut rows = Vec::with_capacity(BROWSERS.len());
+    let mut found = false;
+
+    for (browser, discovery) in BROWSERS.iter().zip(discoveries) {
         match find_browser(browser, discovery) {
             Some(path) => {
-                println!("{}\t{}", browser.name, path.display());
-                found += 1;
+                rows.push(format!("{}\t{}", browser.name, path.display()));
+                found = true;
             }
-            None => println!("{}\tnot found", browser.name),
+            None => rows.push(format!("{}\tnot found", browser.name)),
         }
     }
 
-    if found == 0 {
-        eprintln!("no supported browser found; install Firefox or Google Chrome");
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
+    DoctorResult {
+        rows,
+        outcome: if found {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        },
     }
 }
 
@@ -278,5 +299,16 @@ mod tests {
         );
 
         assert_eq!(found, Some(fixed_path));
+    }
+
+    #[test]
+    fn doctor_reaches_no_browser_outcome_through_injected_discovery() {
+        let result = doctor_with_discovery([
+            discovery(Vec::new(), None),
+            discovery(Vec::new(), None),
+        ]);
+
+        assert_eq!(result.rows, ["Firefox\tnot found", "Google Chrome\tnot found"]);
+        assert_eq!(result.outcome, ExitCode::FAILURE);
     }
 }
