@@ -6,7 +6,9 @@
 //! policy, and value shape.
 
 use crate::environment::{AcceptedKey, ConfigurationSource, Provenance, RelativePath};
-use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
+use crate::error::{
+    ConfigurationFailure, ConfigurationFailureCode, FailureSource, RedactedFileOrigin,
+};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
@@ -326,17 +328,29 @@ impl ConfigurationLayer {
     pub(crate) fn user_file(
         path: impl Into<PathBuf>,
         entries: impl IntoIterator<Item = (String, TomlValue)>,
-    ) -> Option<Self> {
-        let origin = LayerOrigin::UserFile(RelativePath::new(path.into())?);
-        Some(Self::new(ConfigurationSource::UserFile, origin, entries))
+    ) -> Result<Self, ConfigurationFailure> {
+        let Some(path) = RelativePath::new(path.into()) else {
+            return Err(ConfigurationFailure::new(
+                ConfigurationFailureCode::PathUnavailable,
+                FailureSource::File(RedactedFileOrigin::UserConfiguration),
+            ));
+        };
+        let origin = LayerOrigin::UserFile(path);
+        Ok(Self::new(ConfigurationSource::UserFile, origin, entries))
     }
 
     pub(crate) fn project_file(
         path: impl Into<PathBuf>,
         entries: impl IntoIterator<Item = (String, TomlValue)>,
-    ) -> Option<Self> {
-        let origin = LayerOrigin::ProjectFile(RelativePath::new(path.into())?);
-        Some(Self::new(ConfigurationSource::ProjectFile, origin, entries))
+    ) -> Result<Self, ConfigurationFailure> {
+        let Some(path) = RelativePath::new(path.into()) else {
+            return Err(ConfigurationFailure::new(
+                ConfigurationFailureCode::ProjectEscape,
+                FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+            ));
+        };
+        let origin = LayerOrigin::ProjectFile(path);
+        Ok(Self::new(ConfigurationSource::ProjectFile, origin, entries))
     }
 
     pub(crate) fn environment(entries: impl IntoIterator<Item = (String, TomlValue)>) -> Self {
@@ -1963,6 +1977,257 @@ mod tests {
     }
 
     #[test]
+    fn merge_layers_pins_each_adjacent_precedence_edge_in_permuted_order() {
+        let cases = vec![
+            (
+                "default-user",
+                DescriptorRegistry::new(vec![
+                    descriptor("setting")
+                        .with_default(DescriptorDefault::Text("default".to_owned())),
+                ])
+                .unwrap(),
+                vec![
+                    ConfigurationLayer::user_file(
+                        "user.toml",
+                        vec![("setting".to_owned(), text("user"))],
+                    )
+                    .unwrap(),
+                ],
+                "user",
+                ConfigurationSource::UserFile,
+            ),
+            (
+                "user-project",
+                DescriptorRegistry::new(vec![descriptor("setting")]).unwrap(),
+                vec![
+                    ConfigurationLayer::project_file(
+                        "project.toml",
+                        vec![("setting".to_owned(), text("project"))],
+                    )
+                    .unwrap(),
+                    ConfigurationLayer::user_file(
+                        "user.toml",
+                        vec![("setting".to_owned(), text("user"))],
+                    )
+                    .unwrap(),
+                ],
+                "project",
+                ConfigurationSource::ProjectFile,
+            ),
+            (
+                "project-environment",
+                DescriptorRegistry::new(vec![descriptor("setting")]).unwrap(),
+                vec![
+                    ConfigurationLayer::environment(vec![(
+                        "setting".to_owned(),
+                        text("environment"),
+                    )]),
+                    ConfigurationLayer::project_file(
+                        "project.toml",
+                        vec![("setting".to_owned(), text("project"))],
+                    )
+                    .unwrap(),
+                ],
+                "environment",
+                ConfigurationSource::Environment,
+            ),
+            (
+                "environment-command-line",
+                DescriptorRegistry::new(vec![descriptor("setting")]).unwrap(),
+                vec![
+                    ConfigurationLayer::command_line(vec![("setting".to_owned(), text("command"))]),
+                    ConfigurationLayer::environment(vec![(
+                        "setting".to_owned(),
+                        text("environment"),
+                    )]),
+                ],
+                "command",
+                ConfigurationSource::CommandLine,
+            ),
+        ];
+
+        for (edge, registry, layers, expected_value, expected_source) in cases {
+            let result = registry
+                .merge_layers(layers)
+                .unwrap_or_else(|_| panic!("{edge} edge should resolve"));
+            let setting = result.get("setting").expect("winning setting is present");
+            assert_eq!(setting.value(), &text(expected_value), "{edge} winner");
+            assert_eq!(setting.source(), expected_source, "{edge} source");
+        }
+    }
+
+    #[test]
+    fn merge_layers_empty_layers_preserve_standing_lower_winners() {
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("setting").with_default(DescriptorDefault::Text("default".to_owned())),
+        ])
+        .unwrap();
+        let empty: Vec<(String, TomlValue)> = Vec::new();
+        let cases = vec![
+            (
+                "default",
+                vec![ConfigurationLayer::defaults(empty.clone())],
+                "default",
+                ConfigurationSource::Default,
+            ),
+            (
+                "user",
+                vec![ConfigurationLayer::user_file("user.toml", empty.clone()).unwrap()],
+                "default",
+                ConfigurationSource::Default,
+            ),
+            (
+                "project",
+                vec![
+                    ConfigurationLayer::user_file(
+                        "user.toml",
+                        vec![("setting".to_owned(), text("user"))],
+                    )
+                    .unwrap(),
+                    ConfigurationLayer::project_file("project.toml", empty.clone()).unwrap(),
+                ],
+                "user",
+                ConfigurationSource::UserFile,
+            ),
+            (
+                "environment",
+                vec![
+                    ConfigurationLayer::user_file(
+                        "user.toml",
+                        vec![("setting".to_owned(), text("user"))],
+                    )
+                    .unwrap(),
+                    ConfigurationLayer::project_file(
+                        "project.toml",
+                        vec![("setting".to_owned(), text("project"))],
+                    )
+                    .unwrap(),
+                    ConfigurationLayer::environment(empty.clone()),
+                ],
+                "project",
+                ConfigurationSource::ProjectFile,
+            ),
+            (
+                "command-line",
+                vec![
+                    ConfigurationLayer::user_file(
+                        "user.toml",
+                        vec![("setting".to_owned(), text("user"))],
+                    )
+                    .unwrap(),
+                    ConfigurationLayer::project_file(
+                        "project.toml",
+                        vec![("setting".to_owned(), text("project"))],
+                    )
+                    .unwrap(),
+                    ConfigurationLayer::environment(vec![(
+                        "setting".to_owned(),
+                        text("environment"),
+                    )]),
+                    ConfigurationLayer::command_line(empty),
+                ],
+                "environment",
+                ConfigurationSource::Environment,
+            ),
+        ];
+
+        for (layer_name, layers, expected_value, expected_source) in cases {
+            let result = registry
+                .merge_layers(layers)
+                .unwrap_or_else(|_| panic!("empty {layer_name} layer should resolve"));
+            let setting = result.get("setting").expect("standing setting is present");
+            assert_eq!(
+                setting.value(),
+                &text(expected_value),
+                "empty {layer_name} value"
+            );
+            assert_eq!(
+                setting.source(),
+                expected_source,
+                "empty {layer_name} source"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_layers_without_layers_returns_descriptor_default() {
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("setting").with_default(DescriptorDefault::Text("default".to_owned())),
+        ])
+        .unwrap();
+
+        let result = registry
+            .merge_layers(std::iter::empty::<ConfigurationLayer>())
+            .expect("default-only resolution should succeed");
+        let setting = result
+            .get("setting")
+            .expect("descriptor default is present");
+        assert_eq!(setting.value(), &text("default"));
+        assert_eq!(setting.source(), ConfigurationSource::Default);
+        assert_eq!(setting.provenance().source(), ConfigurationSource::Default);
+    }
+
+    #[test]
+    fn merge_layers_rejects_same_source_key_across_layers() {
+        let registry = DescriptorRegistry::new(vec![descriptor("setting")]).unwrap();
+        let layers = vec![
+            ConfigurationLayer::environment(vec![("setting".to_owned(), text("first"))]),
+            ConfigurationLayer::environment(vec![("setting".to_owned(), text("second"))]),
+        ];
+
+        let failure = registry
+            .merge_layers(layers)
+            .expect_err("same-source layers cannot tie on one key");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+        assert_eq!(failure.source().as_str(), "environment");
+    }
+
+    #[test]
+    fn invalid_selected_origins_abort_resolution_with_redacted_failures() {
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("setting").with_default(DescriptorDefault::Text("default".to_owned())),
+        ])
+        .unwrap();
+        let lower = || ConfigurationLayer::defaults(Vec::new());
+
+        let user_failure = ConfigurationLayer::user_file(
+            "/absolute/user.toml",
+            vec![("setting".to_owned(), text("user"))],
+        )
+        .and_then(|user| registry.merge_layers([lower(), user]))
+        .expect_err("an invalid user origin must reject resolution");
+        assert_eq!(
+            user_failure.code(),
+            ConfigurationFailureCode::PathUnavailable
+        );
+        assert_eq!(
+            user_failure.source(),
+            FailureSource::File(RedactedFileOrigin::UserConfiguration)
+        );
+        assert!(!user_failure.to_string().contains("/absolute/user.toml"));
+
+        let project_failure = ConfigurationLayer::project_file(
+            "../outside/project.toml",
+            vec![("setting".to_owned(), text("project"))],
+        )
+        .and_then(|project| registry.merge_layers([lower(), project]))
+        .expect_err("an invalid project origin must reject resolution");
+        assert_eq!(
+            project_failure.code(),
+            ConfigurationFailureCode::ProjectEscape
+        );
+        assert_eq!(
+            project_failure.source(),
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+        );
+        assert!(
+            !project_failure
+                .to_string()
+                .contains("../outside/project.toml")
+        );
+    }
+
+    #[test]
     fn merge_layers_applies_command_line_over_environment_project_user_and_default() {
         let registry = DescriptorRegistry::new(vec![
             descriptor("setting").with_default(DescriptorDefault::Text("default".to_owned())),
@@ -2028,10 +2293,12 @@ mod tests {
 
         let built_in = result.get("built_in").unwrap();
         assert_eq!(built_in.source(), ConfigurationSource::Default);
+        assert_eq!(built_in.provenance().source(), ConfigurationSource::Default);
         assert_eq!(built_in.provenance().relative_path(), None);
         assert_eq!(built_in.provenance().key(), None);
         let user = result.get("user_value").unwrap();
         assert_eq!(user.source(), ConfigurationSource::UserFile);
+        assert_eq!(user.provenance().source(), ConfigurationSource::UserFile);
         assert_eq!(
             user.provenance().relative_path(),
             Some(std::path::Path::new("user.toml"))
@@ -2039,14 +2306,26 @@ mod tests {
         let project = result.get("project_value").unwrap();
         assert_eq!(project.source(), ConfigurationSource::ProjectFile);
         assert_eq!(
+            project.provenance().source(),
+            ConfigurationSource::ProjectFile
+        );
+        assert_eq!(
             project.provenance().relative_path(),
             Some(std::path::Path::new("project.toml"))
         );
         let environment = result.get("environment_value").unwrap();
         assert_eq!(environment.source(), ConfigurationSource::Environment);
+        assert_eq!(
+            environment.provenance().source(),
+            ConfigurationSource::Environment
+        );
         assert_eq!(environment.provenance().key(), Some("environment_value"));
         let command = result.get("command_value").unwrap();
         assert_eq!(command.source(), ConfigurationSource::CommandLine);
+        assert_eq!(
+            command.provenance().source(),
+            ConfigurationSource::CommandLine
+        );
         assert_eq!(command.provenance().key(), Some("command_value"));
     }
 
