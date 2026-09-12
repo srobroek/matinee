@@ -29,8 +29,11 @@ const BROWSERS: [Browser; 2] = [
     },
 ];
 
+const NO_BROWSER_DIAGNOSTIC: &str = "no supported browser found; install Firefox or Google Chrome";
+
 struct DoctorResult {
     rows: Vec<String>,
+    diagnostic: Option<&'static str>,
     outcome: ExitCode,
 }
 
@@ -45,8 +48,8 @@ pub(crate) fn doctor() -> ExitCode {
         println!("{row}");
     }
 
-    if result.outcome == ExitCode::FAILURE {
-        eprintln!("no supported browser found; install Firefox or Google Chrome");
+    if let Some(diagnostic) = result.diagnostic {
+        eprintln!("{diagnostic}");
     }
 
     result.outcome
@@ -68,6 +71,11 @@ fn doctor_with_discovery(discoveries: [DiscoveryEnvironment; 2]) -> DoctorResult
 
     DoctorResult {
         rows,
+        diagnostic: if found {
+            None
+        } else {
+            Some(NO_BROWSER_DIAGNOSTIC)
+        },
         outcome: if found {
             ExitCode::SUCCESS
         } else {
@@ -310,5 +318,18 @@ mod tests {
 
         assert_eq!(result.rows, ["Firefox\tnot found", "Google Chrome\tnot found"]);
         assert_eq!(result.outcome, ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn doctor_reports_no_browser_diagnostic_through_injected_discovery() {
+        let result = doctor_with_discovery([
+            discovery(Vec::new(), None),
+            discovery(Vec::new(), None),
+        ]);
+
+        assert_eq!(
+            result.diagnostic,
+            Some("no supported browser found; install Firefox or Google Chrome")
+        );
     }
 }
