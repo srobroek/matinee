@@ -869,6 +869,8 @@ impl<'a> TomlScanner<'a> {
     }
 
     fn remember_array_scope(&mut self, path: &[String], scope: usize) {
+        self.latest_array_scopes
+            .retain(|(root, _)| root == path || !root.starts_with(path));
         if let Some((_, latest_scope)) = self
             .latest_array_scopes
             .iter_mut()
@@ -1227,6 +1229,14 @@ mod tests {
     fn lexical_preflight_accepts_array_table_scope_after_intervening_header() {
         let source = FailureSource::Layer(LayerClass::UserFile);
         let document = b"[[items]]\n[unrelated]\nflag = 1\n[items.meta]\nvalue = 1\n[[items]]\n[items.meta]\nvalue = 2\n";
+
+        assert_eq!(toml_lexical_preflight(document, source), Ok(()));
+    }
+
+    #[test]
+    fn lexical_preflight_accepts_nested_array_scope_after_new_outer_element() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let document = b"[[items]]\n[[items.children]]\n[items.children.meta]\nvalue = 1\n[[items]]\n[items.children.meta]\nvalue = 1\n";
 
         assert_eq!(toml_lexical_preflight(document, source), Ok(()));
     }
