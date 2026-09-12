@@ -43,3 +43,21 @@ fn invalid_argument_matches_released_contract() {
         b"error: unrecognized argument 'wat'\n\nUsage: matinee <COMMAND>\n"
     );
 }
+
+#[test]
+fn doctor_lists_firefox_then_chrome_rows() {
+    let output = Command::new(env!("CARGO_BIN_EXE_matinee"))
+        .arg("doctor")
+        .output()
+        .expect("run matinee doctor");
+
+    let stdout = String::from_utf8(output.stdout).expect("doctor output is UTF-8");
+    let rows: Vec<_> = stdout.lines().collect();
+    assert_eq!(rows.len(), 2);
+
+    for (row, expected_name) in rows.iter().zip(["Firefox", "Google Chrome"]) {
+        let (name, value) = row.split_once('\t').expect("doctor row has a tab");
+        assert_eq!(name, expected_name);
+        assert!(value == "not found" || !value.is_empty());
+    }
+}

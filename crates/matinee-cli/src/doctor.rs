@@ -1,5 +1,6 @@
 use std::{
     env,
+    ffi::OsString,
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -8,6 +9,11 @@ struct Browser {
     name: &'static str,
     executable_names: &'static [&'static str],
     fixed_paths: fn() -> Vec<PathBuf>,
+}
+
+struct DiscoveryEnvironment {
+    fixed_paths: Vec<PathBuf>,
+    path: Option<OsString>,
 }
 
 const BROWSERS: [Browser; 2] = [
@@ -27,7 +33,12 @@ pub(crate) fn doctor() -> ExitCode {
     let mut found = 0;
 
     for browser in &BROWSERS {
-        match find_browser(browser) {
+        let discovery = DiscoveryEnvironment {
+            fixed_paths: (browser.fixed_paths)(),
+            path: env::var_os("PATH"),
+        };
+
+        match find_browser(browser, discovery) {
             Some(path) => {
                 println!("{}\t{}", browser.name, path.display());
                 found += 1;
@@ -44,15 +55,14 @@ pub(crate) fn doctor() -> ExitCode {
     }
 }
 
-fn find_browser(browser: &Browser) -> Option<PathBuf> {
-    if let Some(path) = (browser.fixed_paths)()
-        .into_iter()
-        .find(|path| is_executable(path))
-    {
+fn find_browser(browser: &Browser, discovery: DiscoveryEnvironment) -> Option<PathBuf> {
+    let DiscoveryEnvironment { fixed_paths, path } = discovery;
+
+    if let Some(path) = fixed_paths.into_iter().find(|path| is_executable(path)) {
         return Some(path);
     }
 
-    let path = env::var_os("PATH")?;
+    let path = path?;
     for directory in env::split_paths(&path) {
         for name in browser.executable_names {
             let candidate = directory.join(name);
@@ -132,4 +142,141 @@ fn windows_program_paths(directory: &str, executable: &str) -> Vec<PathBuf> {
         .map(PathBuf::from)
         .map(|root| root.join(directory).join(executable))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+            let path = env::temp_dir().join(format!(
+                "matinee-doctor-tests-{}-{id}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).expect("create temporary test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn discovery(fixed_paths: Vec<PathBuf>, path: Option<PathBuf>) -> DiscoveryEnvironment {
+        DiscoveryEnvironment {
+            fixed_paths,
+            path: path.map(PathBuf::into_os_string),
+        }
+    }
+
+    fn create_executable(path: &Path) {
+        fs::write(path, b"browser").expect("create executable fixture");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(path)
+                .expect("read executable fixture metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("mark fixture executable");
+        }
+    }
+
+    #[cfg(unix)]
+    fn create_non_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, b"not executable").expect("create non-executable fixture");
+        let mut permissions = fs::metadata(path)
+            .expect("read non-executable fixture metadata")
+            .permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(path, permissions).expect("mark fixture non-executable");
+    }
+
+    #[test]
+    fn finds_firefox_at_injected_fixed_path() {
+        let temp = TempDir::new();
+        let fixed_path = temp.path().join("firefox-fixed");
+        create_executable(&fixed_path);
+
+        let found = find_browser(&BROWSERS[0], discovery(vec![fixed_path.clone()], None));
+
+        assert_eq!(found, Some(fixed_path));
+    }
+
+    #[test]
+    fn finds_google_chrome_at_injected_fixed_path() {
+        let temp = TempDir::new();
+        let fixed_path = temp.path().join("chrome-fixed");
+        create_executable(&fixed_path);
+
+        let found = find_browser(&BROWSERS[1], discovery(vec![fixed_path.clone()], None));
+
+        assert_eq!(found, Some(fixed_path));
+    }
+
+    #[test]
+    fn falls_through_to_an_injected_path_directory() {
+        let temp = TempDir::new();
+        let path_candidate = temp.path().join("firefox");
+        create_executable(&path_candidate);
+
+        let found = find_browser(
+            &BROWSERS[0],
+            discovery(Vec::new(), Some(temp.path().to_path_buf())),
+        );
+
+        assert_eq!(found, Some(path_candidate));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignores_a_non_executable_file_with_a_matching_name() {
+        let temp = TempDir::new();
+        let path_candidate = temp.path().join("firefox");
+        create_non_executable(&path_candidate);
+
+        let found = find_browser(
+            &BROWSERS[0],
+            discovery(Vec::new(), Some(temp.path().to_path_buf())),
+        );
+
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn fixed_path_precedes_an_injected_path_candidate() {
+        let fixed_temp = TempDir::new();
+        let path_temp = TempDir::new();
+        let fixed_path = fixed_temp.path().join("firefox-fixed");
+        let path_candidate = path_temp.path().join("firefox");
+        create_executable(&fixed_path);
+        create_executable(&path_candidate);
+
+        let found = find_browser(
+            &BROWSERS[0],
+            discovery(vec![fixed_path.clone()], Some(path_temp.path().to_path_buf())),
+        );
+
+        assert_eq!(found, Some(fixed_path));
+    }
 }
