@@ -854,6 +854,25 @@ fn consume_line_continuation(input: &[u8], position: &mut usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LayerClass;
+    use std::fmt::Write as _;
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TYPED_DESERIALIZATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    struct TypedConfigProbe;
+
+    impl<'de> serde::Deserialize<'de> for TypedConfigProbe {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            TYPED_DESERIALIZATION_CALLS.fetch_add(1, Ordering::SeqCst);
+            let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
+            Ok(Self)
+        }
+    }
     fn descriptor(name: impl Into<String>) -> KeyDescriptor {
         KeyDescriptor::new(
             name,
@@ -1043,5 +1062,90 @@ mod tests {
         assert!(!protected.contains(ConfigurationSource::ProjectFile));
         assert!(!protected.contains(ConfigurationSource::Environment));
         assert!(protected.contains(ConfigurationSource::CommandLine));
+    }
+    #[test]
+    fn bounded_read_enforces_exact_file_byte_limit() {
+        const FILE_LIMIT: usize = 1024 * 1024;
+        let source = FailureSource::Layer(LayerClass::UserFile);
+
+        let exact = bounded_toml_read(Cursor::new(vec![b'x'; FILE_LIMIT]), source)
+            .expect("a file at the byte limit is accepted");
+        assert_eq!(exact.len(), FILE_LIMIT);
+
+        let failure = bounded_toml_read(Cursor::new(vec![b'x'; FILE_LIMIT + 1]), source)
+            .expect_err("a file over the byte limit is rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::FileTooLarge);
+    }
+
+    #[test]
+    fn lexical_preflight_enforces_exact_assignment_limit() {
+        const ASSIGNMENT_LIMIT: usize = 100;
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let document = |count: usize| {
+            let mut document = String::new();
+            for index in 0..count {
+                writeln!(document, "key_{index} = {index}").expect("writing to String cannot fail");
+            }
+            document
+        };
+
+        assert!(toml_lexical_preflight(document(ASSIGNMENT_LIMIT).as_bytes(), source).is_ok());
+        let failure = toml_lexical_preflight(document(ASSIGNMENT_LIMIT + 1).as_bytes(), source)
+            .expect_err("the assignment after the limit is rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+    }
+
+    #[test]
+    fn lexical_preflight_enforces_exact_dotted_segment_limit() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+
+        assert!(toml_lexical_preflight(b"one.two.three.four = \"ok\"\n", source).is_ok());
+        let failure = toml_lexical_preflight(b"one.two.three.four.five = \"too-deep\"\n", source)
+            .expect_err("the fifth dotted segment is rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+    }
+
+    #[test]
+    fn lexical_preflight_enforces_exact_text_scalar_limit() {
+        const TEXT_SCALAR_LIMIT: usize = 4_096;
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let document = |count: usize| format!("text = \"{}\"\n", "x".repeat(count));
+
+        assert!(toml_lexical_preflight(document(TEXT_SCALAR_LIMIT).as_bytes(), source).is_ok());
+        let failure = toml_lexical_preflight(document(TEXT_SCALAR_LIMIT + 1).as_bytes(), source)
+            .expect_err("the scalar after the limit is rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+    }
+
+    #[test]
+    fn lexical_preflight_detects_duplicates_per_table_scope() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        assert!(
+            toml_lexical_preflight(b"[first]\nvalue = 1\n[second]\nvalue = 2\n", source,).is_ok()
+        );
+
+        let failure = toml_lexical_preflight(b"[first]\nvalue = 1\nvalue = 2\n", source)
+            .expect_err("a repeated key in one table scope is rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    }
+
+    #[test]
+    fn pathological_preflight_fails_before_typed_deserialization() {
+        TYPED_DESERIALIZATION_CALLS.store(0, Ordering::SeqCst);
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let pathological = format!("value = {}0{}\n", "[".repeat(65), "]".repeat(65),);
+
+        let result = bounded_toml_read_and_preflight(Cursor::new(pathological), source);
+        if let Ok(contents) = &result {
+            let text = std::str::from_utf8(contents).expect("fixture is valid UTF-8");
+            let _ = toml::from_str::<TypedConfigProbe>(text);
+        }
+        let failure = result.expect_err("pathological nesting is rejected by preflight");
+        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+        assert_eq!(
+            TYPED_DESERIALIZATION_CALLS.load(Ordering::SeqCst),
+            0,
+            "typed deserialization must not run after lexical rejection",
+        );
     }
 }
