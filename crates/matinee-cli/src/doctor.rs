@@ -310,6 +310,45 @@ mod tests {
     }
 
     #[test]
+    fn doctor_reports_success_through_injected_discovery() {
+        let temp = TempDir::new();
+        let firefox_path = temp.path().join("firefox");
+        let chrome_path = temp.path().join("chrome");
+        create_executable(&firefox_path);
+        create_executable(&chrome_path);
+
+        let result = doctor_with_discovery([
+            discovery(vec![firefox_path.clone()], None),
+            discovery(vec![chrome_path.clone()], None),
+        ]);
+
+        assert_eq!(
+            result.rows,
+            [
+                format!("Firefox\t{}", firefox_path.display()),
+                format!("Google Chrome\t{}", chrome_path.display()),
+            ]
+        );
+        assert_eq!(result.diagnostic, None);
+        assert_eq!(result.outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn doctor_reports_no_browser_failure_through_injected_discovery() {
+        let result = doctor_with_discovery([
+            discovery(Vec::new(), None),
+            discovery(Vec::new(), None),
+        ]);
+
+        assert_eq!(result.rows, ["Firefox\tnot found", "Google Chrome\tnot found"]);
+        assert_eq!(
+            result.diagnostic,
+            Some("no supported browser found; install Firefox or Google Chrome")
+        );
+        assert_eq!(result.outcome, ExitCode::FAILURE);
+    }
+
+    #[test]
     fn doctor_reaches_no_browser_outcome_through_injected_discovery() {
         let result = doctor_with_discovery([
             discovery(Vec::new(), None),
