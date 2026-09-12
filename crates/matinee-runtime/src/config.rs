@@ -5,9 +5,12 @@
 //! a key requires adding a descriptor with an explicit material class, source
 //! policy, and value shape.
 
-use crate::environment::{AcceptedKey, ConfigurationSource};
+use crate::environment::{AcceptedKey, ConfigurationSource, Provenance, RelativePath};
 use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
+use std::collections::BTreeMap;
+use std::fmt;
 use std::io::Read;
+use std::path::PathBuf;
 use toml::Value as TomlValue;
 
 /// The maximum number of descriptors accepted by one registry.
@@ -75,6 +78,17 @@ impl Normalizer {
                 }
                 _ => None,
             },
+        }
+    }
+}
+
+impl DescriptorDefault {
+    fn as_toml_value(&self) -> TomlValue {
+        match self {
+            Self::Text(value) => TomlValue::String(value.clone()),
+            Self::Boolean(value) => TomlValue::Boolean(*value),
+            Self::Integer(value) => TomlValue::Integer(*value),
+            Self::Float(value) => TomlValue::Float(*value),
         }
     }
 }
@@ -264,6 +278,192 @@ impl<'a> ResolvedValue<'a> {
     }
 }
 
+/// One source layer supplied to [`DescriptorRegistry::merge_layers`].
+///
+/// Entries retain their raw values only until descriptor validation. The
+/// layer's debug projection deliberately exposes neither keys nor values, so
+/// rejected input cannot be disclosed accidentally while it is being handled.
+#[allow(dead_code)]
+#[derive(Clone)]
+pub(crate) struct ConfigurationLayer {
+    source: ConfigurationSource,
+    entries: Vec<LayerEntry>,
+    origin: LayerOrigin,
+}
+
+#[derive(Clone)]
+struct LayerEntry {
+    name: String,
+    value: TomlValue,
+}
+
+#[allow(dead_code)]
+#[derive(Clone)]
+enum LayerOrigin {
+    BuiltIn,
+    UserFile(RelativePath),
+    ProjectFile(RelativePath),
+    Environment,
+    CommandLine,
+}
+
+impl fmt::Debug for ConfigurationLayer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConfigurationLayer")
+            .field("source", &self.source.as_str())
+            .field("entry_count", &self.entries.len())
+            .finish()
+    }
+}
+
+#[allow(dead_code)]
+impl ConfigurationLayer {
+    pub(crate) fn defaults(entries: impl IntoIterator<Item = (String, TomlValue)>) -> Self {
+        Self::new(ConfigurationSource::Default, LayerOrigin::BuiltIn, entries)
+    }
+
+    pub(crate) fn user_file(
+        path: impl Into<PathBuf>,
+        entries: impl IntoIterator<Item = (String, TomlValue)>,
+    ) -> Option<Self> {
+        let origin = LayerOrigin::UserFile(RelativePath::new(path.into())?);
+        Some(Self::new(ConfigurationSource::UserFile, origin, entries))
+    }
+
+    pub(crate) fn project_file(
+        path: impl Into<PathBuf>,
+        entries: impl IntoIterator<Item = (String, TomlValue)>,
+    ) -> Option<Self> {
+        let origin = LayerOrigin::ProjectFile(RelativePath::new(path.into())?);
+        Some(Self::new(ConfigurationSource::ProjectFile, origin, entries))
+    }
+
+    pub(crate) fn environment(entries: impl IntoIterator<Item = (String, TomlValue)>) -> Self {
+        Self::new(
+            ConfigurationSource::Environment,
+            LayerOrigin::Environment,
+            entries,
+        )
+    }
+
+    pub(crate) fn command_line(entries: impl IntoIterator<Item = (String, TomlValue)>) -> Self {
+        Self::new(
+            ConfigurationSource::CommandLine,
+            LayerOrigin::CommandLine,
+            entries,
+        )
+    }
+
+    fn new(
+        source: ConfigurationSource,
+        origin: LayerOrigin,
+        entries: impl IntoIterator<Item = (String, TomlValue)>,
+    ) -> Self {
+        Self {
+            source,
+            entries: entries
+                .into_iter()
+                .map(|(name, value)| LayerEntry { name, value })
+                .collect(),
+            origin,
+        }
+    }
+
+    pub(crate) const fn source(&self) -> ConfigurationSource {
+        self.source
+    }
+}
+
+impl LayerOrigin {
+    fn provenance(&self, name: &str) -> Option<Provenance> {
+        match self {
+            Self::BuiltIn => Some(Provenance::built_in()),
+            Self::UserFile(path) => Some(Provenance::user_file(path.as_path().to_owned())?),
+            Self::ProjectFile(path) => Some(Provenance::project_file(path.as_path().to_owned())?),
+            Self::Environment => Provenance::environment(AcceptedKey::new(name.to_owned())?),
+            Self::CommandLine => Provenance::command_line(AcceptedKey::new(name.to_owned())?),
+        }
+    }
+}
+
+/// A validated winning value and its redacted source projection.
+#[derive(Clone, PartialEq)]
+pub(crate) struct ResolvedSetting<'a> {
+    descriptor: &'a KeyDescriptor,
+    value: TomlValue,
+    source: ConfigurationSource,
+    provenance: Provenance,
+}
+
+impl fmt::Debug for ResolvedSetting<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedSetting")
+            .field("key", &self.key())
+            .field("source", &self.source.as_str())
+            .field("provenance", &self.provenance)
+            .finish()
+    }
+}
+
+#[allow(dead_code)]
+impl<'a> ResolvedSetting<'a> {
+    pub(crate) fn descriptor(&self) -> &'a KeyDescriptor {
+        self.descriptor
+    }
+
+    pub(crate) fn key(&self) -> &str {
+        self.descriptor.name()
+    }
+
+    pub(crate) fn value(&self) -> &TomlValue {
+        &self.value
+    }
+
+    pub(crate) fn source(&self) -> ConfigurationSource {
+        self.source
+    }
+
+    pub(crate) fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// The complete configuration result after all source layers are validated.
+#[derive(Clone, PartialEq)]
+pub(crate) struct ResolvedConfiguration<'a> {
+    settings: BTreeMap<String, ResolvedSetting<'a>>,
+}
+
+impl fmt::Debug for ResolvedConfiguration<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedConfiguration")
+            .field("keys", &self.settings.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+#[allow(dead_code)]
+impl<'a> ResolvedConfiguration<'a> {
+    pub(crate) fn get(&self, name: &str) -> Option<&ResolvedSetting<'a>> {
+        self.settings.get(name)
+    }
+
+    pub(crate) fn settings(&self) -> impl Iterator<Item = &ResolvedSetting<'a>> {
+        self.settings.values()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.settings.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.settings.is_empty()
+    }
+}
+
 /// A closed descriptor registry.
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
@@ -359,6 +559,84 @@ impl DescriptorRegistry {
             )
         })?;
         Ok(ResolvedValue { descriptor, value })
+    }
+
+    /// Validates and merges source layers in their fixed precedence order.
+    ///
+    /// Every supplied entry is classified before any winning value is returned,
+    /// so a forbidden or unknown lower layer cannot be hidden by a higher layer.
+    pub(crate) fn merge_layers(
+        &self,
+        layers: impl IntoIterator<Item = ConfigurationLayer>,
+    ) -> Result<ResolvedConfiguration<'_>, ConfigurationFailure> {
+        let mut ordered = layers.into_iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|layer| layer.source.precedence());
+
+        let mut settings = BTreeMap::new();
+        for descriptor in &self.descriptors {
+            let Some(default) = descriptor.default() else {
+                continue;
+            };
+            if !descriptor
+                .allowed_sources()
+                .contains(ConfigurationSource::Default)
+            {
+                continue;
+            }
+            let resolved = self.resolve(
+                descriptor.name(),
+                ConfigurationSource::Default,
+                default.as_toml_value(),
+            )?;
+            settings.insert(
+                descriptor.name().to_owned(),
+                ResolvedSetting {
+                    descriptor: resolved.descriptor,
+                    value: resolved.value,
+                    source: ConfigurationSource::Default,
+                    provenance: Provenance::built_in(),
+                },
+            );
+        }
+
+        for layer in ordered {
+            let mut seen = BTreeMap::new();
+            for entry in layer.entries {
+                if seen.insert(entry.name.clone(), ()).is_some() {
+                    return Err(ConfigurationFailure::new(
+                        ConfigurationFailureCode::KeyDuplicate,
+                        FailureSource::Layer(layer.source.layer_class()),
+                    ));
+                }
+                let resolved = self.resolve(&entry.name, layer.source, entry.value)?;
+                let provenance = layer.origin.provenance(&entry.name).ok_or_else(|| {
+                    ConfigurationFailure::new(
+                        ConfigurationFailureCode::ValueInvalid,
+                        FailureSource::Layer(layer.source.layer_class()),
+                    )
+                })?;
+                if settings
+                    .get(&entry.name)
+                    .is_some_and(|previous| previous.source == layer.source)
+                {
+                    return Err(ConfigurationFailure::new(
+                        ConfigurationFailureCode::KeyDuplicate,
+                        FailureSource::Layer(layer.source.layer_class()),
+                    ));
+                }
+                settings.insert(
+                    entry.name,
+                    ResolvedSetting {
+                        descriptor: resolved.descriptor,
+                        value: resolved.value,
+                        source: layer.source,
+                        provenance,
+                    },
+                );
+            }
+        }
+
+        Ok(ResolvedConfiguration { settings })
     }
 }
 
@@ -1682,5 +1960,165 @@ mod tests {
                 None => assert!(result.is_ok(), "{name} should survive lexical preflight"),
             }
         }
+    }
+
+    #[test]
+    fn merge_layers_applies_command_line_over_environment_project_user_and_default() {
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("setting").with_default(DescriptorDefault::Text("default".to_owned())),
+        ])
+        .unwrap();
+        let layers = vec![
+            ConfigurationLayer::user_file(
+                "config.toml",
+                vec![("setting".to_owned(), text("user"))],
+            )
+            .unwrap(),
+            ConfigurationLayer::project_file(
+                "matinee.toml",
+                vec![("setting".to_owned(), text("project"))],
+            )
+            .unwrap(),
+            ConfigurationLayer::environment(vec![("setting".to_owned(), text("environment"))]),
+            ConfigurationLayer::command_line(vec![("setting".to_owned(), text("command"))]),
+        ];
+
+        let result = registry
+            .merge_layers(layers)
+            .expect("all ordinary sources are allowed");
+        let setting = result.get("setting").expect("winning setting is present");
+        assert_eq!(setting.value(), &text("command"));
+        assert_eq!(setting.source(), ConfigurationSource::CommandLine);
+        assert_eq!(
+            setting.provenance().source(),
+            ConfigurationSource::CommandLine
+        );
+        assert_eq!(setting.provenance().key(), Some("setting"));
+    }
+
+    #[test]
+    fn merge_layers_retains_provenance_for_each_winning_source() {
+        let registry = DescriptorRegistry::new(vec![
+            descriptor("built_in").with_default(DescriptorDefault::Text("default".to_owned())),
+            descriptor("user_value").with_default(DescriptorDefault::Text("default".to_owned())),
+            descriptor("project_value").with_default(DescriptorDefault::Text("default".to_owned())),
+            descriptor("environment_value")
+                .with_default(DescriptorDefault::Text("default".to_owned())),
+            descriptor("command_value").with_default(DescriptorDefault::Text("default".to_owned())),
+        ])
+        .unwrap();
+        let layers = vec![
+            ConfigurationLayer::user_file(
+                "user.toml",
+                vec![("user_value".to_owned(), text("user"))],
+            )
+            .unwrap(),
+            ConfigurationLayer::project_file(
+                "project.toml",
+                vec![("project_value".to_owned(), text("project"))],
+            )
+            .unwrap(),
+            ConfigurationLayer::environment(vec![(
+                "environment_value".to_owned(),
+                text("environment"),
+            )]),
+            ConfigurationLayer::command_line(vec![("command_value".to_owned(), text("command"))]),
+        ];
+        let result = registry.merge_layers(layers).expect("all layers are valid");
+
+        let built_in = result.get("built_in").unwrap();
+        assert_eq!(built_in.source(), ConfigurationSource::Default);
+        assert_eq!(built_in.provenance().relative_path(), None);
+        assert_eq!(built_in.provenance().key(), None);
+        let user = result.get("user_value").unwrap();
+        assert_eq!(user.source(), ConfigurationSource::UserFile);
+        assert_eq!(
+            user.provenance().relative_path(),
+            Some(std::path::Path::new("user.toml"))
+        );
+        let project = result.get("project_value").unwrap();
+        assert_eq!(project.source(), ConfigurationSource::ProjectFile);
+        assert_eq!(
+            project.provenance().relative_path(),
+            Some(std::path::Path::new("project.toml"))
+        );
+        let environment = result.get("environment_value").unwrap();
+        assert_eq!(environment.source(), ConfigurationSource::Environment);
+        assert_eq!(environment.provenance().key(), Some("environment_value"));
+        let command = result.get("command_value").unwrap();
+        assert_eq!(command.source(), ConfigurationSource::CommandLine);
+        assert_eq!(command.provenance().key(), Some("command_value"));
+    }
+
+    #[test]
+    fn merge_layers_rejects_forbidden_lower_source_even_when_cli_overrides_it() {
+        let registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "protected",
+            ValueKind::Text,
+            AllowedSources::user_and_command_line(),
+            MaterialClass::NonSecret,
+        )])
+        .unwrap();
+        let layers = vec![
+            ConfigurationLayer::project_file(
+                "project.toml",
+                vec![("protected".to_owned(), text("unsafe"))],
+            )
+            .unwrap(),
+            ConfigurationLayer::command_line(vec![("protected".to_owned(), text("safe"))]),
+        ];
+
+        let failure = registry
+            .merge_layers(layers)
+            .expect_err("a prohibited lower layer cannot be hidden by a higher layer");
+        assert_eq!(failure.code(), ConfigurationFailureCode::SourceForbidden);
+        assert_eq!(failure.source().as_str(), "project-file");
+    }
+
+    #[test]
+    fn merge_layers_rejects_duplicate_assignments_in_one_layer() {
+        let registry = DescriptorRegistry::new(vec![descriptor("setting")]).unwrap();
+        let layer = ConfigurationLayer::user_file(
+            "config.toml",
+            vec![
+                ("setting".to_owned(), text("first")),
+                ("setting".to_owned(), text("second")),
+            ],
+        )
+        .unwrap();
+
+        let failure = registry
+            .merge_layers([layer])
+            .expect_err("one layer cannot define a key twice");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    }
+
+    #[test]
+    fn merge_layers_rejects_unknown_input_without_returning_partial_settings() {
+        let registry = DescriptorRegistry::new(vec![descriptor("known")]).unwrap();
+        let layer = ConfigurationLayer::environment(vec![
+            ("known".to_owned(), text("accepted")),
+            ("not_registered".to_owned(), text("discarded")),
+        ]);
+
+        let failure = registry
+            .merge_layers([layer])
+            .expect_err("unknown keys fail before a result can be returned");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+        assert!(!failure.source().as_str().contains("not_registered"));
+    }
+
+    #[test]
+    fn layer_and_resolved_debug_projections_omit_raw_values() {
+        let registry = DescriptorRegistry::new(vec![descriptor("setting")]).unwrap();
+        let layer =
+            ConfigurationLayer::environment(vec![("setting".to_owned(), text("secret-material"))]);
+        assert!(!format!("{layer:?}").contains("secret-material"));
+
+        let result = registry
+            .merge_layers([layer])
+            .expect("ordinary value is valid");
+        assert!(!format!("{:?}", result.get("setting").unwrap()).contains("secret-material"));
+        assert!(!format!("{result:?}").contains("secret-material"));
     }
 }
