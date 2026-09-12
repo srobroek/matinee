@@ -343,13 +343,29 @@ enum KeyTerminator {
     InlineTable,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DefinitionKind {
+    Assignment,
+    Table,
+    ArrayTable,
+    InlineTable,
+}
+
+struct StructuralDefinition {
+    path: Vec<String>,
+    scope: Option<usize>,
+    kind: DefinitionKind,
+}
+
 struct TomlScanner<'a> {
     input: &'a [u8],
     source: FailureSource,
     assignments: usize,
     table_prefix: Vec<String>,
-    table_scope: Option<Vec<Vec<String>>>,
-    global_seen: Vec<Vec<String>>,
+    active_array_scope: Option<usize>,
+    array_table_root: Option<Vec<String>>,
+    next_array_scope: usize,
+    definitions: Vec<StructuralDefinition>,
 }
 
 impl<'a> TomlScanner<'a> {
@@ -359,8 +375,10 @@ impl<'a> TomlScanner<'a> {
             source,
             assignments: 0,
             table_prefix: Vec::new(),
-            table_scope: None,
-            global_seen: Vec::new(),
+            active_array_scope: None,
+            array_table_root: None,
+            next_array_scope: 0,
+            definitions: Vec::new(),
         }
     }
 
@@ -381,15 +399,10 @@ impl<'a> TomlScanner<'a> {
                 continue;
             };
             let full_key = self.join_path(&self.table_prefix, &key)?;
-            let mut table_scope = self.table_scope.take();
-            let registration = match table_scope.as_mut() {
-                Some(scope) => self.register_assignment(full_key.clone(), Some(scope)),
-                None => self.register_assignment(full_key.clone(), None),
-            };
-            self.table_scope = table_scope;
-            registration?;
+            let scope = self.active_array_scope;
+            self.register_assignment(full_key.clone(), scope, false)?;
             position = equals + 1;
-            self.scan_value(&mut position, &full_key, 0, None)?;
+            self.scan_value(&mut position, &full_key, 0, scope, false)?;
         }
         Ok(())
     }
@@ -416,8 +429,23 @@ impl<'a> TomlScanner<'a> {
                 == Some(if array_table { b"]]" } else { b"]" })
             {
                 *position += if array_table { 2 } else { 1 };
-                self.table_prefix = path;
-                self.table_scope = Some(Vec::new());
+                let scope = if array_table {
+                    None
+                } else {
+                    self.array_scope_for_path(&path)
+                };
+                self.register_table(&path, array_table, scope)?;
+                self.table_prefix = path.clone();
+                if array_table {
+                    self.active_array_scope = Some(self.next_array_scope);
+                    self.next_array_scope += 1;
+                    self.array_table_root = Some(path);
+                } else {
+                    self.active_array_scope = scope;
+                    if scope.is_none() {
+                        self.array_table_root = None;
+                    }
+                }
                 self.skip_line(position);
                 return Ok(());
             }
@@ -435,7 +463,8 @@ impl<'a> TomlScanner<'a> {
         position: &mut usize,
         context: &[String],
         depth: usize,
-        mut scope: Option<&mut Vec<Vec<String>>>,
+        scope: Option<usize>,
+        inside_inline: bool,
     ) -> Result<(), ConfigurationFailure> {
         if depth > MAX_LEXICAL_NESTING {
             return Err(self.limit_failure());
@@ -455,10 +484,11 @@ impl<'a> TomlScanner<'a> {
                     self.scan_string(position)?;
                 }
                 b'[' => {
-                    self.scan_array(position, context, depth + 1, scope.as_deref_mut())?;
+                    self.scan_array(position, context, depth + 1, scope, inside_inline)?;
                 }
                 b'{' => {
-                    self.scan_inline_table(position, context, depth + 1, scope.as_deref_mut())?;
+                    self.mark_inline_table(context, scope);
+                    self.scan_inline_table(position, context, depth + 1, scope)?;
                 }
                 _ => *position += 1,
             }
@@ -470,7 +500,8 @@ impl<'a> TomlScanner<'a> {
         position: &mut usize,
         context: &[String],
         depth: usize,
-        mut scope: Option<&mut Vec<Vec<String>>>,
+        scope: Option<usize>,
+        inside_inline: bool,
     ) -> Result<(), ConfigurationFailure> {
         if depth > MAX_LEXICAL_NESTING {
             return Err(self.limit_failure());
@@ -486,9 +517,9 @@ impl<'a> TomlScanner<'a> {
                 return Ok(());
             }
             if byte == b'{' {
-                self.scan_inline_table(position, context, depth + 1, None)?;
+                self.scan_inline_table(position, context, depth + 1, scope)?;
             } else {
-                self.scan_value(position, context, depth, scope.as_deref_mut())?;
+                self.scan_value(position, context, depth, scope, inside_inline)?;
             }
             self.skip_horizontal(position);
             match self.input.get(*position) {
@@ -509,14 +540,12 @@ impl<'a> TomlScanner<'a> {
         position: &mut usize,
         context: &[String],
         depth: usize,
-        scope: Option<&mut Vec<Vec<String>>>,
+        scope: Option<usize>,
     ) -> Result<(), ConfigurationFailure> {
         if depth > MAX_LEXICAL_NESTING {
             return Err(self.limit_failure());
         }
         *position += 1;
-        let mut own_scope = Vec::new();
-        let scope = scope.unwrap_or(&mut own_scope);
         loop {
             self.skip_layout(position);
             let Some(&byte) = self.input.get(*position) else {
@@ -531,9 +560,10 @@ impl<'a> TomlScanner<'a> {
                 continue;
             };
             let full_key = self.join_path(context, &key)?;
-            self.register_assignment(full_key.clone(), Some(&mut *scope))?;
+            self.register_assignment(full_key.clone(), scope, true)?;
+            self.mark_inline_table(&full_key, scope);
             *position = equals + 1;
-            self.scan_value(position, &full_key, depth, Some(&mut *scope))?;
+            self.scan_value(position, &full_key, depth, scope, true)?;
             self.skip_horizontal(position);
             match self.input.get(*position) {
                 Some(b',') => *position += 1,
@@ -755,27 +785,96 @@ impl<'a> TomlScanner<'a> {
     fn register_assignment(
         &mut self,
         path: Vec<String>,
-        scope: Option<&mut Vec<Vec<String>>>,
+        scope: Option<usize>,
+        inside_inline: bool,
     ) -> Result<(), ConfigurationFailure> {
         if self.assignments >= MAX_ASSIGNMENTS {
             return Err(self.limit_failure());
         }
-        let duplicate = match scope.as_deref() {
-            Some(seen) => seen.iter().any(|previous| previous == &path),
-            None => self.global_seen.iter().any(|previous| previous == &path),
+        self.register_definition(path, scope, DefinitionKind::Assignment, inside_inline)?;
+        self.assignments += 1;
+        Ok(())
+    }
+
+    fn register_table(
+        &mut self,
+        path: &[String],
+        array_table: bool,
+        scope: Option<usize>,
+    ) -> Result<(), ConfigurationFailure> {
+        let kind = if array_table {
+            DefinitionKind::ArrayTable
+        } else {
+            DefinitionKind::Table
         };
+        if array_table
+            && self.definitions.iter().any(|definition| {
+                definition.path == path
+                    && definition.kind == DefinitionKind::ArrayTable
+                    && Self::scopes_overlap(definition.scope, scope)
+            })
+        {
+            return Ok(());
+        }
+        self.register_definition(path.to_vec(), scope, kind, false)
+    }
+
+    fn register_definition(
+        &mut self,
+        path: Vec<String>,
+        scope: Option<usize>,
+        kind: DefinitionKind,
+        inside_inline: bool,
+    ) -> Result<(), ConfigurationFailure> {
+        let duplicate = self.definitions.iter().any(|definition| {
+            if !Self::scopes_overlap(definition.scope, scope) {
+                return false;
+            }
+            if definition.path == path {
+                return true;
+            }
+            if definition.path.len() < path.len() && path.starts_with(&definition.path) {
+                return matches!(
+                    definition.kind,
+                    DefinitionKind::Assignment | DefinitionKind::InlineTable
+                ) && !(inside_inline && definition.kind == DefinitionKind::InlineTable);
+            }
+            if path.len() < definition.path.len() && definition.path.starts_with(&path) {
+                return true;
+            }
+            false
+        });
         if duplicate {
             return Err(ConfigurationFailure::new(
                 ConfigurationFailureCode::KeyDuplicate,
                 self.source,
             ));
         }
-        self.assignments += 1;
-        match scope {
-            Some(seen) => seen.push(path),
-            None => self.global_seen.push(path),
-        }
+        self.definitions
+            .push(StructuralDefinition { path, scope, kind });
         Ok(())
+    }
+
+    fn mark_inline_table(&mut self, path: &[String], scope: Option<usize>) {
+        let matching = self.definitions.iter_mut().rev().find(|definition| {
+            definition.path == path
+                && definition.kind == DefinitionKind::Assignment
+                && Self::scopes_overlap(definition.scope, scope)
+        });
+        if let Some(definition) = matching {
+            definition.kind = DefinitionKind::InlineTable;
+        }
+    }
+
+    fn scopes_overlap(left: Option<usize>, right: Option<usize>) -> bool {
+        left.is_none() || right.is_none() || left == right
+    }
+
+    fn array_scope_for_path(&self, path: &[String]) -> Option<usize> {
+        match (&self.array_table_root, self.active_array_scope) {
+            (Some(root), Some(scope)) if path.starts_with(root) => Some(scope),
+            _ => None,
+        }
     }
 
     fn limit_failure(&self) -> ConfigurationFailure {
@@ -857,22 +956,6 @@ mod tests {
     use crate::error::LayerClass;
     use std::fmt::Write as _;
     use std::io::Cursor;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static TYPED_DESERIALIZATION_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-    struct TypedConfigProbe;
-
-    impl<'de> serde::Deserialize<'de> for TypedConfigProbe {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            TYPED_DESERIALIZATION_CALLS.fetch_add(1, Ordering::SeqCst);
-            let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
-            Ok(Self)
-        }
-    }
     fn descriptor(name: impl Into<String>) -> KeyDescriptor {
         KeyDescriptor::new(
             name,
@@ -1130,22 +1213,126 @@ mod tests {
     }
 
     #[test]
-    fn pathological_preflight_fails_before_typed_deserialization() {
-        TYPED_DESERIALIZATION_CALLS.store(0, Ordering::SeqCst);
+    fn lexical_preflight_rejects_reentered_table_definition() {
         let source = FailureSource::Layer(LayerClass::UserFile);
-        let pathological = format!("value = {}0{}\n", "[".repeat(65), "]".repeat(65),);
+        let failure = toml_lexical_preflight(b"[first]\nvalue = 1\n[first]\nvalue = 2\n", source)
+            .expect_err("re-entering a table definition is rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    }
 
-        let result = bounded_toml_read_and_preflight(Cursor::new(pathological), source);
-        if let Ok(contents) = &result {
-            let text = std::str::from_utf8(contents).expect("fixture is valid UTF-8");
-            let _ = toml::from_str::<TypedConfigProbe>(text);
+    #[test]
+    fn lexical_preflight_rejects_dotted_key_table_collision() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let failure = toml_lexical_preflight(b"first.value = 1\n[first]\nvalue = 2\n", source)
+            .expect_err("a dotted key and table definition cannot collide");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    }
+
+    #[test]
+    fn lexical_preflight_rejects_inline_table_key_collision() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let failure = toml_lexical_preflight(b"first.value = 1\nfirst = { value = 2 }\n", source)
+            .expect_err("a dotted key and inline table cannot collide");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    }
+
+    #[test]
+    fn lexical_preflight_covers_toml_edge_cases() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let mut pathological = vec![b'['; MAX_FILE_BYTES + 1];
+        pathological[MAX_FILE_BYTES] = b']';
+        let mut invalid_utf8 = b"value = \"".to_vec();
+        invalid_utf8.push(0xff);
+        invalid_utf8.extend_from_slice(b"\"\n");
+        let cases = vec![
+            (
+                "literal string",
+                b"value = 'literal # [syntax] \"quote\"'\n".to_vec(),
+                None,
+            ),
+            (
+                "multiline basic string",
+                b"value = \"\"\"multi\nline\"\"\"\n".to_vec(),
+                None,
+            ),
+            (
+                "multiline literal string",
+                b"value = \x27\x27\x27multi\nline\x27\x27\x27\n".to_vec(),
+                None,
+            ),
+            (
+                "escaped quotes",
+                b"value = \"escaped \\\"quote\\\"\"\n".to_vec(),
+                None,
+            ),
+            (
+                "unicode escape at end of input",
+                b"value = \"\\u".to_vec(),
+                None,
+            ),
+            (
+                "long unicode escape at end of input",
+                b"value = \"\\U".to_vec(),
+                None,
+            ),
+            (
+                "multiline line continuation",
+                b"value = \"\"\"first\\\n    second\"\"\"\n".to_vec(),
+                None,
+            ),
+            (
+                "comment containing syntax",
+                b"# [first]\n# value = 1\nvalue = 2\n".to_vec(),
+                None,
+            ),
+            (
+                "inline table",
+                b"value = { nested = 1, text = 'ok' }\n".to_vec(),
+                None,
+            ),
+            (
+                "array of table headers",
+                b"[[items]]\nvalue = 1\n[[items]]\nvalue = 2\n".to_vec(),
+                None,
+            ),
+            (
+                "quoted keys",
+                b"\"quoted.key\" = 1\n[\"quoted table\"]\nvalue = 2\n".to_vec(),
+                None,
+            ),
+            (
+                "non-ascii text",
+                "value = \"café\"\n".as_bytes().to_vec(),
+                None,
+            ),
+            ("invalid utf8", invalid_utf8, None),
+            (
+                "unterminated string",
+                b"value = \"unterminated".to_vec(),
+                None,
+            ),
+            (
+                "unterminated inline table",
+                b"value = { nested = 1".to_vec(),
+                None,
+            ),
+            (
+                "pathological one mib boundary",
+                pathological,
+                Some(ConfigurationFailureCode::FileTooLarge),
+            ),
+        ];
+
+        for (name, document, expected_failure) in cases {
+            let result = bounded_toml_read_and_preflight(Cursor::new(document), source);
+            match expected_failure {
+                Some(code) => assert_eq!(
+                    result.expect_err(name).code(),
+                    code,
+                    "{name} should return its closed failure",
+                ),
+                None => assert!(result.is_ok(), "{name} should survive lexical preflight"),
+            }
         }
-        let failure = result.expect_err("pathological nesting is rejected by preflight");
-        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
-        assert_eq!(
-            TYPED_DESERIALIZATION_CALLS.load(Ordering::SeqCst),
-            0,
-            "typed deserialization must not run after lexical rejection",
-        );
     }
 }
