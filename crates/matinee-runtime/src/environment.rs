@@ -70,7 +70,8 @@ where
         .settings()
         .filter(|setting| {
             setting.key() != "state_dir"
-                && setting.provenance().source() != ConfigurationSource::Default
+                && (setting.provenance().source() != ConfigurationSource::Default
+                    || setting.descriptor().default().is_none())
         })
         .map(layer_for_resolved_setting)
         .collect::<EnvironmentResult<Vec<_>>>()?;
@@ -381,7 +382,9 @@ pub type EnvironmentResult<T> = Result<T, ConfigurationFailure>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AllowedSources, KeyDescriptor, MaterialClass, ValueKind};
+    use crate::config::{
+        AllowedSources, DescriptorDefault, KeyDescriptor, MaterialClass, ValueKind,
+    };
     use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
 
     fn test_registry(names: &[&str]) -> DescriptorRegistry {
@@ -469,6 +472,58 @@ mod tests {
         let state_dir = resolved.get("state_dir").expect("state_dir is present");
         assert_eq!(state_dir.value(), &text("/workspace/override"));
         assert_eq!(state_dir.source(), ConfigurationSource::CommandLine);
+    }
+
+    #[test]
+    fn assemble_configuration_preserves_explicit_default_layer_with_state_override() {
+        let registry = test_registry(&["setting", "state_dir"]);
+        let resolved = assemble_configuration(
+            EnvironmentInput::new("/workspace/project").with_state_dir("/workspace/override"),
+            &registry,
+            [ConfigurationLayer::defaults(vec![(
+                "setting".to_owned(),
+                text("explicit-default"),
+            )])],
+        )
+        .expect("explicit default layer resolves with state override");
+
+        let setting = resolved
+            .get("setting")
+            .expect("explicit default setting is present");
+        assert_eq!(setting.value(), &text("explicit-default"));
+        assert_eq!(setting.source(), ConfigurationSource::Default);
+    }
+
+    #[test]
+    fn assemble_configuration_preserves_descriptor_owned_default_with_state_override() {
+        let registry = DescriptorRegistry::new(vec![
+            KeyDescriptor::new(
+                "setting",
+                ValueKind::Text,
+                AllowedSources::all(),
+                MaterialClass::NonSecret,
+            )
+            .with_default(DescriptorDefault::Text("descriptor-default".to_owned())),
+            KeyDescriptor::new(
+                "state_dir",
+                ValueKind::Path,
+                AllowedSources::all(),
+                MaterialClass::NonSecret,
+            ),
+        ])
+        .expect("test descriptors are valid");
+        let resolved = assemble_configuration(
+            EnvironmentInput::new("/workspace/project").with_state_dir("/workspace/override"),
+            &registry,
+            std::iter::empty::<ConfigurationLayer>(),
+        )
+        .expect("descriptor default resolves with state override");
+
+        let setting = resolved
+            .get("setting")
+            .expect("descriptor default setting is present");
+        assert_eq!(setting.value(), &text("descriptor-default"));
+        assert_eq!(setting.source(), ConfigurationSource::Default);
     }
 
     #[test]
