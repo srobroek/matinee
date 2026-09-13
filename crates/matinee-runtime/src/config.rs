@@ -9,7 +9,7 @@ use crate::environment::{AcceptedKey, ConfigurationSource, Provenance, RelativeP
 use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
-use crate::platform::{CaseBehavior, Platform, UnicodeNormalization};
+use crate::platform::{CaseBehavior, Platform};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
@@ -19,18 +19,6 @@ use toml::Value as TomlValue;
 
 const ENVIRONMENT_PREFIX: &str = "MATINEE_";
 
-fn canonical_decomposed(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '\u{00c9}' => result.push_str("E\u{0301}"),
-            '\u{00e9}' => result.push_str("e\u{0301}"),
-            _ => result.push(character),
-        }
-    }
-    result
-}
-
 fn normalized_environment_name<P: Platform + ?Sized>(
     platform: &P,
     anchor: &Path,
@@ -39,13 +27,8 @@ fn normalized_environment_name<P: Platform + ?Sized>(
     let Some(raw) = raw.to_str() else {
         return Ok(None);
     };
-    let native_normalization = platform.unicode_normalization(anchor)?;
-    let case_behavior = platform.case_behavior(anchor)?;
-    let mut normalized = match native_normalization {
-        UnicodeNormalization::Preserve => raw.to_owned(),
-        UnicodeNormalization::CanonicalDecomposed => canonical_decomposed(raw),
-    };
-    if case_behavior == CaseBehavior::Insensitive {
+    let mut normalized = platform.normalize_component(anchor, raw)?;
+    if platform.case_behavior(anchor)? == CaseBehavior::Insensitive {
         normalized = normalized.to_lowercase();
     }
 
@@ -436,16 +419,24 @@ impl ConfigurationLayer {
         platform: &P,
         anchor: &Path,
     ) -> Result<Self, ConfigurationFailure> {
-        let mut entries = Vec::new();
-        let mut first_source_by_key = BTreeMap::new();
-        for (raw_name, raw_value) in platform.environment_variables() {
+        let mut environment = platform.environment_variables();
+        environment.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        let mut candidates = Vec::new();
+        for (raw_name, raw_value) in environment {
             let Some(normalized_name) = normalized_environment_name(platform, anchor, &raw_name)?
             else {
                 continue;
             };
             let key = environment_key(&normalized_name)?;
+            candidates.push((key, normalized_name, raw_value));
+        }
+
+        let mut first_source_by_key = BTreeMap::new();
+        candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        for (key, normalized_name, _) in &candidates {
             if first_source_by_key
-                .insert(key.clone(), normalized_name)
+                .insert(key.clone(), normalized_name.clone())
                 .is_some()
             {
                 return Err(ConfigurationFailure::new(
@@ -453,14 +444,20 @@ impl ConfigurationLayer {
                     FailureSource::Layer(LayerClass::Environment),
                 ));
             }
-            let value = raw_value.to_str().ok_or_else(|| {
-                ConfigurationFailure::new(
-                    ConfigurationFailureCode::ValueInvalid,
-                    FailureSource::Layer(LayerClass::Environment),
-                )
-            })?;
-            entries.push((key, TomlValue::String(value.to_owned())));
         }
+
+        let entries = candidates
+            .into_iter()
+            .map(|(key, _, raw_value)| {
+                let value = raw_value.to_str().ok_or_else(|| {
+                    ConfigurationFailure::new(
+                        ConfigurationFailureCode::ValueInvalid,
+                        FailureSource::Layer(LayerClass::Environment),
+                    )
+                })?;
+                Ok((key, TomlValue::String(value.to_owned())))
+            })
+            .collect::<Result<Vec<_>, ConfigurationFailure>>()?;
         Ok(Self::environment(entries))
     }
 
@@ -1433,6 +1430,8 @@ fn consume_line_continuation(input: &[u8], position: &mut usize) {
 mod tests {
     use super::*;
     use crate::error::LayerClass;
+    use crate::platform::UnicodeNormalization;
+    use std::collections::BTreeSet;
     use std::fmt::Write as _;
     use std::io::Cursor;
     fn descriptor(name: impl Into<String>) -> KeyDescriptor {
@@ -2045,34 +2044,55 @@ mod tests {
     }
 
     #[test]
-    fn environment_name_unicode_normalization_uses_platform_policy() {
-        let composed = crate::platform::FixturePlatform::new(crate::platform::PlatformKind::MacOs)
-            .with_environment("MATINEE_CAFÉ", "composed")
-            .with_anchor_policy(
-                "/fixture/macos",
-                CaseBehavior::Insensitive,
-                UnicodeNormalization::CanonicalDecomposed,
-            );
-        let decomposed =
-            crate::platform::FixturePlatform::new(crate::platform::PlatformKind::MacOs)
-                .with_environment("MATINEE_CAFE\u{0301}", "decomposed")
-                .with_anchor_policy(
-                    "/fixture/macos",
-                    CaseBehavior::Insensitive,
-                    UnicodeNormalization::CanonicalDecomposed,
-                );
-        let registry = DescriptorRegistry::new(vec![descriptor("cafe\u{0301}")]).unwrap();
+    fn environment_name_unicode_normalization_uses_complete_platform_policy() {
+        let anchor = Path::new("/fixture/macos");
+        let cases = [
+            ("MATINEE_Å", "MATINEE_A\u{030A}", "a\u{030a}"),
+            ("MATINEE_Ñ", "MATINEE_N\u{0303}", "n\u{0303}"),
+        ];
 
-        for (platform, expected) in [(&composed, "composed"), (&decomposed, "decomposed")] {
-            let layer = ConfigurationLayer::from_environment(platform, Path::new("/fixture/macos"))
-                .expect("macOS Unicode aliases should normalize");
-            let resolved = registry
-                .merge_layers([layer])
-                .expect("normalized key should merge");
-            assert_eq!(
-                resolved.get("cafe\u{0301}").unwrap().value(),
-                &text(expected)
-            );
+        for (composed, decomposed, expected_key) in cases {
+            let canonical =
+                crate::platform::FixturePlatform::new(crate::platform::PlatformKind::MacOs)
+                    .with_anchor_policy(
+                        anchor,
+                        CaseBehavior::Insensitive,
+                        UnicodeNormalization::CanonicalDecomposed,
+                    );
+            let composed_name =
+                normalized_environment_name(&canonical, anchor, OsStr::new(composed))
+                    .expect("composed environment name should normalize")
+                    .expect("composed name should have the environment prefix");
+            let decomposed_name =
+                normalized_environment_name(&canonical, anchor, OsStr::new(decomposed))
+                    .expect("decomposed environment name should normalize")
+                    .expect("decomposed name should have the environment prefix");
+            assert_eq!(composed_name, decomposed_name);
+            assert_eq!(environment_key(&composed_name).unwrap(), expected_key);
+
+            let preserve =
+                crate::platform::FixturePlatform::new(crate::platform::PlatformKind::Linux)
+                    .with_environment(composed, "composed")
+                    .with_environment(decomposed, "decomposed")
+                    .with_anchor_policy(
+                        anchor,
+                        CaseBehavior::Sensitive,
+                        UnicodeNormalization::Preserve,
+                    );
+            let layer = ConfigurationLayer::from_environment(&preserve, anchor)
+                .expect("preserved spellings should remain independently accepted");
+            let keys = layer
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(keys.len(), 2);
+            assert!(keys.contains(&expected_key));
+            assert!(keys.contains(&match expected_key {
+                "a\u{030a}" => "å",
+                "n\u{0303}" => "ñ",
+                _ => unreachable!(),
+            }));
         }
     }
 
@@ -2091,7 +2111,65 @@ mod tests {
             ConfigurationLayer::from_environment(&platform, Path::new("/fixture/windows"))
                 .expect_err("native aliases must not silently choose a winner");
         assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
-        assert_eq!(failure.source().as_str(), "environment");
+        assert_eq!(
+            failure.source(),
+            FailureSource::Layer(LayerClass::Environment)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn environment_alias_collision_precedes_invalid_value_decoding() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let platform =
+            crate::platform::FixturePlatform::new(crate::platform::PlatformKind::Windows)
+                .with_environment_os(
+                    OsString::from("MATINEE_DAEMON__ENDPOINT"),
+                    OsString::from_vec(vec![0xff]),
+                )
+                .with_environment("matinee_daemon__endpoint", "valid")
+                .with_anchor_policy(
+                    "/fixture/windows",
+                    CaseBehavior::Insensitive,
+                    UnicodeNormalization::Preserve,
+                );
+        let failure =
+            ConfigurationLayer::from_environment(&platform, Path::new("/fixture/windows"))
+                .expect_err("collision must be checked before decoding values");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+        assert_eq!(
+            failure.source(),
+            FailureSource::Layer(LayerClass::Environment)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn environment_invalid_value_without_collision_is_rejected() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let platform =
+            crate::platform::FixturePlatform::new(crate::platform::PlatformKind::Windows)
+                .with_environment_os(
+                    OsString::from("MATINEE_DAEMON__ENDPOINT"),
+                    OsString::from_vec(vec![0xff]),
+                )
+                .with_anchor_policy(
+                    "/fixture/windows",
+                    CaseBehavior::Insensitive,
+                    UnicodeNormalization::Preserve,
+                );
+        let failure =
+            ConfigurationLayer::from_environment(&platform, Path::new("/fixture/windows"))
+                .expect_err("an accepted invalid value must be rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::ValueInvalid);
+        assert_eq!(
+            failure.source(),
+            FailureSource::Layer(LayerClass::Environment)
+        );
     }
 
     #[test]
