@@ -9,6 +9,7 @@
 
 #![allow(dead_code)]
 
+use crate::config::{ConfigurationLayer, DescriptorRegistry, ResolvedConfiguration};
 use crate::error::{ConfigurationFailure, LayerClass};
 use std::path::{Component, Path, PathBuf};
 
@@ -250,10 +251,39 @@ impl EnvironmentInput {
 /// channel can leak raw operating-system or parser text.
 pub type EnvironmentResult<T> = Result<T, ConfigurationFailure>;
 
+/// Validates and assembles the supplied layers into one complete configuration.
+///
+/// The input is captured for the resolution attempt but is deliberately not read or
+/// normalized here. This stage only delegates the immutable layer merge, so a failure
+/// cannot expose a partially assembled configuration or mutate product state.
+pub(crate) fn assemble_configuration<'a>(
+    _input: &EnvironmentInput,
+    registry: &'a DescriptorRegistry,
+    layers: impl IntoIterator<Item = ConfigurationLayer>,
+) -> EnvironmentResult<ResolvedConfiguration<'a>> {
+    registry.merge_layers(layers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ConfigurationLayer;
+    use crate::config::DescriptorRegistry;
     use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
+    use toml::Value as TomlValue;
+
+    fn test_input(path: &std::path::Path) -> EnvironmentInput {
+        EnvironmentInput::new(path)
+            .with_config_path(path)
+            .with_state_dir(path)
+    }
+
+    fn unknown_environment_layer() -> ConfigurationLayer {
+        ConfigurationLayer::environment(vec![(
+            "not_registered".to_owned(),
+            TomlValue::String("discarded".to_owned()),
+        )])
+    }
 
     #[test]
     fn source_precedence_is_explicit_for_every_contract_source() {
@@ -387,6 +417,75 @@ mod tests {
             Ok(()) => panic!("failure expected"),
         };
         assert_eq!(actual.code(), ConfigurationFailureCode::PathUnavailable);
+    }
+
+    #[test]
+    fn assemble_configuration_is_all_or_failure_without_partial_result() {
+        let registry = DescriptorRegistry::production();
+        let user = ConfigurationLayer::user_file(
+            "config.toml",
+            vec![(
+                "state_dir".to_owned(),
+                TomlValue::String("state".to_owned()),
+            )],
+        )
+        .expect("relative user origin is safe");
+        let input = EnvironmentInput::new("project");
+
+        let result = assemble_configuration(&input, &registry, [user, unknown_environment_layer()]);
+        let failure = result.expect_err("a failing layer must not produce a configuration");
+
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+        assert_eq!(
+            failure.source(),
+            FailureSource::Layer(LayerClass::Environment)
+        );
+    }
+
+    #[test]
+    fn assemble_configuration_does_not_mutate_filesystem() {
+        let sentinel = std::env::temp_dir().join(format!(
+            "matinee-environment-assembly-{}-sentinel",
+            std::process::id()
+        ));
+        assert!(!sentinel.exists(), "sentinel must start absent");
+
+        let registry = DescriptorRegistry::production();
+        let user = ConfigurationLayer::user_file(
+            "config.toml",
+            vec![(
+                "state_dir".to_owned(),
+                TomlValue::String("state".to_owned()),
+            )],
+        )
+        .expect("relative user origin is safe");
+        let result = assemble_configuration(&test_input(&sentinel), &registry, [user]);
+        let configuration = result.expect("valid layers should assemble");
+
+        assert_eq!(
+            configuration
+                .get("state_dir")
+                .expect("setting is resolved")
+                .value(),
+            &TomlValue::String("state".to_owned())
+        );
+        assert!(!sentinel.exists(), "assembly must not create the sentinel");
+    }
+
+    #[test]
+    fn assemble_configuration_preserves_closed_four_field_failure_projection() {
+        let registry = DescriptorRegistry::production();
+        let failure = assemble_configuration(
+            &EnvironmentInput::new("project"),
+            &registry,
+            [unknown_environment_layer()],
+        )
+        .expect_err("unknown keys are rejected");
+
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+        assert_eq!(failure.summary(), "configuration key is unknown");
+        assert_eq!(failure.source().as_str(), "environment");
+        assert_eq!(failure.next_action(), "Remove unknown configuration keys.");
     }
 
     #[test]
