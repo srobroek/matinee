@@ -41,29 +41,74 @@ where
         }
     }
 
-    let mut effective_layers = layers
-        .into_iter()
-        .filter(|layer| {
-            let source = layer.source();
-            !(explicit_config.is_some() && source == ConfigurationSource::ProjectFile
-                || input.state_dir().is_some() && source == ConfigurationSource::CommandLine)
-        })
-        .collect::<Vec<_>>();
-
-    if let Some(state_dir) = input.state_dir() {
-        let Some(state_dir) = state_dir.to_str() else {
-            return Err(ConfigurationFailure::new(
+    let state_dir_override = input.state_dir().map(|state_dir| {
+        state_dir.to_str().map(str::to_owned).ok_or_else(|| {
+            ConfigurationFailure::new(
                 ConfigurationFailureCode::ValueInvalid,
                 FailureSource::Layer(LayerClass::CommandLine),
-            ));
-        };
-        effective_layers.push(ConfigurationLayer::command_line([(
-            "state_dir".to_owned(),
-            TomlValue::String(state_dir.to_owned()),
-        )]));
-    }
+            )
+        })
+    });
+    let state_dir_override = state_dir_override.transpose()?;
+    let original_layers = layers
+        .into_iter()
+        .filter(|layer| {
+            !(explicit_config.is_some() && layer.source() == ConfigurationSource::ProjectFile)
+        })
+        .collect::<Vec<_>>();
+    let resolved = registry.merge_layers(original_layers)?;
+
+    let Some(state_dir) = state_dir_override else {
+        return Ok(resolved);
+    };
+
+    // The layer type intentionally keeps entries private. Rebuild the validated winners
+    // into equivalent single-entry layers so the original merge can validate every CLI
+    // entry, while the replacement below removes only the state_dir winner. This retains
+    // unrelated command-line settings and their source/provenance projections.
+    let mut effective_layers = resolved
+        .settings()
+        .filter(|setting| {
+            setting.key() != "state_dir"
+                && setting.provenance().source() != ConfigurationSource::Default
+        })
+        .map(layer_for_resolved_setting)
+        .collect::<EnvironmentResult<Vec<_>>>()?;
+    effective_layers.push(ConfigurationLayer::command_line([(
+        "state_dir".to_owned(),
+        TomlValue::String(state_dir),
+    )]));
 
     registry.merge_layers(effective_layers)
+}
+
+fn layer_for_resolved_setting(
+    setting: &crate::config::ResolvedSetting<'_>,
+) -> EnvironmentResult<ConfigurationLayer> {
+    let entry = [(setting.key().to_owned(), setting.value().clone())];
+    match setting.provenance().source() {
+        ConfigurationSource::Default => Ok(ConfigurationLayer::defaults(entry)),
+        ConfigurationSource::UserFile => {
+            let path = setting.provenance().relative_path().ok_or_else(|| {
+                ConfigurationFailure::new(
+                    ConfigurationFailureCode::ValueInvalid,
+                    FailureSource::Layer(LayerClass::UserFile),
+                )
+            })?;
+            ConfigurationLayer::user_file(path.to_owned(), entry)
+        }
+        ConfigurationSource::ProjectFile => {
+            let path = setting.provenance().relative_path().ok_or_else(|| {
+                ConfigurationFailure::new(
+                    ConfigurationFailureCode::ValueInvalid,
+                    FailureSource::Layer(LayerClass::ProjectFile),
+                )
+            })?;
+            ConfigurationLayer::project_file(path.to_owned(), entry)
+        }
+        ConfigurationSource::Environment => Ok(ConfigurationLayer::environment(entry)),
+        ConfigurationSource::CommandLine => Ok(ConfigurationLayer::command_line(entry)),
+    }
 }
 
 fn lexically_within(root: &Path, candidate: &Path) -> bool {
@@ -424,6 +469,53 @@ mod tests {
         let state_dir = resolved.get("state_dir").expect("state_dir is present");
         assert_eq!(state_dir.value(), &text("/workspace/override"));
         assert_eq!(state_dir.source(), ConfigurationSource::CommandLine);
+    }
+
+    #[test]
+    fn assemble_configuration_preserves_unrelated_command_line_settings() {
+        let registry = test_registry(&["setting", "state_dir"]);
+        let resolved = assemble_configuration(
+            EnvironmentInput::new("/workspace/project").with_state_dir("/workspace/override"),
+            &registry,
+            [ConfigurationLayer::command_line(vec![
+                ("setting".to_owned(), text("command-line")),
+                ("state_dir".to_owned(), text("stale-state")),
+            ])],
+        )
+        .expect("state override preserves unrelated command-line settings");
+
+        let setting = resolved.get("setting").expect("setting is present");
+        assert_eq!(setting.value(), &text("command-line"));
+        assert_eq!(setting.source(), ConfigurationSource::CommandLine);
+        assert_eq!(
+            resolved.get("state_dir").unwrap().value(),
+            &text("/workspace/override")
+        );
+    }
+
+    #[test]
+    fn assemble_configuration_still_validates_unrelated_command_line_entries() {
+        let cases = [
+            (
+                vec![("unknown".to_owned(), text("rejected"))],
+                ConfigurationFailureCode::KeyUnknown,
+            ),
+            (
+                vec![("setting".to_owned(), TomlValue::Integer(7))],
+                ConfigurationFailureCode::ValueInvalid,
+            ),
+        ];
+
+        for (entry, code) in cases {
+            let registry = test_registry(&["setting", "state_dir"]);
+            let failure = assemble_configuration(
+                EnvironmentInput::new("/workspace/project").with_state_dir("/workspace/override"),
+                &registry,
+                [ConfigurationLayer::command_line(entry)],
+            )
+            .expect_err("invalid command-line entries must not be suppressed");
+            assert_eq!(failure.code(), code);
+        }
     }
 
     #[test]
