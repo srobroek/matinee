@@ -9,3 +9,4 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 directories = "6"
+unicode-normalization = "0.1"

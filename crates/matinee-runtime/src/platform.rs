@@ -15,6 +15,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use unicode_normalization::UnicodeNormalization as UnicodeNormalizationTrait;
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -136,6 +137,17 @@ pub(crate) trait Platform {
         &self,
         anchor: &Path,
     ) -> Result<UnicodeNormalization, ConfigurationFailure>;
+
+    fn normalize_component(
+        &self,
+        anchor: &Path,
+        text: &str,
+    ) -> Result<String, ConfigurationFailure> {
+        Ok(match self.unicode_normalization(anchor)? {
+            UnicodeNormalization::Preserve => text.to_owned(),
+            UnicodeNormalization::CanonicalDecomposed => text.nfd().collect(),
+        })
+    }
 
     fn components_equal(
         &self,
@@ -376,9 +388,12 @@ impl FixturePlatform {
         }
     }
 
-    pub(crate) fn with_environment(mut self, name: &str, value: &str) -> Self {
-        self.environment
-            .insert(OsString::from(name), OsString::from(value));
+    pub(crate) fn with_environment(self, name: &str, value: &str) -> Self {
+        self.with_environment_os(OsString::from(name), OsString::from(value))
+    }
+
+    pub(crate) fn with_environment_os(mut self, name: OsString, value: OsString) -> Self {
+        self.environment.insert(name, value);
         self
     }
 
@@ -1093,6 +1108,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fixture_normalize_component_uses_anchor_policy() {
+        let platform = FixturePlatform::new(PlatformKind::Linux)
+            .with_anchor_policy(
+                "/fixture/canonical",
+                CaseBehavior::Sensitive,
+                UnicodeNormalization::CanonicalDecomposed,
+            )
+            .with_anchor_policy(
+                "/fixture/preserve",
+                CaseBehavior::Sensitive,
+                UnicodeNormalization::Preserve,
+            );
+        assert_eq!(
+            platform.normalize_component(Path::new("/fixture/canonical"), "Å"),
+            Ok("A\u{030a}".to_owned())
+        );
+        assert_eq!(
+            platform.normalize_component(Path::new("/fixture/canonical"), "A\u{030a}"),
+            Ok("A\u{030a}".to_owned())
+        );
+        assert_eq!(
+            platform.normalize_component(Path::new("/fixture/preserve"), "Å"),
+            Ok("Å".to_owned())
+        );
+    }
     #[test]
     fn fixture_anchor_policies_can_differ_on_one_host_shape() {
         let platform = FixturePlatform::new(PlatformKind::Linux)
