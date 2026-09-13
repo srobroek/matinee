@@ -378,25 +378,4 @@ mod tests {
             FailureSource::File(RedactedFileOrigin::UserConfiguration)
         );
     }
-
-    #[test]
-    fn unknown_key_does_not_enter_rendered_fields() {
-        let rejected_key = "credentials.api_token";
-        let map_unknown_key = |_key: &str| {
-            ConfigurationFailure::unknown_key(FailureSource::Layer(LayerClass::Environment))
-        };
-        let failure = map_unknown_key(rejected_key);
-        let rendered = format!(
-            "{}|{}|{}|{}",
-            failure.code().as_str(),
-            failure.summary(),
-            failure.source().as_str(),
-            failure.next_action(),
-        );
-
-        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
-        assert!(!rendered.contains(rejected_key));
-        assert!(!rendered.contains("caller-supplied"));
-        assert_eq!(failure.source().as_str(), "environment");
-    }
 }

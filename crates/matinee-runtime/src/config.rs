@@ -1433,7 +1433,7 @@ mod tests {
     use crate::platform::UnicodeNormalization;
     use std::collections::BTreeSet;
     use std::fmt::Write as _;
-    use std::io::Cursor;
+    use std::io::{self, Cursor, Read};
     fn descriptor(name: impl Into<String>) -> KeyDescriptor {
         KeyDescriptor::new(
             name,
@@ -2710,5 +2710,283 @@ mod tests {
             .expect("ordinary value is valid");
         assert!(!format!("{:?}", result.get("setting").unwrap()).contains("secret-material"));
         assert!(!format!("{result:?}").contains("secret-material"));
+    }
+    struct FailingReader {
+        error: String,
+    }
+
+    impl FailingReader {
+        fn new(error: &str) -> Self {
+            Self {
+                error: error.to_owned(),
+            }
+        }
+    }
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other(self.error.clone()))
+        }
+    }
+
+    fn assert_closed_failure_projection(
+        case_name: &str,
+        failure: ConfigurationFailure,
+        expected_code: ConfigurationFailureCode,
+        expected_source: &str,
+        sentinels: &[&str],
+    ) {
+        assert_eq!(failure.code(), expected_code, "{case_name}: code");
+        assert_eq!(
+            failure.source().as_str(),
+            expected_source,
+            "{case_name}: source"
+        );
+
+        let fields = [
+            failure.code().as_str(),
+            failure.summary(),
+            failure.source().as_str(),
+            failure.next_action(),
+        ];
+        let rendered = failure.to_string();
+        for sentinel in sentinels {
+            assert!(
+                fields.iter().all(|field| !field.contains(sentinel)),
+                "{case_name}: sentinel {sentinel:?} entered a public field"
+            );
+            assert!(
+                !rendered.contains(sentinel),
+                "{case_name}: sentinel {sentinel:?} entered Display"
+            );
+        }
+
+        assert_eq!(
+            rendered,
+            format!(
+                "{}: {} (source: {}; next action: {})",
+                failure.code().as_str(),
+                failure.summary(),
+                failure.source().as_str(),
+                failure.next_action(),
+            ),
+            "{case_name}: Display must contain only the four closed projections"
+        );
+    }
+
+    #[test]
+    fn resolver_failures_project_only_closed_fields_for_reachable_codes() {
+        const REJECTED_KEY: &str = "credentials.api_token";
+        const RAW_PATH: &str = "/private/matinee/config.toml";
+        const RAW_VALUE: &str = "super-secret-value";
+        const PARSER_EXCERPT: &str = "parser excerpt: unexpected token";
+        const OS_ERROR: &str = "os error: permission denied";
+        const SECRET_MATERIAL: &str = "SECRET-MATERIAL-SENTINEL";
+
+        let user_path_failure = ConfigurationLayer::user_file(
+            RAW_PATH,
+            vec![(REJECTED_KEY.to_owned(), text(RAW_VALUE))],
+        )
+        .expect_err("absolute user paths are rejected before resolution");
+        assert_closed_failure_projection(
+            "path_unavailable",
+            user_path_failure,
+            ConfigurationFailureCode::PathUnavailable,
+            "user-configuration-file",
+            &[REJECTED_KEY, RAW_PATH, RAW_VALUE],
+        );
+
+        let project_path_failure = ConfigurationLayer::project_file(
+            "../outside/project.toml",
+            vec![(REJECTED_KEY.to_owned(), text(RAW_VALUE))],
+        )
+        .expect_err("escaping project paths are rejected before resolution");
+        assert_closed_failure_projection(
+            "project_escape",
+            project_path_failure,
+            ConfigurationFailureCode::ProjectEscape,
+            "project-configuration-file",
+            &[REJECTED_KEY, "../outside/project.toml", RAW_VALUE],
+        );
+
+        let unreadable = bounded_toml_read(
+            FailingReader::new(OS_ERROR),
+            FailureSource::File(RedactedFileOrigin::UserConfiguration),
+        )
+        .expect_err("reader errors are mapped before diagnostic rendering");
+        assert_closed_failure_projection(
+            "file_unreadable",
+            unreadable,
+            ConfigurationFailureCode::FileUnreadable,
+            "user-configuration-file",
+            &[RAW_PATH, OS_ERROR, PARSER_EXCERPT, RAW_VALUE],
+        );
+
+        let mut oversized = vec![b'x'; MAX_FILE_BYTES + 1];
+        let oversized_prefix = format!("{PARSER_EXCERPT} {RAW_PATH} {RAW_VALUE} ");
+        oversized[..oversized_prefix.len()].copy_from_slice(oversized_prefix.as_bytes());
+        let too_large = bounded_toml_read(
+            Cursor::new(oversized),
+            FailureSource::File(RedactedFileOrigin::UserConfiguration),
+        )
+        .expect_err("the byte bound is enforced before parsing");
+        assert_closed_failure_projection(
+            "file_too_large",
+            too_large,
+            ConfigurationFailureCode::FileTooLarge,
+            "user-configuration-file",
+            &[RAW_PATH, RAW_VALUE, PARSER_EXCERPT],
+        );
+
+        let duplicate_document =
+            format!("{REJECTED_KEY} = \"{RAW_VALUE}\"\n{REJECTED_KEY} = \"{PARSER_EXCERPT}\"");
+        let duplicate = toml_lexical_preflight(
+            duplicate_document.as_bytes(),
+            FailureSource::File(RedactedFileOrigin::UserConfiguration),
+        )
+        .expect_err("duplicate assignments are rejected by lexical preflight");
+        assert_closed_failure_projection(
+            "key_duplicate",
+            duplicate,
+            ConfigurationFailureCode::KeyDuplicate,
+            "user-configuration-file",
+            &[REJECTED_KEY, RAW_VALUE, PARSER_EXCERPT],
+        );
+
+        let limit_document =
+            format!("a.b.c.d.e = \"{RAW_VALUE}\" # {PARSER_EXCERPT} {REJECTED_KEY}");
+        let limit = toml_lexical_preflight(
+            limit_document.as_bytes(),
+            FailureSource::Layer(LayerClass::UserFile),
+        )
+        .expect_err("dotted-key limits are rejected by lexical preflight");
+        assert_closed_failure_projection(
+            "limit_exceeded",
+            limit,
+            ConfigurationFailureCode::LimitExceeded,
+            "user-file",
+            &[REJECTED_KEY, RAW_VALUE, PARSER_EXCERPT],
+        );
+
+        let unknown_registry = DescriptorRegistry::new(vec![descriptor("known")]).unwrap();
+        let unknown = unknown_registry
+            .merge_layers([ConfigurationLayer::environment(vec![(
+                REJECTED_KEY.to_owned(),
+                text(RAW_VALUE),
+            )])])
+            .expect_err("unknown keys are rejected by the real layer resolution path");
+        assert_closed_failure_projection(
+            "key_unknown",
+            unknown,
+            ConfigurationFailureCode::KeyUnknown,
+            "environment",
+            &[
+                REJECTED_KEY,
+                RAW_VALUE,
+                RAW_PATH,
+                PARSER_EXCERPT,
+                OS_ERROR,
+                SECRET_MATERIAL,
+            ],
+        );
+
+        let forbidden_registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "protected",
+            ValueKind::Text,
+            AllowedSources::user_and_command_line(),
+            MaterialClass::NonSecret,
+        )])
+        .unwrap();
+        let forbidden_value = format!("{RAW_PATH} {RAW_VALUE}");
+        let forbidden = forbidden_registry
+            .merge_layers([ConfigurationLayer::project_file(
+                "project.toml",
+                vec![("protected".to_owned(), text(&forbidden_value))],
+            )
+            .expect("relative project origin is required for source validation")])
+            .expect_err("project sources cannot set protected descriptors");
+        assert_closed_failure_projection(
+            "source_forbidden",
+            forbidden,
+            ConfigurationFailureCode::SourceForbidden,
+            "project-file",
+            &[REJECTED_KEY, RAW_PATH, RAW_VALUE, PARSER_EXCERPT, OS_ERROR],
+        );
+
+        let invalid_registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "ordinary",
+            ValueKind::Boolean,
+            AllowedSources::all(),
+            MaterialClass::NonSecret,
+        )])
+        .unwrap();
+        let invalid = invalid_registry
+            .merge_layers([ConfigurationLayer::environment(vec![(
+                "ordinary".to_owned(),
+                text(RAW_VALUE),
+            )])])
+            .expect_err("wrong typed values are rejected by the real layer resolution path");
+        assert_closed_failure_projection(
+            "value_invalid",
+            invalid,
+            ConfigurationFailureCode::ValueInvalid,
+            "environment",
+            &[REJECTED_KEY, RAW_VALUE, RAW_PATH, PARSER_EXCERPT, OS_ERROR],
+        );
+
+        let secret_registry = DescriptorRegistry::new(vec![KeyDescriptor::new(
+            "secret",
+            ValueKind::Text,
+            AllowedSources::all(),
+            MaterialClass::SecretMaterial,
+        )])
+        .unwrap();
+        let secret = secret_registry
+            .merge_layers([ConfigurationLayer::environment(vec![(
+                "secret".to_owned(),
+                text(SECRET_MATERIAL),
+            )])])
+            .expect_err("secret material is rejected by the real layer resolution path");
+        assert_closed_failure_projection(
+            "secret_forbidden",
+            secret,
+            ConfigurationFailureCode::SecretForbidden,
+            "environment",
+            &[
+                REJECTED_KEY,
+                SECRET_MATERIAL,
+                RAW_PATH,
+                RAW_VALUE,
+                PARSER_EXCERPT,
+                OS_ERROR,
+            ],
+        );
+
+        // `config.file_changed` is emitted by the platform snapshot boundary,
+        // and `config.syntax_invalid` by typed deserialization; neither path
+        // exists in this configuration module, so neither is faked here.
+    }
+
+    #[test]
+    fn unknown_key_resolution_never_discloses_the_rejected_key() {
+        const REJECTED_KEY: &str = "credentials.api_token";
+        let registry = DescriptorRegistry::new(vec![descriptor("known")]).unwrap();
+        let failure = registry
+            .merge_layers([ConfigurationLayer::environment(vec![(
+                REJECTED_KEY.to_owned(),
+                text("secret-value"),
+            )])])
+            .expect_err("the actual resolver must reject an unregistered key");
+        let rendered = format!(
+            "{}|{}|{}|{}|{}",
+            failure.code().as_str(),
+            failure.summary(),
+            failure.source().as_str(),
+            failure.next_action(),
+            failure,
+        );
+
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+        assert!(!rendered.contains(REJECTED_KEY));
     }
 }
