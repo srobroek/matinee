@@ -9,8 +9,91 @@
 
 #![allow(dead_code)]
 
-use crate::error::{ConfigurationFailure, LayerClass};
+use crate::config::{ConfigurationLayer, DescriptorRegistry, ResolvedConfiguration};
+use crate::error::{
+    ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
+};
+use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
+use toml::Value as TomlValue;
+
+/// Assemble the supplied configuration layers after applying immutable input overrides.
+///
+/// This boundary deliberately receives already-loaded layers. It performs only lexical
+/// validation and layer selection; filesystem discovery and reads belong to the owning
+/// platform-resolution stages. The registry is the sole all-or-failure merge boundary.
+pub(crate) fn assemble_configuration<I>(
+    input: impl Borrow<EnvironmentInput>,
+    registry: &DescriptorRegistry,
+    layers: I,
+) -> EnvironmentResult<ResolvedConfiguration<'_>>
+where
+    I: IntoIterator<Item = ConfigurationLayer>,
+{
+    let input = input.borrow();
+    let explicit_config = input.config_path();
+    if let Some(config_path) = explicit_config {
+        if !lexically_within(input.project_root(), config_path) {
+            return Err(ConfigurationFailure::new(
+                ConfigurationFailureCode::ProjectEscape,
+                FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+            ));
+        }
+    }
+
+    let mut effective_layers = layers
+        .into_iter()
+        .filter(|layer| {
+            let source = layer.source();
+            !(explicit_config.is_some() && source == ConfigurationSource::ProjectFile
+                || input.state_dir().is_some() && source == ConfigurationSource::CommandLine)
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(state_dir) = input.state_dir() {
+        let Some(state_dir) = state_dir.to_str() else {
+            return Err(ConfigurationFailure::new(
+                ConfigurationFailureCode::ValueInvalid,
+                FailureSource::Layer(LayerClass::CommandLine),
+            ));
+        };
+        effective_layers.push(ConfigurationLayer::command_line([(
+            "state_dir".to_owned(),
+            TomlValue::String(state_dir.to_owned()),
+        )]));
+    }
+
+    registry.merge_layers(effective_layers)
+}
+
+fn lexically_within(root: &Path, candidate: &Path) -> bool {
+    let root = lexical_normalize(root);
+    let candidate = if candidate.is_absolute() {
+        lexical_normalize(candidate)
+    } else {
+        lexical_normalize(&root.join(candidate))
+    };
+    candidate.starts_with(&root)
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let absolute = path.has_root();
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.file_name().is_some() {
+                    normalized.pop();
+                } else if !absolute {
+                    normalized.push(Component::ParentDir.as_os_str());
+                }
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
 
 /// The configuration layers with an explicit, stable precedence rank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,7 +336,169 @@ pub type EnvironmentResult<T> = Result<T, ConfigurationFailure>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AllowedSources, KeyDescriptor, MaterialClass, ValueKind};
     use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
+
+    fn test_registry(names: &[&str]) -> DescriptorRegistry {
+        DescriptorRegistry::new(
+            names
+                .iter()
+                .map(|name| {
+                    KeyDescriptor::new(
+                        *name,
+                        if *name == "state_dir" {
+                            ValueKind::Path
+                        } else {
+                            ValueKind::Text
+                        },
+                        AllowedSources::all(),
+                        MaterialClass::NonSecret,
+                    )
+                })
+                .collect(),
+        )
+        .expect("test descriptors are valid")
+    }
+
+    fn text(value: &str) -> TomlValue {
+        TomlValue::String(value.to_owned())
+    }
+
+    #[test]
+    fn assemble_configuration_uses_explicit_config_to_replace_project_layer() {
+        let registry = test_registry(&["setting"]);
+        let layers = || {
+            vec![
+                ConfigurationLayer::user_file(
+                    "explicit.toml",
+                    vec![("setting".to_owned(), text("explicit"))],
+                )
+                .unwrap(),
+                ConfigurationLayer::project_file(
+                    "matinee.toml",
+                    vec![("setting".to_owned(), text("implicit"))],
+                )
+                .unwrap(),
+            ]
+        };
+
+        let implicit = assemble_configuration(
+            EnvironmentInput::new("/workspace/project"),
+            &registry,
+            layers(),
+        )
+        .expect("implicit project configuration resolves");
+        assert_eq!(implicit.get("setting").unwrap().value(), &text("implicit"));
+
+        let explicit = assemble_configuration(
+            EnvironmentInput::new("/workspace/project")
+                .with_config_path("/workspace/project/explicit.toml"),
+            &registry,
+            layers(),
+        )
+        .expect("explicit configuration resolves");
+        assert_eq!(
+            explicit.get("setting").unwrap().source(),
+            ConfigurationSource::UserFile
+        );
+    }
+
+    #[test]
+    fn assemble_configuration_uses_state_dir_override_as_command_line_layer() {
+        let registry = test_registry(&["state_dir"]);
+        let layers = vec![
+            ConfigurationLayer::user_file(
+                "config.toml",
+                vec![("state_dir".to_owned(), text("user-state"))],
+            )
+            .unwrap(),
+            ConfigurationLayer::command_line(vec![("state_dir".to_owned(), text("command-state"))]),
+        ];
+
+        let resolved = assemble_configuration(
+            EnvironmentInput::new("/workspace/project").with_state_dir("/workspace/override"),
+            &registry,
+            layers,
+        )
+        .expect("state override resolves");
+        let state_dir = resolved.get("state_dir").expect("state_dir is present");
+        assert_eq!(state_dir.value(), &text("/workspace/override"));
+        assert_eq!(state_dir.source(), ConfigurationSource::CommandLine);
+    }
+
+    #[test]
+    fn assemble_configuration_uses_project_root_for_config_containment() {
+        let registry = test_registry(&["setting"]);
+        let failure = assemble_configuration(
+            EnvironmentInput::new("/workspace/project")
+                .with_config_path("/workspace/project/../outside.toml"),
+            &registry,
+            std::iter::empty(),
+        )
+        .expect_err("configuration outside the project root is rejected");
+        assert_eq!(
+            failure.source(),
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+        );
+    }
+
+    #[test]
+    fn assemble_configuration_is_all_or_failure_without_partial_result() {
+        let registry = test_registry(&["known"]);
+        let result = assemble_configuration(
+            EnvironmentInput::new("/workspace/project"),
+            &registry,
+            [ConfigurationLayer::environment(vec![
+                ("known".to_owned(), text("accepted")),
+                ("unregistered".to_owned(), text("rejected")),
+            ])],
+        );
+        let failure = result.expect_err("unknown input rejects the complete result");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+        assert!(!failure.to_string().contains("unregistered"));
+    }
+
+    #[test]
+    fn assemble_configuration_preserves_closed_four_field_failure_projection() {
+        let raw_path = "/workspace/project/../outside-config.toml";
+        let registry = test_registry(&["setting"]);
+        let failure = assemble_configuration(
+            EnvironmentInput::new("/workspace/project").with_config_path(raw_path),
+            &registry,
+            std::iter::empty(),
+        )
+        .expect_err("escaped configuration path is rejected");
+        assert_eq!(
+            failure.summary(),
+            "project configuration is outside the project root"
+        );
+
+        assert_eq!(
+            failure.source(),
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+        );
+        assert_eq!(
+            failure.next_action(),
+            "Select a project configuration inside the project root."
+        );
+        assert!(!failure.to_string().contains(raw_path));
+    }
+
+    #[test]
+    fn assemble_configuration_does_not_mutate_filesystem() {
+        let sentinel =
+            std::env::temp_dir().join(format!("matinee-assembly-sentinel-{}", std::process::id()));
+        assert!(!sentinel.exists(), "sentinel must start absent");
+        let registry = test_registry(&[]);
+        let result = assemble_configuration(
+            EnvironmentInput::new(&sentinel),
+            &registry,
+            std::iter::empty(),
+        )
+        .expect("empty configuration resolves without filesystem access");
+        assert!(result.is_empty());
+        assert!(!sentinel.exists(), "assembly must not create the sentinel");
+    }
 
     #[test]
     fn source_precedence_is_explicit_for_every_contract_source() {
