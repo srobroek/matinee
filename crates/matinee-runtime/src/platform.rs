@@ -172,21 +172,18 @@ fn required_base(path: &Path, kind: PlatformKind) -> Result<PathBuf, Configurati
 }
 
 fn is_absolute_for_platform(path: &Path, kind: PlatformKind) -> bool {
-    if path.is_absolute() {
-        return true;
+    let text = path.to_string_lossy();
+    match kind {
+        PlatformKind::MacOs | PlatformKind::Linux => text.starts_with('/'),
+        PlatformKind::Windows => {
+            text.starts_with("\\\\")
+                || text.starts_with("//")
+                || (text.len() >= 3
+                    && text.as_bytes()[0].is_ascii_alphabetic()
+                    && text.as_bytes()[1] == b':'
+                    && matches!(text.as_bytes()[2], b'\\' | b'/'))
+        }
     }
-    if kind != PlatformKind::Windows {
-        return false;
-    }
-    let Some(text) = path.to_str() else {
-        return false;
-    };
-    text.starts_with("\\\\")
-        || text.starts_with("//")
-        || (text.len() >= 3
-            && text.as_bytes()[0].is_ascii_alphabetic()
-            && text.as_bytes()[1] == b':'
-            && matches!(text.as_bytes()[2], b'\\' | b'/'))
 }
 
 fn append_component(base: &Path, kind: PlatformKind, component: &str) -> PathBuf {
@@ -1108,6 +1105,21 @@ mod tests {
             assert_eq!(bases.state, state.map(PathBuf::from));
             assert_eq!(platform.kind(), kind);
         }
+    }
+
+    #[test]
+    fn absolute_path_validation_follows_requested_platform() {
+        let unix_root = Path::new("/fixture/linux/home/.config");
+        let windows_drive = Path::new(r"C:\Users\fixture\AppData");
+        let windows_unc = Path::new(r"\\server\share\Matinee");
+
+        assert!(is_absolute_for_platform(unix_root, PlatformKind::MacOs));
+        assert!(is_absolute_for_platform(unix_root, PlatformKind::Linux));
+        assert!(!is_absolute_for_platform(unix_root, PlatformKind::Windows));
+        assert!(is_absolute_for_platform(windows_drive, PlatformKind::Windows));
+        assert!(is_absolute_for_platform(windows_unc, PlatformKind::Windows));
+        assert!(!is_absolute_for_platform(windows_drive, PlatformKind::Linux));
+        assert!(!is_absolute_for_platform(windows_unc, PlatformKind::MacOs));
     }
 
     #[test]
