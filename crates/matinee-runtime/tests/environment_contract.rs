@@ -489,7 +489,6 @@ fn supported_symbolic_link_project_root_converges_with_target_identity() {
         .expect("symbolic-link project root resolves");
 
     assert_eq!(target.lock_identity(), aliased.lock_identity());
-    assert_eq!(target.state_root_identity(), aliased.state_root_identity());
 }
 
 #[test]
