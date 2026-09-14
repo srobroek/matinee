@@ -127,10 +127,6 @@ impl ResolvedEnvironment {
             .map(ResolvedSetting::from_internal)
     }
 
-    /// Alias for [`Self::get`] using the configuration terminology.
-    pub fn setting(&self, key: &str) -> Option<ResolvedSetting> {
-        self.get(key)
-    }
 
     /// Iterates over the complete set of winning settings.
     pub fn settings(&self) -> impl Iterator<Item = ResolvedSetting> + '_ {
