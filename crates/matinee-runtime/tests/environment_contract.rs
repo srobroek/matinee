@@ -550,7 +550,10 @@ fn escaped_implicit_project_file_is_rejected_before_target_read() {
         .expect_err("escaped implicit project file must fail closed");
 
     assert_eq!(failure.code(), ConfigurationFailureCode::ProjectEscape);
-    assert_eq!(fs::read(&outside).expect("outside target remains readable"), b"this is not valid TOML = [");
+    assert_eq!(
+        fs::read(&outside).expect("outside target remains readable"),
+        b"this is not valid TOML = ["
+    );
 }
 
 #[cfg(unix)]
@@ -570,5 +573,8 @@ fn linked_implicit_project_file_is_rejected_before_file_read() {
         .expect_err("linked implicit project file must fail closed");
 
     assert_eq!(failure.code(), ConfigurationFailureCode::ProjectEscape);
-    assert_eq!(fs::read(&target).expect("linked target remains readable"), b"this is not valid TOML = [");
+    assert_eq!(
+        fs::read(&target).expect("linked target remains readable"),
+        b"this is not valid TOML = ["
+    );
 }
