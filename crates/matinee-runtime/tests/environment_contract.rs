@@ -358,7 +358,10 @@ fn missing_project_root_returns_closed_failure_without_mutation() {
         .expect_err("missing required project root must fail closed");
 
     assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
-    assert!(!missing.exists(), "failed resolution must not create the project root");
+    assert!(
+        !missing.exists(),
+        "failed resolution must not create the project root"
+    );
 }
 
 #[cfg(unix)]
@@ -382,7 +385,6 @@ fn inaccessible_project_root_returns_closed_failure_without_mutation() {
         .expect("restore project-root permissions");
     assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
 }
-
 
 #[test]
 fn resolution_creates_no_derived_directories() {
@@ -459,18 +461,37 @@ fn one_hundred_distinct_roots_are_pairwise_isolated_without_mutation() {
         .iter()
         .map(|environment| environment.lock_identity().clone())
         .collect::<HashSet<_>>();
-    assert_eq!(state_paths.len(), 100, "state paths must be pairwise distinct");
+    assert_eq!(
+        state_paths.len(),
+        100,
+        "state paths must be pairwise distinct"
+    );
     assert_eq!(
         lock_identities.len(),
         100,
         "lock identities must be pairwise distinct"
     );
     for environment in &resolved {
-        assert!(!environment.state().exists(), "resolution must not create state");
-        assert!(!environment.config().exists(), "resolution must not create config");
-        assert!(!environment.runtime().exists(), "resolution must not create runtime");
-        assert!(!environment.cache().exists(), "resolution must not create cache");
-        assert!(!environment.log().exists(), "resolution must not create logs");
+        assert!(
+            !environment.state().exists(),
+            "resolution must not create state"
+        );
+        assert!(
+            !environment.config().exists(),
+            "resolution must not create config"
+        );
+        assert!(
+            !environment.runtime().exists(),
+            "resolution must not create runtime"
+        );
+        assert!(
+            !environment.cache().exists(),
+            "resolution must not create cache"
+        );
+        assert!(
+            !environment.log().exists(),
+            "resolution must not create logs"
+        );
     }
 }
 
