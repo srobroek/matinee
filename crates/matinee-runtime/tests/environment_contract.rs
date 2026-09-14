@@ -445,8 +445,13 @@ fn case_equivalent_state_paths_follow_anchor_filesystem_semantics() {
     let fixture = TempFixture::new();
     let mut environment = EnvironmentGuard::acquire();
     configure_host_environment(&fixture, &mut environment);
-    let lower = fixture.path("case-root/state");
-    let upper = fixture.path("CASE-ROOT/STATE");
+
+    let case_root = fixture.path("case-root");
+    fs::create_dir(&case_root).expect("create case-semantics anchor");
+    let uppercase_case_root = fixture.path("CASE-ROOT");
+    let case_insensitive = uppercase_case_root.exists();
+    let lower = case_root.join("state");
+    let upper = uppercase_case_root.join("STATE");
     let lower_result =
         resolve_environment(EnvironmentInput::new(fixture.project_root()).with_state_dir(&lower))
             .expect("lower-case state path resolves");
@@ -454,17 +459,10 @@ fn case_equivalent_state_paths_follow_anchor_filesystem_semantics() {
         resolve_environment(EnvironmentInput::new(fixture.project_root()).with_state_dir(&upper))
             .expect("upper-case state path resolves");
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     assert_eq!(
-        lower_result.lock_identity(),
-        upper_result.lock_identity(),
-        "case-equivalent paths must converge on case-insensitive platforms"
-    );
-    #[cfg(target_os = "linux")]
-    assert_ne!(
-        lower_result.lock_identity(),
-        upper_result.lock_identity(),
-        "case-distinct paths must remain distinct on case-sensitive platforms"
+        lower_result.lock_identity() == upper_result.lock_identity(),
+        case_insensitive,
+        "case-equivalent paths must follow the anchor filesystem semantics"
     );
 }
 
