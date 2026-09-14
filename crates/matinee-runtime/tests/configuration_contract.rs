@@ -2,6 +2,7 @@ use matinee_runtime::{
     ConfigurationFailureCode, ConfigurationSource, EnvironmentInput, resolve_environment,
 };
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -551,14 +552,16 @@ fn configuration_accepts_exact_file_byte_limit_and_rejects_one_over() {
 #[test]
 fn configuration_accepts_exact_assignment_limit_and_rejects_one_over() {
     const ASSIGNMENT_LIMIT: usize = 100;
-    let exact = (0..ASSIGNMENT_LIMIT)
-        .map(|index| format!("unknown_{index} = \"value\"\n"))
-        .collect::<String>();
+    let mut exact = String::with_capacity(ASSIGNMENT_LIMIT * 24);
+    for index in 0..ASSIGNMENT_LIMIT {
+        writeln!(&mut exact, "unknown_{index} = \"value\"").expect("writing to String cannot fail");
+    }
     assert_user_config_failure(&exact, ConfigurationFailureCode::KeyUnknown);
 
-    let one_over = (0..=ASSIGNMENT_LIMIT)
-        .map(|index| format!("unknown_{index} = \"value\"\n"))
-        .collect::<String>();
+    let mut one_over = String::with_capacity((ASSIGNMENT_LIMIT + 1) * 24);
+    for index in 0..=ASSIGNMENT_LIMIT {
+        writeln!(&mut one_over, "unknown_{index} = \"value\"").expect("writing to String cannot fail");
+    }
     assert_user_config_failure(&one_over, ConfigurationFailureCode::LimitExceeded);
 }
 
@@ -588,9 +591,10 @@ fn configuration_accepts_exact_text_length_and_rejects_one_over() {
 fn pathological_exact_one_mib_toml_hits_preflight_before_size_gate() {
     const FILE_BYTE_LIMIT: usize = 1_048_576;
     const ASSIGNMENT_LIMIT: usize = 100;
-    let assignments = (0..=ASSIGNMENT_LIMIT)
-        .map(|index| format!("unknown_{index} = \"value\"\n"))
-        .collect::<String>();
+    let mut assignments = String::with_capacity((ASSIGNMENT_LIMIT + 1) * 24);
+    for index in 0..=ASSIGNMENT_LIMIT {
+        writeln!(&mut assignments, "unknown_{index} = \"value\"").expect("writing to String cannot fail");
+    }
     let mut document = assignments;
     document.push_str(&"#".repeat(FILE_BYTE_LIMIT - document.len()));
 
