@@ -67,6 +67,10 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
         .followed_file_identity(&project_root)
         .map_err(project_failure)?
         .ok_or_else(project_path_unavailable)?;
+    let home = platform
+        .base_directories()
+        .map_err(project_failure)?
+        .home;
     let paths = platform.matinee_paths().map_err(project_failure)?;
 
     let mut layers = Vec::new();
@@ -95,8 +99,13 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
             FailureSource::File(RedactedFileOrigin::UserConfiguration),
         )?;
         let origin = user_path
-            .strip_prefix(&project_root)
-            .unwrap_or(user_path.as_path())
+            .strip_prefix(&home)
+            .map_err(|_| {
+                ConfigurationFailure::new(
+                    ConfigurationFailureCode::PathUnavailable,
+                    FailureSource::File(RedactedFileOrigin::UserConfiguration),
+                )
+            })?
             .to_owned();
         layers.push(ConfigurationLayer::user_file(origin, entries)?);
     }
@@ -105,8 +114,12 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
         &project_root,
     )?);
     let configuration = assemble_configuration(input, registry, layers)?;
-    let state_path = input.state_dir().unwrap_or_else(|| paths.state());
-    let state_path = absolute_lexical_normalize(&project_root, state_path)
+    let state_path = configuration
+        .get("state_dir")
+        .and_then(|setting| setting.value().as_str())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.state().to_path_buf());
+    let state_path = absolute_lexical_normalize(&project_root, &state_path)
         .map_err(|_| project_path_unavailable())?;
     let state_root_identity =
         resolve_path_identity(platform, &state_path).map_err(project_failure)?;
@@ -701,6 +714,94 @@ mod tests {
 
     fn text(value: &str) -> TomlValue {
         TomlValue::String(value.to_owned())
+    }
+
+    struct PostReadChangedPlatform {
+        inner: FixturePlatform,
+    }
+
+    impl Platform for PostReadChangedPlatform {
+        fn kind(&self) -> PlatformKind {
+            self.inner.kind()
+        }
+
+        fn base_directories(&self) -> Result<crate::platform::BaseDirectories, ConfigurationFailure> {
+            self.inner.base_directories()
+        }
+
+        fn environment_variable(&self, name: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+            self.inner.environment_variable(name)
+        }
+
+        fn environment_variables(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+            self.inner.environment_variables()
+        }
+
+        fn file_snapshot(&self, path: &Path) -> Result<Option<FileSnapshot>, ConfigurationFailure> {
+            self.inner.file_snapshot(path)
+        }
+
+        fn followed_file_identity(
+            &self,
+            path: &Path,
+        ) -> Result<Option<FileIdentity>, ConfigurationFailure> {
+            self.inner.followed_file_identity(path)
+        }
+
+        fn read_file(&self, path: &Path) -> Result<FileRead, ConfigurationFailure> {
+            let mut read = self.inner.read_file(path)?;
+            read.snapshot.identity.file = read.snapshot.identity.file.wrapping_add(1);
+            Ok(read)
+        }
+
+        fn case_behavior(&self, anchor: &Path) -> Result<crate::platform::CaseBehavior, ConfigurationFailure> {
+            self.inner.case_behavior(anchor)
+        }
+
+        fn unicode_normalization(
+            &self,
+            anchor: &Path,
+        ) -> Result<crate::platform::UnicodeNormalization, ConfigurationFailure> {
+            self.inner.unicode_normalization(anchor)
+        }
+    }
+
+    #[test]
+    fn resolve_environment_rejects_post_read_replacement_in_one_invocation() {
+        let root = FileIdentity { volume: 1, file: 10 };
+        let platform = FixturePlatform::new(PlatformKind::Linux)
+            .with_snapshot(
+                "/fixture/project",
+                FileSnapshot::directory(root, Some(1)),
+            )
+            .with_followed_file_identity("/fixture/project", root)
+            .with_file(
+                "/fixture/project/matinee.toml",
+                FileIdentity { volume: 1, file: 11 },
+                b"setting = \"project\"\n",
+                Some(2),
+            )
+            .with_snapshot(
+                "/fixture/linux/home",
+                FileSnapshot::directory(
+                    FileIdentity { volume: 1, file: 12 },
+                    Some(1),
+                ),
+            )
+            .with_followed_file_identity(
+                "/fixture/linux/home",
+                FileIdentity { volume: 1, file: 12 },
+            );
+        let platform = PostReadChangedPlatform { inner: platform };
+        let registry = test_registry(&["setting"]);
+
+        let failure = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project"),
+            &registry,
+        )
+        .expect_err("replacement during one resolver read must fail");
+        assert_eq!(failure.code(), ConfigurationFailureCode::FileChanged);
     }
 
     #[test]
