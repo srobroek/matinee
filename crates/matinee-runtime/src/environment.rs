@@ -177,9 +177,10 @@ fn parse_configuration(
     toml_lexical_preflight(contents, source)?;
     let text = str::from_utf8(contents)
         .map_err(|_| ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source))?;
-    let value = text
-        .parse::<TomlValue>()
+    let table = text
+        .parse::<toml::Table>()
         .map_err(|_| ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source))?;
+    let value = TomlValue::Table(table);
     let mut entries = Vec::new();
     flatten_toml(&value, "", &mut entries, source)?;
     Ok(entries)
