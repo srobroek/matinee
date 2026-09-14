@@ -18,6 +18,7 @@ use crate::error::{
 use crate::path_identity::{PathIdentity, absolute_lexical_normalize, resolve_path_identity};
 use crate::platform::{FileIdentity, FileSnapshot, FileType, MatineePaths, Platform};
 use std::borrow::Borrow;
+use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::str;
 use toml::Value as TomlValue;
@@ -883,9 +884,10 @@ mod tests {
     #[test]
     fn resolve_environment_preflights_toml_before_typed_parsing() {
         let (platform, _) = project_fixture();
-        let contents = (0..=100)
-            .map(|index| format!("setting_{index} = \"value\"\n"))
-            .collect::<String>();
+        let mut contents = String::new();
+        for index in 0..=100 {
+            writeln!(contents, "setting_{index} = \"value\"").expect("writing to String cannot fail");
+        }
         let platform = platform.with_file(
             "/fixture/linux/home/config.toml",
             FileIdentity {
