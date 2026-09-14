@@ -12,6 +12,70 @@ use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource
 use crate::platform::{FileIdentity, FileSnapshot, Platform};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+/// The stable identity of a path, made from its longest existing anchor and
+/// the missing tail interpreted with that anchor's native comparison rules.
+///
+/// The anchor identity is deliberately kept separate from the comparison tail:
+/// a first-use state directory may not exist yet, but its existing ancestor still
+/// supplies the filesystem identity, case behavior, and Unicode normalization.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct PathIdentity {
+    existing_anchor_id: FileIdentity,
+    comparison_tail: PathBuf,
+}
+
+impl PathIdentity {
+    pub(crate) const fn existing_anchor_id(&self) -> FileIdentity {
+        self.existing_anchor_id
+    }
+
+    pub(crate) fn comparison_tail(&self) -> &Path {
+        &self.comparison_tail
+    }
+}
+
+/// Resolve a path identity without creating or following any filesystem entry.
+///
+/// The longest existing ancestor supplies the stable file identity. Every missing
+/// component is then normalized using the ancestor's native Unicode policy and
+/// case behavior, so aliases converge while distinct anchor identities remain
+/// distinct.
+pub(crate) fn resolve_path_identity<P: Platform>(
+    platform: &P,
+    absolute_path: &Path,
+) -> Result<PathIdentity, ConfigurationFailure> {
+    let ancestor = longest_existing_ancestor(platform, absolute_path)?;
+    let comparison_tail =
+        normalize_comparison_tail(platform, ancestor.path(), ancestor.comparison_tail())?;
+    Ok(PathIdentity {
+        existing_anchor_id: ancestor.identity(),
+        comparison_tail,
+    })
+}
+
+fn normalize_comparison_tail<P: Platform>(
+    platform: &P,
+    anchor: &Path,
+    tail: &Path,
+) -> Result<PathBuf, ConfigurationFailure> {
+    if tail.as_os_str().is_empty() {
+        return Ok(PathBuf::new());
+    }
+    let case_behavior = platform.case_behavior(anchor)?;
+    let mut normalized = PathBuf::new();
+    for component in tail.components() {
+        let Component::Normal(component) = component else {
+            return Err(path_unavailable());
+        };
+        let text = component.to_str().ok_or_else(path_unavailable)?;
+        let mut text = platform.normalize_component(anchor, text)?;
+        if case_behavior == crate::platform::CaseBehavior::Insensitive {
+            text = text.to_lowercase();
+        }
+        normalized.push(text);
+    }
+    Ok(normalized)
+}
 
 /// Resolve `input` against `base` and remove only lexical `.` and `..` segments.
 ///
@@ -227,6 +291,104 @@ mod tests {
                 .expect_err("platform failure")
                 .code(),
             ConfigurationFailureCode::FileUnreadable,
+        );
+    }
+
+    fn platform_with_anchor(kind: PlatformKind, identity: FileIdentity) -> FixturePlatform {
+        FixturePlatform::new(kind)
+            .with_snapshot("/fixture/project", FileSnapshot::directory(identity, None))
+    }
+
+    #[test]
+    fn path_identity_uses_anchor_identity_and_native_comparison_rules() {
+        let mac = platform_with_anchor(
+            PlatformKind::MacOs,
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+        );
+        let linux = platform_with_anchor(
+            PlatformKind::Linux,
+            FileIdentity {
+                volume: 2,
+                file: 22,
+            },
+        );
+        let windows = platform_with_anchor(
+            PlatformKind::Windows,
+            FileIdentity {
+                volume: 3,
+                file: 33,
+            },
+        );
+        let requested = Path::new("/fixture/project/MiXeD/É");
+
+        let mac_identity = resolve_path_identity(&mac, requested).expect("mac identity");
+        assert_eq!(
+            mac_identity.existing_anchor_id(),
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            }
+        );
+        assert_eq!(mac_identity.comparison_tail(), Path::new("mixed/e\u{301}"));
+
+        let linux_identity = resolve_path_identity(&linux, requested).expect("linux identity");
+        assert_eq!(linux_identity.comparison_tail(), Path::new("MiXeD/É"));
+
+        let windows_identity =
+            resolve_path_identity(&windows, requested).expect("windows identity");
+        assert_eq!(windows_identity.comparison_tail(), Path::new("mixed/é"));
+    }
+
+    #[test]
+    fn path_identity_preserves_empty_tail_without_querying_comparison_policy() {
+        let failure = ConfigurationFailure::new(
+            ConfigurationFailureCode::FileUnreadable,
+            FailureSource::Layer(LayerClass::BuiltIn),
+        );
+        let platform = platform_with_anchor(
+            PlatformKind::Linux,
+            FileIdentity {
+                volume: 4,
+                file: 44,
+            },
+        )
+        .with_case_behavior_error(failure);
+
+        let identity = resolve_path_identity(&platform, Path::new("/fixture/project"))
+            .expect("existing anchors do not require tail comparison");
+        assert_eq!(
+            identity.existing_anchor_id(),
+            FileIdentity {
+                volume: 4,
+                file: 44
+            }
+        );
+        assert_eq!(identity.comparison_tail(), Path::new(""));
+    }
+
+    #[test]
+    fn path_identity_propagates_native_comparison_failures() {
+        let failure = ConfigurationFailure::new(
+            ConfigurationFailureCode::FileUnreadable,
+            FailureSource::Layer(LayerClass::BuiltIn),
+        );
+        let platform = platform_with_anchor(
+            PlatformKind::Linux,
+            FileIdentity {
+                volume: 5,
+                file: 55,
+            },
+        )
+        .with_case_behavior_error(failure);
+
+        assert_eq!(
+            resolve_path_identity(&platform, Path::new("/fixture/project/missing"))
+                .expect_err("comparison failure")
+                .code(),
+            ConfigurationFailureCode::FileUnreadable
         );
     }
 }
