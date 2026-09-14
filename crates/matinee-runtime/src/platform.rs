@@ -28,8 +28,9 @@ use std::os::windows::io::AsRawHandle;
 use windows_sys::Win32::Foundation::HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileAttributeTagInfo,
+    FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
 };
 
 pub(crate) const MAX_FILE_BYTES: usize = 1_048_576;
@@ -376,7 +377,7 @@ impl Platform for HostPlatform {
                 Err(_) => return Err(file_unreadable()),
             };
             let metadata = file.metadata().map_err(|_| file_unreadable())?;
-            let file_type = no_follow_file_type(&metadata);
+            let file_type = no_follow_file_type(&file, &metadata);
             let identity = identity_from_open_file(&file, &metadata).ok_or_else(file_unreadable)?;
             return Ok(Some(FileSnapshot {
                 identity,
@@ -876,13 +877,27 @@ fn modified_marker(metadata: &fs::Metadata) -> Option<u128> {
 }
 
 #[cfg(windows)]
-fn no_follow_file_type(metadata: &fs::Metadata) -> FileType {
+fn no_follow_file_type(file: &fs::File, metadata: &fs::Metadata) -> FileType {
     if metadata.file_type().is_symlink() {
-        FileType::Symlink
-    } else if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        FileType::Other
-    } else {
+        return FileType::Symlink;
+    }
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return file_type(metadata);
+    }
+
+    let mut tag_info = unsafe { std::mem::zeroed::<FILE_ATTRIBUTE_TAG_INFO>() };
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as HANDLE,
+            FileAttributeTagInfo,
+            &mut tag_info as *mut FILE_ATTRIBUTE_TAG_INFO as *mut _,
+            std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    };
+    if succeeded != 0 && tag_info.ReparseTag & 0x2000_0000 == 0 {
         file_type(metadata)
+    } else {
+        FileType::Other
     }
 }
 
@@ -903,19 +918,31 @@ fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
 }
 #[cfg(windows)]
 fn file_identity_from_handle(file: &fs::File) -> Option<FileIdentity> {
+    let handle = file.as_raw_handle() as HANDLE;
     let mut information = unsafe { std::mem::zeroed::<FILE_ID_INFO>() };
     let succeeded = unsafe {
         GetFileInformationByHandleEx(
-            file.as_raw_handle() as HANDLE,
+            handle,
             FileIdInfo,
             &mut information as *mut FILE_ID_INFO as *mut _,
             std::mem::size_of::<FILE_ID_INFO>() as u32,
         )
     };
+    if succeeded != 0 {
+        return Some(FileIdentity {
+            volume: information.VolumeSerialNumber,
+            // FILE_ID_128 is opaque; this explicit representation preserves all bytes.
+            file: u128::from_le_bytes(information.FileId.Identifier),
+        });
+    }
+
+    let mut legacy = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    let succeeded = unsafe { GetFileInformationByHandle(handle, &mut legacy) };
     (succeeded != 0).then_some(FileIdentity {
-        volume: information.VolumeSerialNumber,
-        // FILE_ID_128 is opaque; this explicit representation preserves all bytes.
-        file: u128::from_le_bytes(information.FileId.Identifier),
+        volume: legacy.dwVolumeSerialNumber as u64,
+        file: u128::from(
+            ((legacy.nFileIndexHigh as u64) << 32) | legacy.nFileIndexLow as u64,
+        ),
     })
 }
 
