@@ -67,10 +67,7 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
         .followed_file_identity(&project_root)
         .map_err(project_failure)?
         .ok_or_else(project_path_unavailable)?;
-    let home = platform
-        .base_directories()
-        .map_err(project_failure)?
-        .home;
+    let home = platform.base_directories().map_err(project_failure)?.home;
     let paths = platform.matinee_paths().map_err(project_failure)?;
 
     let mut layers = Vec::new();
@@ -725,7 +722,9 @@ mod tests {
             self.inner.kind()
         }
 
-        fn base_directories(&self) -> Result<crate::platform::BaseDirectories, ConfigurationFailure> {
+        fn base_directories(
+            &self,
+        ) -> Result<crate::platform::BaseDirectories, ConfigurationFailure> {
             self.inner.base_directories()
         }
 
@@ -754,7 +753,10 @@ mod tests {
             Ok(read)
         }
 
-        fn case_behavior(&self, anchor: &Path) -> Result<crate::platform::CaseBehavior, ConfigurationFailure> {
+        fn case_behavior(
+            &self,
+            anchor: &Path,
+        ) -> Result<crate::platform::CaseBehavior, ConfigurationFailure> {
             self.inner.case_behavior(anchor)
         }
 
@@ -768,29 +770,38 @@ mod tests {
 
     #[test]
     fn resolve_environment_rejects_post_read_replacement_in_one_invocation() {
-        let root = FileIdentity { volume: 1, file: 10 };
+        let root = FileIdentity {
+            volume: 1,
+            file: 10,
+        };
         let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_snapshot(
-                "/fixture/project",
-                FileSnapshot::directory(root, Some(1)),
-            )
+            .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
             .with_followed_file_identity("/fixture/project", root)
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity { volume: 1, file: 11 },
+                FileIdentity {
+                    volume: 1,
+                    file: 11,
+                },
                 b"setting = \"project\"\n",
                 Some(2),
             )
             .with_snapshot(
                 "/fixture/linux/home",
                 FileSnapshot::directory(
-                    FileIdentity { volume: 1, file: 12 },
+                    FileIdentity {
+                        volume: 1,
+                        file: 12,
+                    },
                     Some(1),
                 ),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home",
-                FileIdentity { volume: 1, file: 12 },
+                FileIdentity {
+                    volume: 1,
+                    file: 12,
+                },
             );
         let platform = PostReadChangedPlatform { inner: platform };
         let registry = test_registry(&["setting"]);
