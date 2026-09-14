@@ -203,9 +203,7 @@ fn read_optional_file<P: Platform>(
             source,
         ));
     }
-    let read = platform
-        .read_file(path)
-        .map_err(|_| ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source))?;
+    let read = platform.read_file(path)?;
     if read.snapshot != snapshot {
         return Err(ConfigurationFailure::new(
             ConfigurationFailureCode::FileChanged,
