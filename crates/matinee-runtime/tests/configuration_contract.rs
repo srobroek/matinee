@@ -334,6 +334,86 @@ fn unknown_keys_are_rejected_in_each_external_source() {
 }
 
 #[test]
+fn reserved_keys_are_unknown_until_their_descriptor_is_registered() {
+    // Reserved names do not bypass descriptor lookup merely because a future
+    // specification has marked them as protected.
+    for source in ["user", "project", "environment"] {
+        let fixture = TestFixture::new();
+        let failure = match source {
+            "user" => {
+                fixture.write_user_config("daemon.endpoint = \"http://secret.example\"\n");
+                resolve_environment(EnvironmentInput::new(fixture.project_root()))
+            }
+            "project" => {
+                fixture.write_project_config("principal.native = \"native-secret\"\n");
+                resolve_environment(EnvironmentInput::new(fixture.project_root()))
+            }
+            "environment" => {
+                fixture.set_environment("MATINEE_EXTENSION__DEVELOPMENT_IDENTITY", "identity");
+                resolve_environment(EnvironmentInput::new(fixture.project_root()))
+            }
+            _ => unreachable!("source list is closed"),
+        }
+        .expect_err("unregistered reserved keys must remain unknown");
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown, "source: {source}");
+    }
+}
+
+#[test]
+fn unknown_key_failure_is_redacted_and_does_not_return_partial_state() {
+    let fixture = TestFixture::new();
+    let rejected_key = "credentials.api_token";
+    let secret_value = "raw-secret-that-must-not-leak";
+    fixture.write_user_config(&format!(
+        "state_dir = \"accepted-but-not-returned\"\n{rejected_key} = \"{secret_value}\"\n"
+    ));
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("an unknown key rejects the complete resolution");
+    assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+    let rendered = format!("{failure:?} {failure}");
+    assert!(rendered.contains("user-configuration-file"));
+    assert!(!rendered.contains(rejected_key));
+    assert!(!rendered.contains(secret_value));
+    let root_text = fixture.root.to_string_lossy();
+    assert!(!rendered.contains(root_text.as_ref()));
+}
+
+#[test]
+fn malformed_registered_value_is_rejected_after_source_authorization() {
+    let fixture = TestFixture::new();
+    fixture.write_user_config("state_dir = true\n");
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("a registered state_dir with the wrong TOML type must fail");
+    assert_eq!(failure.code(), ConfigurationFailureCode::ValueInvalid);
+    let rendered = format!("{failure:?} {failure}");
+    assert!(!rendered.contains("true"));
+    let root_text = fixture.root.to_string_lossy();
+    assert!(!rendered.contains(root_text.as_ref()));
+}
+
+#[test]
+fn duplicate_project_key_is_rejected_before_merge() {
+    let fixture = TestFixture::new();
+    fixture.write_project_config("state_dir = \"first\"\nstate_dir = \"second\"\n");
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("duplicate project assignments must be rejected");
+    assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+}
+
+#[test]
+fn environment_names_that_normalize_to_one_key_are_rejected_as_duplicates() {
+    let fixture = TestFixture::new();
+    fixture.set_environment("MATINEE_DUPLICATE__KEY", "first");
+    fixture.set_environment("MATINEE_DUPLICATE__key", "second");
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("distinct environment spellings mapping to one key must fail");
+    assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+
+#[test]
 fn duplicate_user_key_is_rejected() {
     // Catches a parser that lets a duplicate assignment overwrite an earlier user value.
     let fixture = TestFixture::new();
