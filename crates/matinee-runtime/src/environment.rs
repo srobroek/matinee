@@ -13,7 +13,7 @@ use crate::config::{ConfigurationLayer, DescriptorRegistry, ResolvedConfiguratio
 use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
-use crate::path_identity::{absolute_lexical_normalize, resolve_path_identity, PathIdentity};
+use crate::path_identity::{PathIdentity, absolute_lexical_normalize, resolve_path_identity};
 use crate::platform::{FileIdentity, FileSnapshot, FileType, MatineePaths, Platform};
 use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
@@ -70,9 +70,13 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
     let paths = platform.matinee_paths().map_err(project_failure)?;
 
     let mut layers = Vec::new();
-    if let Some(contents) = read_implicit_project_file(platform, &project_root, project_root_identity)?
+    if let Some(contents) =
+        read_implicit_project_file(platform, &project_root, project_root_identity)?
     {
-        let entries = parse_configuration(&contents, FailureSource::File(RedactedFileOrigin::ProjectConfiguration))?;
+        let entries = parse_configuration(
+            &contents,
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+        )?;
         layers.push(ConfigurationLayer::project_file("matinee.toml", entries)?);
     }
     let user_path = input
@@ -81,20 +85,31 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
         .transpose()
         .map_err(|_| project_path_unavailable())?
         .unwrap_or_else(|| paths.config().join("config.toml"));
-    if let Some(contents) = read_optional_file(platform, &user_path, FailureSource::File(RedactedFileOrigin::UserConfiguration))? {
-        let entries = parse_configuration(&contents, FailureSource::File(RedactedFileOrigin::UserConfiguration))?;
+    if let Some(contents) = read_optional_file(
+        platform,
+        &user_path,
+        FailureSource::File(RedactedFileOrigin::UserConfiguration),
+    )? {
+        let entries = parse_configuration(
+            &contents,
+            FailureSource::File(RedactedFileOrigin::UserConfiguration),
+        )?;
         let origin = user_path
             .strip_prefix(&project_root)
             .unwrap_or(user_path.as_path())
             .to_owned();
         layers.push(ConfigurationLayer::user_file(origin, entries)?);
     }
-    layers.push(ConfigurationLayer::from_environment(platform, &project_root)?);
+    layers.push(ConfigurationLayer::from_environment(
+        platform,
+        &project_root,
+    )?);
     let configuration = assemble_configuration(input, registry, layers)?;
     let state_path = input.state_dir().unwrap_or_else(|| paths.state());
     let state_path = absolute_lexical_normalize(&project_root, state_path)
         .map_err(|_| project_path_unavailable())?;
-    let state_root_identity = resolve_path_identity(platform, &state_path).map_err(project_failure)?;
+    let state_root_identity =
+        resolve_path_identity(platform, &state_path).map_err(project_failure)?;
     Ok(ResolvedEnvironment {
         configuration,
         project_root,
@@ -109,30 +124,39 @@ fn read_optional_file<P: Platform>(
     path: &Path,
     source: FailureSource,
 ) -> EnvironmentResult<Option<Vec<u8>>> {
-    let Some(snapshot) = platform.file_snapshot(path).map_err(|_| {
-        ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source)
-    })? else {
+    let Some(snapshot) = platform
+        .file_snapshot(path)
+        .map_err(|_| ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source))?
+    else {
         return Ok(None);
     };
     if snapshot.file_type != FileType::Regular {
-        return Err(ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source));
+        return Err(ConfigurationFailure::new(
+            ConfigurationFailureCode::FileUnreadable,
+            source,
+        ));
     }
-    let read = platform.read_file(path).map_err(|_| {
-        ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source)
-    })?;
+    let read = platform
+        .read_file(path)
+        .map_err(|_| ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source))?;
     if read.snapshot != snapshot {
-        return Err(ConfigurationFailure::new(ConfigurationFailureCode::FileChanged, source));
+        return Err(ConfigurationFailure::new(
+            ConfigurationFailureCode::FileChanged,
+            source,
+        ));
     }
     Ok(Some(read.contents))
 }
 
-fn parse_configuration(contents: &[u8], source: FailureSource) -> EnvironmentResult<Vec<(String, TomlValue)>> {
-    let text = str::from_utf8(contents).map_err(|_| {
-        ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source)
-    })?;
-    let value = text.parse::<TomlValue>().map_err(|_| {
-        ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source)
-    })?;
+fn parse_configuration(
+    contents: &[u8],
+    source: FailureSource,
+) -> EnvironmentResult<Vec<(String, TomlValue)>> {
+    let text = str::from_utf8(contents)
+        .map_err(|_| ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source))?;
+    let value = text
+        .parse::<TomlValue>()
+        .map_err(|_| ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source))?;
     let mut entries = Vec::new();
     flatten_toml(&value, "", &mut entries, source)?;
     Ok(entries)
