@@ -552,10 +552,19 @@ fn configuration_accepts_exact_text_length_and_rejects_one_over() {
 }
 
 #[test]
-fn pathological_one_mib_toml_comment_is_bounded_before_deserialization() {
+fn pathological_exact_one_mib_toml_hits_preflight_before_size_gate() {
     const FILE_BYTE_LIMIT: usize = 1_048_576;
-    assert_user_config_failure(
-        &exact_byte_document(FILE_BYTE_LIMIT + 1),
-        ConfigurationFailureCode::FileTooLarge,
-    );
+    const ASSIGNMENT_LIMIT: usize = 100;
+    let assignments = (0..=ASSIGNMENT_LIMIT)
+        .map(|index| format!("unknown_{index} = \"value\"\n"))
+        .collect::<String>();
+    let mut document = assignments;
+    document.push_str(&"#".repeat(FILE_BYTE_LIMIT - document.len()));
+
+    assert_eq!(document.len(), FILE_BYTE_LIMIT);
+    let failure = assert_user_config_failure(&document, ConfigurationFailureCode::LimitExceeded);
+    let rendered = failure.to_string();
+    assert!(rendered.contains("config.limit_exceeded"));
+    assert!(rendered.contains("source: user-configuration-file"));
+    assert!(!rendered.contains("config.file_too_large"));
 }
