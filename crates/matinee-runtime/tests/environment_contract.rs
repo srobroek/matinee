@@ -532,3 +532,43 @@ fn command_line_state_override_preserves_host_paths_and_lock_identity() {
     assert_eq!(first.lock_identity(), same.lock_identity());
     assert_ne!(first.lock_identity(), different.lock_identity());
 }
+
+#[cfg(unix)]
+#[test]
+fn escaped_implicit_project_file_is_rejected_before_target_read() {
+    // A malformed outside target distinguishes containment rejection from a read followed by
+    // parsing: the resolver must return project_escape without observing target contents.
+    let fixture = TempFixture::new();
+    let outside = fixture.path("outside.toml");
+    fs::write(&outside, b"this is not valid TOML = [").expect("write outside target");
+    std::os::unix::fs::symlink(&outside, fixture.project_root().join("matinee.toml"))
+        .expect("link implicit project file outside project root");
+
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("escaped implicit project file must fail closed");
+
+    assert_eq!(failure.code(), ConfigurationFailureCode::ProjectEscape);
+    assert_eq!(fs::read(&outside).expect("outside target remains readable"), b"this is not valid TOML = [");
+}
+
+#[cfg(unix)]
+#[test]
+fn linked_implicit_project_file_is_rejected_before_file_read() {
+    // Even a link whose target is inside the project is not an ordinary project file. A malformed
+    // target makes a syntax error observable if validation accidentally reads through the link.
+    let fixture = TempFixture::new();
+    let target = fixture.project_root().join("target.toml");
+    fs::write(&target, b"this is not valid TOML = [").expect("write linked target");
+    std::os::unix::fs::symlink(&target, fixture.project_root().join("matinee.toml"))
+        .expect("link implicit project file");
+
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("linked implicit project file must fail closed");
+
+    assert_eq!(failure.code(), ConfigurationFailureCode::ProjectEscape);
+    assert_eq!(fs::read(&target).expect("linked target remains readable"), b"this is not valid TOML = [");
+}
