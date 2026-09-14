@@ -457,20 +457,20 @@ fn one_hundred_distinct_roots_are_pairwise_isolated_without_mutation() {
         .iter()
         .map(|environment| environment.state().to_owned())
         .collect::<HashSet<_>>();
-    let lock_identities = resolved
-        .iter()
-        .map(|environment| environment.lock_identity().clone())
-        .collect::<HashSet<_>>();
     assert_eq!(
         state_paths.len(),
         100,
         "state paths must be pairwise distinct"
     );
-    assert_eq!(
-        lock_identities.len(),
-        100,
-        "lock identities must be pairwise distinct"
-    );
+    let lock_identities = resolved
+        .iter()
+        .map(|environment| environment.lock_identity().clone())
+        .collect::<Vec<_>>();
+    for (index, identity) in lock_identities.iter().enumerate() {
+        for other in lock_identities.iter().skip(index + 1) {
+            assert!(identity != other, "lock identities must be pairwise distinct");
+        }
+    }
     for environment in &resolved {
         assert!(
             !environment.state().exists(),
