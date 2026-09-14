@@ -121,7 +121,8 @@ impl BaseDirectories {
             }
             PlatformKind::Linux => {
                 let config = append_component(&required_base(&self.config, kind)?, kind, "matinee");
-                let state_base = required_base(self.state.as_deref().ok_or_else(path_unavailable)?, kind)?;
+                let state_base =
+                    required_base(self.state.as_deref().ok_or_else(path_unavailable)?, kind)?;
                 let state = append_component(&state_base, kind, "matinee");
                 let runtime_base = self
                     .runtime
@@ -1147,7 +1148,10 @@ mod tests {
             Path::new("/fixture/linux/home/.local/state/matinee")
         );
         assert_eq!(linux.runtime(), Path::new("/fixture/linux/runtime/matinee"));
-        assert_eq!(linux.cache(), Path::new("/fixture/linux/home/.cache/matinee"));
+        assert_eq!(
+            linux.cache(),
+            Path::new("/fixture/linux/home/.cache/matinee")
+        );
         assert_eq!(
             linux.logs(),
             Path::new("/fixture/linux/home/.local/state/matinee/logs")
