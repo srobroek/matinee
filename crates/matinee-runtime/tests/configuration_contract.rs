@@ -467,3 +467,88 @@ fn user_file_provenance_is_relative_and_redacted() {
     assert!(!debug.contains(root_text.as_ref()));
     assert!(!debug.contains(home_text.as_ref()));
 }
+
+fn assert_user_config_failure(contents: &str, expected: ConfigurationFailureCode) {
+    let fixture = TestFixture::new();
+    fixture.write_user_config(contents);
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("the configuration boundary case must be rejected");
+    assert_eq!(failure.code(), expected);
+}
+
+fn exact_byte_document(byte_length: usize) -> String {
+    let prefix = "state_dir = \"boundary\"\n";
+    assert!(byte_length >= prefix.len());
+    let mut document = String::with_capacity(byte_length);
+    document.push_str(prefix);
+    document.push_str(&"#".repeat(byte_length - prefix.len()));
+    document
+}
+
+#[test]
+fn configuration_accepts_exact_file_byte_limit_and_rejects_one_over() {
+    const FILE_BYTE_LIMIT: usize = 1_048_576;
+    let fixture = TestFixture::new();
+    fixture.write_user_config(&exact_byte_document(FILE_BYTE_LIMIT));
+    let resolved = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect("a syntactically valid configuration at the byte limit resolves");
+    assert_eq!(
+        resolved
+            .get("state_dir")
+            .expect("state_dir is present")
+            .value(),
+        "boundary"
+    );
+    drop(fixture);
+
+    assert_user_config_failure(
+        &exact_byte_document(FILE_BYTE_LIMIT + 1),
+        ConfigurationFailureCode::FileTooLarge,
+    );
+}
+
+#[test]
+fn configuration_accepts_exact_assignment_limit_and_rejects_one_over() {
+    const ASSIGNMENT_LIMIT: usize = 100;
+    let exact = (0..ASSIGNMENT_LIMIT)
+        .map(|index| format!("unknown_{index} = \"value\"\n"))
+        .collect::<String>();
+    assert_user_config_failure(&exact, ConfigurationFailureCode::KeyUnknown);
+
+    let one_over = (0..=ASSIGNMENT_LIMIT)
+        .map(|index| format!("unknown_{index} = \"value\"\n"))
+        .collect::<String>();
+    assert_user_config_failure(&one_over, ConfigurationFailureCode::LimitExceeded);
+}
+
+#[test]
+fn configuration_accepts_exact_key_depth_and_rejects_one_over() {
+    assert_user_config_failure(
+        "one.two.three.four = \"value\"\n",
+        ConfigurationFailureCode::KeyUnknown,
+    );
+    assert_user_config_failure(
+        "one.two.three.four.five = \"value\"\n",
+        ConfigurationFailureCode::LimitExceeded,
+    );
+}
+
+#[test]
+fn configuration_accepts_exact_text_length_and_rejects_one_over() {
+    const TEXT_SCALAR_LIMIT: usize = 4_096;
+    let exact = format!("unknown = \"{}\"\n", "x".repeat(TEXT_SCALAR_LIMIT));
+    assert_user_config_failure(&exact, ConfigurationFailureCode::KeyUnknown);
+
+    let one_over = format!("unknown = \"{}\"\n", "x".repeat(TEXT_SCALAR_LIMIT + 1));
+    assert_user_config_failure(&one_over, ConfigurationFailureCode::LimitExceeded);
+}
+
+#[test]
+fn pathological_one_mib_toml_comment_is_bounded_before_deserialization() {
+    const FILE_BYTE_LIMIT: usize = 1_048_576;
+    assert_user_config_failure(
+        &exact_byte_document(FILE_BYTE_LIMIT + 1),
+        ConfigurationFailureCode::FileTooLarge,
+    );
+}
