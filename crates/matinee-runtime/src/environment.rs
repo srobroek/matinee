@@ -13,22 +13,64 @@ use crate::config::{ConfigurationLayer, DescriptorRegistry, ResolvedConfiguratio
 use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
-use crate::platform::{FileType, Platform};
+use crate::platform::{FileIdentity, FileSnapshot, FileType, Platform};
 use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
 use toml::Value as TomlValue;
 
 /// Validate the implicit project configuration file before any read is attempted.
 ///
-/// The project file is always `matinee.toml` directly below the selected root.  The
-/// lexical check rejects traversal first; the followed identity check then rejects a
-/// symlinked ancestor that escapes the selected root.  Finally, the no-follow snapshot
-/// rejects a symbolic-link project file itself.  Missing project files are optional and
-/// therefore return `Ok(None)`.
+/// The selected root identity is supplied by the resolution attempt, rather than
+/// rediscovered here. This keeps a root replacement between discovery and validation
+/// from making the containment check self-consistent around an attacker-controlled link.
 pub(crate) fn validate_implicit_project_file<P: Platform>(
     platform: &P,
     project_root: &Path,
 ) -> EnvironmentResult<Option<PathBuf>> {
+    let root_identity = platform
+        .followed_file_identity(project_root)
+        .map_err(project_failure)?
+        .ok_or_else(project_path_unavailable)?;
+    Ok(
+        validate_implicit_project_file_at(platform, project_root, root_identity)?
+            .map(|validated| validated.path),
+    )
+}
+
+/// Open and read the implicit project configuration only after validating its
+/// containment and no-follow type. The pre-open and opened-handle snapshots are
+/// compared before bytes are accepted by the resolver.
+pub(crate) fn read_implicit_project_file<P: Platform>(
+    platform: &P,
+    project_root: &Path,
+) -> EnvironmentResult<Option<Vec<u8>>> {
+    let root_identity = platform
+        .followed_file_identity(project_root)
+        .map_err(project_failure)?
+        .ok_or_else(project_path_unavailable)?;
+    let Some(validated) = validate_implicit_project_file_at(platform, project_root, root_identity)?
+    else {
+        return Ok(None);
+    };
+    let read = platform
+        .read_file(&validated.path)
+        .map_err(project_failure)?;
+    if read.snapshot != validated.snapshot {
+        return Err(project_file_changed());
+    }
+    Ok(Some(read.contents))
+}
+
+struct ValidatedProjectFile {
+    path: PathBuf,
+    snapshot: FileSnapshot,
+}
+
+fn validate_implicit_project_file_at<P: Platform>(
+    platform: &P,
+    project_root: &Path,
+    root_identity: FileIdentity,
+) -> EnvironmentResult<Option<ValidatedProjectFile>> {
     let project_root =
         crate::path_identity::absolute_lexical_normalize(project_root, Path::new("."))
             .map_err(|_| project_path_unavailable())?;
@@ -37,17 +79,18 @@ pub(crate) fn validate_implicit_project_file<P: Platform>(
         return Err(project_escape());
     }
 
-    let root_identity = platform
-        .followed_file_identity(&project_root)?
-        .ok_or_else(project_path_unavailable)?;
     let parent_identity = platform
-        .followed_file_identity(project_file.parent().unwrap_or(&project_root))?
+        .followed_file_identity(project_file.parent().unwrap_or(&project_root))
+        .map_err(project_failure)?
         .ok_or_else(project_path_unavailable)?;
     if parent_identity != root_identity {
         return Err(project_escape());
     }
 
-    let Some(snapshot) = platform.file_snapshot(&project_file)? else {
+    let Some(snapshot) = platform
+        .file_snapshot(&project_file)
+        .map_err(project_failure)?
+    else {
         return Ok(None);
     };
     if snapshot.file_type == FileType::Symlink {
@@ -56,7 +99,24 @@ pub(crate) fn validate_implicit_project_file<P: Platform>(
     if snapshot.file_type != FileType::Regular {
         return Err(project_unreadable());
     }
-    Ok(Some(project_file))
+    Ok(Some(ValidatedProjectFile {
+        path: project_file,
+        snapshot,
+    }))
+}
+
+fn project_failure(failure: ConfigurationFailure) -> ConfigurationFailure {
+    ConfigurationFailure::new(
+        failure.code(),
+        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+    )
+}
+
+fn project_file_changed() -> ConfigurationFailure {
+    ConfigurationFailure::new(
+        ConfigurationFailureCode::FileChanged,
+        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+    )
 }
 
 fn project_path_unavailable() -> ConfigurationFailure {
@@ -449,6 +509,7 @@ mod tests {
         AllowedSources, DescriptorDefault, KeyDescriptor, MaterialClass, ValueKind,
     };
     use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
+    use crate::platform::{FileIdentity, FileRead, FileSnapshot, FixturePlatform, PlatformKind};
 
     fn test_registry(names: &[&str]) -> DescriptorRegistry {
         DescriptorRegistry::new(
@@ -876,5 +937,129 @@ mod tests {
         for (provenance, expected) in cases {
             assert_eq!(format!("{provenance:?}"), expected);
         }
+    }
+
+    fn project_fixture() -> (FixturePlatform, FileIdentity) {
+        let root = FileIdentity {
+            volume: 1,
+            file: 10,
+        };
+        (
+            FixturePlatform::new(PlatformKind::Linux)
+                .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
+                .with_followed_file_identity("/fixture/project", root),
+            root,
+        )
+    }
+
+    #[test]
+    fn implicit_project_read_accepts_regular_file_after_validation() {
+        let (platform, _) = project_fixture();
+        let platform = platform.with_file(
+            "/fixture/project/matinee.toml",
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            b"[project]\n",
+            Some(2),
+        );
+        assert_eq!(
+            read_implicit_project_file(&platform, Path::new("/fixture/project"))
+                .expect("regular project file reads")
+                .as_deref(),
+            Some(&b"[project]\n"[..])
+        );
+    }
+
+    #[test]
+    fn implicit_project_read_allows_missing_file_but_rejects_link_and_nonregular() {
+        let (platform, _) = project_fixture();
+        assert_eq!(
+            read_implicit_project_file(&platform, Path::new("/fixture/project"))
+                .expect("missing project file is optional"),
+            None
+        );
+
+        let (platform, _) = project_fixture();
+        let symlink = platform.with_snapshot(
+            "/fixture/project/matinee.toml",
+            FileSnapshot::symlink(
+                FileIdentity {
+                    volume: 1,
+                    file: 11,
+                },
+                Some(2),
+            ),
+        );
+        assert_eq!(
+            read_implicit_project_file(&symlink, Path::new("/fixture/project"))
+                .expect_err("symlink project file is rejected")
+                .code(),
+            ConfigurationFailureCode::ProjectEscape
+        );
+
+        let (platform, _) = project_fixture();
+        let directory = platform.with_snapshot(
+            "/fixture/project/matinee.toml",
+            FileSnapshot::directory(
+                FileIdentity {
+                    volume: 1,
+                    file: 11,
+                },
+                Some(2),
+            ),
+        );
+        assert_eq!(
+            read_implicit_project_file(&directory, Path::new("/fixture/project"))
+                .expect_err("non-regular project file is rejected")
+                .code(),
+            ConfigurationFailureCode::FileUnreadable
+        );
+    }
+
+    #[test]
+    fn implicit_project_read_rejects_escape_replacement_and_remaps_platform_failures() {
+        let platform = FixturePlatform::new(PlatformKind::Linux);
+        let failure = read_implicit_project_file(&platform, Path::new("/fixture/project"))
+            .expect_err("missing project root is unavailable");
+        assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
+        assert_eq!(
+            failure.source(),
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+        );
+
+        let (platform, _) = project_fixture();
+        let before = FileSnapshot::regular(
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            5,
+            Some(2),
+        );
+        let after = FileSnapshot::regular(
+            FileIdentity {
+                volume: 1,
+                file: 12,
+            },
+            5,
+            Some(3),
+        );
+        let replaced = platform
+            .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(before))])
+            .with_read_results(
+                "/fixture/project/matinee.toml",
+                [Ok(FileRead {
+                    snapshot: after,
+                    contents: b"hello".to_vec(),
+                })],
+            );
+        assert_eq!(
+            read_implicit_project_file(&replaced, Path::new("/fixture/project"))
+                .expect_err("replacement during read is rejected")
+                .code(),
+            ConfigurationFailureCode::FileChanged
+        );
     }
 }
