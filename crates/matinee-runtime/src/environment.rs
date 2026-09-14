@@ -10,13 +10,15 @@
 #![allow(dead_code)]
 
 use crate::config::{
-    toml_lexical_preflight, ConfigurationLayer, DescriptorRegistry, ResolvedConfiguration,
+    ConfigurationLayer, DescriptorRegistry, ResolvedConfiguration, toml_lexical_preflight,
 };
 use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
 use crate::path_identity::{PathIdentity, absolute_lexical_normalize, resolve_path_identity};
-use crate::platform::{FileIdentity, FileSnapshot, FileType, MAX_FILE_BYTES, MatineePaths, Platform};
+use crate::platform::{
+    FileIdentity, FileSnapshot, FileType, MAX_FILE_BYTES, MatineePaths, Platform,
+};
 use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
 use std::str;
@@ -741,12 +743,12 @@ pub type EnvironmentResult<T> = Result<T, ConfigurationFailure>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt::Write as _;
     use crate::config::{
         AllowedSources, DescriptorDefault, KeyDescriptor, MaterialClass, ValueKind,
     };
     use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
     use crate::platform::{FileIdentity, FileRead, FileSnapshot, FixturePlatform, PlatformKind};
+    use std::fmt::Write as _;
 
     fn test_registry(names: &[&str]) -> DescriptorRegistry {
         DescriptorRegistry::new(
@@ -1084,8 +1086,7 @@ mod tests {
         .expect("the first distinct state root resolves");
         let second = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project")
-                .with_state_dir("/fixture/project/second"),
+            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/second"),
             &registry,
         )
         .expect("the second distinct state root resolves");
@@ -1134,7 +1135,10 @@ mod tests {
         )
         .expect("the effective state path resolves");
 
-        assert_eq!(resolved.paths().state(), Path::new("/fixture/project/effective-state"));
+        assert_eq!(
+            resolved.paths().state(),
+            Path::new("/fixture/project/effective-state")
+        );
         assert_eq!(resolved.paths().config(), platform_paths.config());
         assert_eq!(resolved.paths().runtime(), platform_paths.runtime());
         assert_eq!(resolved.paths().cache(), platform_paths.cache());
@@ -1295,7 +1299,8 @@ mod tests {
         let (platform, _) = project_fixture();
         let mut contents = String::new();
         for index in 0..=100 {
-            writeln!(contents, "setting_{index} = \"value\"").expect("writing to String cannot fail");
+            writeln!(contents, "setting_{index} = \"value\"")
+                .expect("writing to String cannot fail");
         }
         let platform = platform.with_file(
             "/fixture/linux/home/config.toml",
@@ -1477,7 +1482,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn assemble_configuration_is_all_or_failure_without_partial_result() {
         let registry = test_registry(&["known"]);
@@ -1493,7 +1497,6 @@ mod tests {
         assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
         assert!(!failure.to_string().contains("unregistered"));
     }
-
 
     #[test]
     fn assemble_configuration_does_not_mutate_filesystem() {

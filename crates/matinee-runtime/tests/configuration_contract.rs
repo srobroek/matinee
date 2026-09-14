@@ -1,5 +1,5 @@
 use matinee_runtime::{
-    resolve_environment, ConfigurationFailureCode, ConfigurationSource, EnvironmentInput,
+    ConfigurationFailureCode, ConfigurationSource, EnvironmentInput, resolve_environment,
 };
 use std::ffi::OsString;
 use std::fs;
@@ -123,7 +123,10 @@ impl TestFixture {
         }
         #[cfg(target_os = "windows")]
         {
-            self.root.join("appdata").join("Matinee").join("config.toml")
+            self.root
+                .join("appdata")
+                .join("Matinee")
+                .join("config.toml")
         }
     }
 
@@ -253,7 +256,11 @@ fn command_line_beats_the_built_in_state_fallback() {
         EnvironmentInput::new(fixture.project_root()).with_state_dir(&command_line_value),
     )
     .expect("command-line configuration resolves");
-    assert_state_setting(&environment, ConfigurationSource::CommandLine, &command_line_value);
+    assert_state_setting(
+        &environment,
+        ConfigurationSource::CommandLine,
+        &command_line_value,
+    );
 }
 
 #[test]
@@ -268,7 +275,11 @@ fn command_line_beats_the_user_file() {
         EnvironmentInput::new(fixture.project_root()).with_state_dir(&command_line_value),
     )
     .expect("user-file and command-line configuration resolves");
-    assert_state_setting(&environment, ConfigurationSource::CommandLine, &command_line_value);
+    assert_state_setting(
+        &environment,
+        ConfigurationSource::CommandLine,
+        &command_line_value,
+    );
 }
 
 #[test]
@@ -314,7 +325,11 @@ fn unknown_keys_are_rejected_in_each_external_source() {
             _ => unreachable!("source list is closed"),
         }
         .expect_err("unknown key must be rejected");
-        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown, "source: {source}");
+        assert_eq!(
+            failure.code(),
+            ConfigurationFailureCode::KeyUnknown,
+            "source: {source}"
+        );
     }
 }
 
@@ -322,9 +337,7 @@ fn unknown_keys_are_rejected_in_each_external_source() {
 fn duplicate_user_key_is_rejected() {
     // Catches a parser that lets a duplicate assignment overwrite an earlier user value.
     let fixture = TestFixture::new();
-    fixture.write_user_config(
-        "state_dir = \"first\"\nstate_dir = \"second\"\n",
-    );
+    fixture.write_user_config("state_dir = \"first\"\nstate_dir = \"second\"\n");
 
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("duplicate user key must be rejected");
@@ -340,7 +353,11 @@ fn no_override_uses_the_host_derived_default_state_path() {
         .expect("default environment resolves");
     assert_eq!(environment.state(), fixture.default_state());
     assert!(environment.get("state_dir").is_none());
-    assert!(!environment.settings().any(|setting| setting.key() == "state_dir"));
+    assert!(
+        !environment
+            .settings()
+            .any(|setting| setting.key() == "state_dir")
+    );
 }
 
 #[test]

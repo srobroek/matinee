@@ -1,6 +1,6 @@
 use matinee_runtime::{
-    resolve_environment, ConfigurationFailureCode, ConfigurationSource, EnvironmentInput,
-    EnvironmentResult, ResolvedEnvironment,
+    ConfigurationFailureCode, ConfigurationSource, EnvironmentInput, EnvironmentResult,
+    ResolvedEnvironment, resolve_environment,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -35,10 +35,7 @@ impl TempFixture {
         };
         let project_root = root.join("project");
         fs::create_dir(&project_root).expect("create fixture project root");
-        Self {
-            root,
-            project_root,
-        }
+        Self { root, project_root }
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -64,7 +61,9 @@ struct EnvironmentGuard {
 impl EnvironmentGuard {
     fn acquire() -> Self {
         Self {
-            _lock: ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            _lock: ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
             saved: Vec::new(),
         }
     }
@@ -179,8 +178,14 @@ fn assert_distinct_absolute_paths(resolved: &ResolvedEnvironment) {
         resolved.log(),
     ];
     for path in paths {
-        assert!(!path.as_os_str().is_empty(), "resolved path must not be empty");
-        assert!(path.is_absolute(), "resolved path must be absolute: {path:?}");
+        assert!(
+            !path.as_os_str().is_empty(),
+            "resolved path must not be empty"
+        );
+        assert!(
+            path.is_absolute(),
+            "resolved path must be absolute: {path:?}"
+        );
     }
     for (index, left) in paths.iter().enumerate() {
         for right in paths.iter().skip(index + 1) {
@@ -246,7 +251,10 @@ fn host_base_directories_derive_exact_paths() {
         assert_eq!(resolved.config(), config);
         assert_eq!(resolved.state(), state);
         assert_eq!(resolved.runtime(), state.join("run"));
-        assert_eq!(resolved.cache(), home.join("Library/Caches").join("Matinee"));
+        assert_eq!(
+            resolved.cache(),
+            home.join("Library/Caches").join("Matinee")
+        );
         assert_eq!(resolved.log(), home.join("Library/Logs").join("Matinee"));
     }
 
@@ -258,7 +266,10 @@ fn host_base_directories_derive_exact_paths() {
             .expect("Linux host paths resolve");
         assert_eq!(resolved.config(), config);
         assert_eq!(resolved.state(), state);
-        assert_eq!(resolved.runtime(), fixture.path("xdg-runtime").join("matinee"));
+        assert_eq!(
+            resolved.runtime(),
+            fixture.path("xdg-runtime").join("matinee")
+        );
         assert_eq!(resolved.cache(), fixture.path("xdg-cache").join("matinee"));
         assert_eq!(resolved.log(), state.join("logs"));
     }
@@ -275,10 +286,19 @@ fn host_base_directories_derive_exact_paths() {
         assert_component_suffix(resolved.runtime(), &["Matinee", "state", "run"]);
         assert_component_suffix(resolved.cache(), &["Matinee", "cache"]);
         assert_component_suffix(resolved.log(), &["Matinee", "state", "logs"]);
-        let local_matinee = resolved.state().parent().expect("Windows Matinee state root");
+        let local_matinee = resolved
+            .state()
+            .parent()
+            .expect("Windows Matinee state root");
         assert_eq!(resolved.cache().parent(), Some(local_matinee));
-        assert_eq!(resolved.runtime().parent().and_then(Path::parent), Some(local_matinee));
-        assert_eq!(resolved.log().parent().and_then(Path::parent), Some(local_matinee));
+        assert_eq!(
+            resolved.runtime().parent().and_then(Path::parent),
+            Some(local_matinee)
+        );
+        assert_eq!(
+            resolved.log().parent().and_then(Path::parent),
+            Some(local_matinee)
+        );
     }
 }
 
@@ -361,12 +381,21 @@ fn resolution_creates_no_derived_directories() {
     ];
     let before = derived.iter().map(|path| path.exists()).collect::<Vec<_>>();
     #[cfg(not(target_os = "windows"))]
-    assert!(before.iter().all(|exists| !exists), "derived fixtures start absent");
+    assert!(
+        before.iter().all(|exists| !exists),
+        "derived fixtures start absent"
+    );
     let after = derived.iter().map(|path| path.exists()).collect::<Vec<_>>();
     #[cfg(not(target_os = "windows"))]
-    assert!(after.iter().all(|exists| !exists), "resolution must create no derived paths");
+    assert!(
+        after.iter().all(|exists| !exists),
+        "resolution must create no derived paths"
+    );
     #[cfg(target_os = "windows")]
-    assert_eq!(after, before, "Windows resolution must not create known-folder paths");
+    assert_eq!(
+        after, before,
+        "Windows resolution must not create known-folder paths"
+    );
 }
 
 #[test]
@@ -399,8 +428,14 @@ fn command_line_state_override_preserves_host_paths_and_lock_identity() {
     assert_eq!(first.log(), baseline.log());
     let setting = first.get("state_dir").expect("state override setting");
     assert_eq!(setting.source(), ConfigurationSource::CommandLine);
-    assert_eq!(setting.value(), first_state.to_str().expect("UTF-8 fixture path"));
-    assert_eq!(setting.provenance().source(), ConfigurationSource::CommandLine);
+    assert_eq!(
+        setting.value(),
+        first_state.to_str().expect("UTF-8 fixture path")
+    );
+    assert_eq!(
+        setting.provenance().source(),
+        ConfigurationSource::CommandLine
+    );
     assert_eq!(setting.provenance().relative_path(), None);
     assert_eq!(setting.provenance().key(), Some("state_dir"));
     assert_eq!(first.lock_identity(), same.lock_identity());

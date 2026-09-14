@@ -177,17 +177,20 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture_platform() -> FixturePlatform {
-        let root = FileIdentity { volume: 1, file: 10 };
+        let root = FileIdentity {
+            volume: 1,
+            file: 10,
+        };
         FixturePlatform::new(PlatformKind::Linux)
-            .with_snapshot(
-                "/fixture/project",
-                FileSnapshot::directory(root, Some(1)),
-            )
+            .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
             .with_followed_file_identity("/fixture/project", root)
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
                 FileSnapshot::directory(
-                    FileIdentity { volume: 1, file: 11 },
+                    FileIdentity {
+                        volume: 1,
+                        file: 11,
+                    },
                     Some(1),
                 ),
             )
@@ -205,11 +208,26 @@ mod tests {
         assert_eq!(environment.project_root(), Path::new("/fixture/project"));
         assert!(environment.user_config().is_none());
         assert!(environment.project_config().is_none());
-        assert_eq!(environment.config(), Path::new("/fixture/linux/home/.config/matinee"));
-        assert_eq!(environment.state(), Path::new("/fixture/project/custom-state"));
-        assert_eq!(environment.runtime(), Path::new("/fixture/linux/runtime/matinee"));
-        assert_eq!(environment.cache(), Path::new("/fixture/linux/home/.cache/matinee"));
-        assert_eq!(environment.log(), Path::new("/fixture/linux/home/.local/state/matinee/logs"));
+        assert_eq!(
+            environment.config(),
+            Path::new("/fixture/linux/home/.config/matinee")
+        );
+        assert_eq!(
+            environment.state(),
+            Path::new("/fixture/project/custom-state")
+        );
+        assert_eq!(
+            environment.runtime(),
+            Path::new("/fixture/linux/runtime/matinee")
+        );
+        assert_eq!(
+            environment.cache(),
+            Path::new("/fixture/linux/home/.cache/matinee")
+        );
+        assert_eq!(
+            environment.log(),
+            Path::new("/fixture/linux/home/.local/state/matinee/logs")
+        );
 
         let setting = environment
             .get("state_dir")
@@ -217,7 +235,10 @@ mod tests {
         assert_eq!(setting.key(), "state_dir");
         assert_eq!(setting.value(), "/fixture/project/custom-state");
         assert_eq!(setting.source(), ConfigurationSource::CommandLine);
-        assert_eq!(setting.provenance().source(), ConfigurationSource::CommandLine);
+        assert_eq!(
+            setting.provenance().source(),
+            ConfigurationSource::CommandLine
+        );
         assert_eq!(setting.provenance().key(), Some("state_dir"));
         assert!(!format!("{:?}", environment.lock_identity()).contains("/fixture"));
     }
@@ -226,15 +247,16 @@ mod tests {
     fn configuration_paths_report_only_files_that_were_loaded() {
         let with_project = fixture_platform().with_file(
             "/fixture/project/matinee.toml",
-            FileIdentity { volume: 1, file: 20 },
+            FileIdentity {
+                volume: 1,
+                file: 20,
+            },
             b"",
             Some(2),
         );
-        let environment = resolve_with_platform(
-            &with_project,
-            EnvironmentInput::new("/fixture/project"),
-        )
-        .expect("implicit project configuration resolves");
+        let environment =
+            resolve_with_platform(&with_project, EnvironmentInput::new("/fixture/project"))
+                .expect("implicit project configuration resolves");
         assert!(environment.user_config().is_none());
         assert_eq!(
             environment.project_config(),
@@ -244,13 +266,19 @@ mod tests {
         let explicit = fixture_platform()
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity { volume: 1, file: 21 },
+                FileIdentity {
+                    volume: 1,
+                    file: 21,
+                },
                 b"not valid = [",
                 Some(2),
             )
             .with_file(
                 "/fixture/linux/home/explicit.toml",
-                FileIdentity { volume: 1, file: 22 },
+                FileIdentity {
+                    volume: 1,
+                    file: 22,
+                },
                 b"",
                 Some(2),
             );
@@ -309,7 +337,8 @@ mod tests {
     #[test]
     fn repeated_resolution_has_identical_observable_outcome() {
         let platform = fixture_platform();
-        let input = EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/state");
+        let input =
+            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/state");
         let first = resolve_with_platform(&platform, input.clone()).expect("first resolution");
         let second = resolve_with_platform(&platform, input).expect("second resolution");
 
