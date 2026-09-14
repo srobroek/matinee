@@ -394,6 +394,112 @@ fn resolution_creates_no_derived_directories() {
 }
 
 #[test]
+fn relative_state_path_resolves_against_project_root() {
+    // This catches a regression that interprets relative environment paths against the process cwd.
+    let fixture = TempFixture::new();
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let resolved = resolve_environment(
+        EnvironmentInput::new(fixture.project_root()).with_state_dir("state/../relative-state"),
+    )
+    .expect("relative state path resolves");
+
+    assert_eq!(
+        resolved.state(),
+        fixture.project_root().join("relative-state")
+    );
+}
+
+#[test]
+fn absolute_state_path_preserves_its_root() {
+    // This catches a regression that reinterprets an absolute override below the project root.
+    let fixture = TempFixture::new();
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let absolute = fixture.path("absolute-state");
+    let resolved = resolve_environment(
+        EnvironmentInput::new(fixture.project_root()).with_state_dir(&absolute),
+    )
+    .expect("absolute state path resolves");
+
+    assert_eq!(resolved.state(), absolute);
+}
+
+#[test]
+fn state_path_normalization_removes_dot_segments_without_filesystem_access() {
+    // This catches a regression that leaves lexical dot segments in the resolved path.
+    let fixture = TempFixture::new();
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let input = fixture.path("nested/./child/../normalized/./state");
+    let resolved = resolve_environment(
+        EnvironmentInput::new(fixture.project_root()).with_state_dir(&input),
+    )
+    .expect("normalized state path resolves");
+
+    assert_eq!(
+        resolved.state(),
+        fixture.path("nested/normalized/state")
+    );
+}
+
+#[test]
+fn case_equivalent_state_paths_follow_anchor_filesystem_semantics() {
+    // This catches a regression that applies one case policy to every target platform.
+    let fixture = TempFixture::new();
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let lower = fixture.path("case-root/state");
+    let upper = fixture.path("CASE-ROOT/STATE");
+    let lower_result = resolve_environment(
+        EnvironmentInput::new(fixture.project_root()).with_state_dir(&lower),
+    )
+    .expect("lower-case state path resolves");
+    let upper_result = resolve_environment(
+        EnvironmentInput::new(fixture.project_root()).with_state_dir(&upper),
+    )
+    .expect("upper-case state path resolves");
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    assert_eq!(
+        lower_result.lock_identity(),
+        upper_result.lock_identity(),
+        "case-equivalent paths must converge on case-insensitive platforms"
+    );
+    #[cfg(target_os = "linux")]
+    assert_ne!(
+        lower_result.lock_identity(),
+        upper_result.lock_identity(),
+        "case-distinct paths must remain distinct on case-sensitive platforms"
+    );
+}
+
+#[test]
+fn supported_symbolic_link_project_root_converges_with_target_identity() {
+    // This catches a regression that treats a supported project-root alias as a distinct state root.
+    let fixture = TempFixture::new();
+    let alias = fixture.path("project-alias");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(fixture.project_root(), &alias)
+        .expect("create project-root symbolic link");
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(fixture.project_root(), &alias)
+        .expect("create project-root symbolic link");
+
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let target = resolve_environment(
+        EnvironmentInput::new(fixture.project_root()).with_state_dir("state"),
+    )
+    .expect("target project root resolves");
+    let aliased = resolve_environment(EnvironmentInput::new(&alias).with_state_dir("state"))
+        .expect("symbolic-link project root resolves");
+
+    assert_eq!(target.lock_identity(), aliased.lock_identity());
+    assert_eq!(target.state_root_identity(), aliased.state_root_identity());
+}
+
+#[test]
 fn command_line_state_override_preserves_host_paths_and_lock_identity() {
     // This catches a regression that lets the state override replace other paths or collides lock identities.
     let fixture = TempFixture::new();
