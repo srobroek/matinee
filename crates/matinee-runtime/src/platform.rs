@@ -20,7 +20,7 @@ use unicode_normalization::UnicodeNormalization as UnicodeNormalizationTrait;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
-use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 
@@ -28,8 +28,8 @@ use std::os::windows::io::AsRawHandle;
 use windows_sys::Win32::Foundation::HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    GetFileInformationByHandle,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
 };
 
 pub(crate) const MAX_FILE_BYTES: usize = 1_048_576;
@@ -213,7 +213,7 @@ fn append_component(base: &Path, kind: PlatformKind, component: &str) -> PathBuf
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct FileIdentity {
     pub(crate) volume: u64,
-    pub(crate) file: u64,
+    pub(crate) file: u128,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -364,38 +364,67 @@ impl Platform for HostPlatform {
     }
 
     fn file_snapshot(&self, path: &Path) -> Result<Option<FileSnapshot>, ConfigurationFailure> {
-        let link_metadata = match fs::symlink_metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(file_unreadable()),
-        };
-        if link_metadata.file_type().is_symlink() {
-            #[cfg(windows)]
-            let identity = identity_for_path(path, false)?.ok_or_else(file_unreadable)?;
-            #[cfg(not(windows))]
-            let identity = file_identity(&link_metadata).ok_or_else(file_unreadable)?;
+        #[cfg(windows)]
+        {
+            let mut options = fs::OpenOptions::new();
+            options
+                .access_mode(0)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+            let file = match options.open(path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(_) => return Err(file_unreadable()),
+            };
+            let metadata = file.metadata().map_err(|_| file_unreadable())?;
+            let file_type = no_follow_file_type(&metadata);
+            let identity = identity_from_open_file(&file, &metadata).ok_or_else(file_unreadable)?;
             return Ok(Some(FileSnapshot {
                 identity,
-                file_type: FileType::Symlink,
-                byte_length: 0,
-                modified_marker: modified_marker(&link_metadata),
+                file_type,
+                byte_length: if file_type == FileType::Symlink {
+                    0
+                } else {
+                    metadata.len()
+                },
+                modified_marker: modified_marker(&metadata),
             }));
         }
-        let metadata = match fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(file_unreadable()),
-        };
-        #[cfg(windows)]
-        let identity = identity_for_path(path, true)?.ok_or_else(file_unreadable)?;
+
         #[cfg(not(windows))]
-        let identity = file_identity(&metadata).ok_or_else(file_unreadable)?;
-        Ok(Some(FileSnapshot {
-            identity,
-            file_type: file_type(&metadata),
-            byte_length: metadata.len(),
-            modified_marker: modified_marker(&metadata),
-        }))
+        {
+            let link_metadata = match fs::symlink_metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(_) => return Err(file_unreadable()),
+            };
+            if link_metadata.file_type().is_symlink() {
+                #[cfg(windows)]
+                let identity = identity_for_path(path, false)?.ok_or_else(file_unreadable)?;
+                #[cfg(not(windows))]
+                let identity = file_identity(&link_metadata).ok_or_else(file_unreadable)?;
+                return Ok(Some(FileSnapshot {
+                    identity,
+                    file_type: FileType::Symlink,
+                    byte_length: 0,
+                    modified_marker: modified_marker(&link_metadata),
+                }));
+            }
+            let metadata = match fs::metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(_) => return Err(file_unreadable()),
+            };
+            #[cfg(windows)]
+            let identity = identity_for_path(path, true)?.ok_or_else(file_unreadable)?;
+            #[cfg(not(windows))]
+            let identity = file_identity(&metadata).ok_or_else(file_unreadable)?;
+            Ok(Some(FileSnapshot {
+                identity,
+                file_type: file_type(&metadata),
+                byte_length: metadata.len(),
+                modified_marker: modified_marker(&metadata),
+            }))
+        }
     }
     fn followed_file_identity(
         &self,
@@ -846,13 +875,24 @@ fn modified_marker(metadata: &fs::Metadata) -> Option<u128> {
         .map(|duration| duration.as_nanos())
 }
 
+#[cfg(windows)]
+fn no_follow_file_type(metadata: &fs::Metadata) -> FileType {
+    if metadata.file_type().is_symlink() {
+        FileType::Symlink
+    } else if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        FileType::Other
+    } else {
+        file_type(metadata)
+    }
+}
+
 #[cfg(not(windows))]
 fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
     #[cfg(unix)]
     {
         Some(FileIdentity {
             volume: metadata.dev(),
-            file: metadata.ino(),
+            file: metadata.ino() as u128,
         })
     }
     #[cfg(not(any(unix, windows)))]
@@ -863,13 +903,19 @@ fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
 }
 #[cfg(windows)]
 fn file_identity_from_handle(file: &fs::File) -> Option<FileIdentity> {
-    let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    let mut information = unsafe { std::mem::zeroed::<FILE_ID_INFO>() };
     let succeeded = unsafe {
-        GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information)
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as HANDLE,
+            FileIdInfo,
+            &mut information as *mut FILE_ID_INFO as *mut _,
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
     };
     (succeeded != 0).then_some(FileIdentity {
-        volume: information.dwVolumeSerialNumber as u64,
-        file: ((information.nFileIndexHigh as u64) << 32) | information.nFileIndexLow as u64,
+        volume: information.VolumeSerialNumber,
+        // FILE_ID_128 is opaque; this explicit representation preserves all bytes.
+        file: u128::from_le_bytes(information.FileId.Identifier),
     })
 }
 
@@ -1015,7 +1061,7 @@ const fn current_platform_kind() -> PlatformKind {
 mod tests {
     use super::*;
 
-    fn snapshot(file: u64, bytes: u64, marker: u128) -> FileSnapshot {
+    fn snapshot(file: u128, bytes: u64, marker: u128) -> FileSnapshot {
         FileSnapshot::regular(FileIdentity { volume: 7, file }, bytes, Some(marker))
     }
 
