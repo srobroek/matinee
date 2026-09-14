@@ -1,6 +1,6 @@
 use matinee_runtime::{
-    ConfigurationFailureCode, ConfigurationSource, EnvironmentInput, EnvironmentResult,
-    ResolvedEnvironment, resolve_environment,
+    resolve_environment, ConfigurationFailureCode, ConfigurationSource, EnvironmentInput,
+    EnvironmentResult, ResolvedEnvironment,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -508,14 +508,30 @@ fn one_hundred_canonical_roots_have_alias_convergent_exact_lock_identities_witho
         .iter()
         .map(|environment| environment.state().to_owned())
         .collect::<HashSet<_>>();
-    assert_eq!(state_paths.len(), 100, "canonical state paths must not collide");
+    assert_eq!(
+        state_paths.len(),
+        100,
+        "canonical state paths must not collide"
+    );
     for (canonical, alias) in canonical.iter().zip(&aliases) {
         assert_eq!(canonical.lock_identity(), alias.lock_identity());
         assert_eq!(canonical.state(), alias.state());
-        assert!(!canonical.state().exists(), "resolution must not create state");
-        assert!(!canonical.config().exists(), "resolution must not create config");
-        assert!(!canonical.runtime().exists(), "resolution must not create runtime");
-        assert!(!canonical.cache().exists(), "resolution must not create cache");
+        assert!(
+            !canonical.state().exists(),
+            "resolution must not create state"
+        );
+        assert!(
+            !canonical.config().exists(),
+            "resolution must not create config"
+        );
+        assert!(
+            !canonical.runtime().exists(),
+            "resolution must not create runtime"
+        );
+        assert!(
+            !canonical.cache().exists(),
+            "resolution must not create cache"
+        );
         assert!(!canonical.log().exists(), "resolution must not create logs");
     }
     for (index, environment) in canonical.iter().enumerate() {
