@@ -845,10 +845,6 @@ mod tests {
     #[test]
     fn resolve_environment_explicit_config_skips_invalid_implicit_project_file() {
         let (platform, root) = project_fixture();
-        let state = FileIdentity {
-            volume: 1,
-            file: 30,
-        };
         let platform = platform
             .with_file(
                 "/fixture/project/matinee.toml",
@@ -861,12 +857,14 @@ mod tests {
             )
             .with_file(
                 "/fixture/linux/home/config.toml",
-                state,
-                b"setting = \"explicit\"\nstate_dir = \"/fixture/state\"\n",
+                FileIdentity {
+                    volume: 1,
+                    file: 30,
+                },
+                b"setting = \"explicit\"\n",
                 Some(3),
-            )
-            .with_followed_file_identity("/fixture/state", state);
-        let registry = test_registry(&["setting", "state_dir"]);
+            );
+        let registry = test_registry(&["setting"]);
         let resolved = resolve_environment(
             &platform,
             EnvironmentInput::new("/fixture/project")
