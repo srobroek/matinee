@@ -618,6 +618,15 @@ impl FixturePlatform {
             .insert(path.into(), Ok(Some(identity)));
         self
     }
+    #[cfg(test)]
+    pub(crate) fn with_followed_file_identity_result(
+        mut self,
+        path: impl Into<PathBuf>,
+        result: Result<Option<FileIdentity>, ConfigurationFailure>,
+    ) -> Self {
+        self.followed_identities.insert(path.into(), result);
+        self
+    }
 
     pub(crate) fn with_snapshot_results<I>(self, path: impl Into<PathBuf>, results: I) -> Self
     where

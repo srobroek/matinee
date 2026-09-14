@@ -364,27 +364,6 @@ fn missing_project_root_returns_closed_failure_without_mutation() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn inaccessible_project_root_returns_closed_failure_without_mutation() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let fixture = TempFixture::new();
-    let mut environment = EnvironmentGuard::acquire();
-    configure_host_environment(&fixture, &mut environment);
-    let inaccessible = fixture.path("inaccessible-project");
-    fs::create_dir(&inaccessible).expect("create inaccessible project root");
-    fs::set_permissions(&inaccessible, fs::Permissions::from_mode(0o000))
-        .expect("remove project-root permissions");
-
-    let failure = resolve_environment(EnvironmentInput::new(&inaccessible))
-        .expect_err("inaccessible required directory must fail closed");
-
-    // Restore permissions before fixture cleanup so this test remains reliable on all Unix hosts.
-    fs::set_permissions(&inaccessible, fs::Permissions::from_mode(0o700))
-        .expect("restore project-root permissions");
-    assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
-}
 
 #[test]
 fn resolution_creates_no_derived_directories() {

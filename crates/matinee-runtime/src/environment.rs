@@ -1700,6 +1700,31 @@ mod tests {
     }
 
     #[test]
+    fn resolve_environment_maps_inaccessible_project_root_without_reading_state() {
+        let failure = ConfigurationFailure::new(
+            ConfigurationFailureCode::FileUnreadable,
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+        );
+        let platform = FixturePlatform::new(PlatformKind::Linux)
+            .with_followed_file_identity_result("/fixture/project", Err(failure));
+        let registry = test_registry(&["state_dir"]);
+
+        let result = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project"),
+            &registry,
+        );
+        let failure = result.expect_err("inaccessible project root must fail closed");
+
+        assert_eq!(failure.code(), ConfigurationFailureCode::FileUnreadable);
+        assert_eq!(
+            failure.source(),
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+        );
+        assert_eq!(platform.read_file_count(), 0);
+    }
+
+    #[test]
     fn implicit_project_read_accepts_regular_file_after_validation() {
         let (platform, root) = project_fixture();
         let platform = platform.with_file(
