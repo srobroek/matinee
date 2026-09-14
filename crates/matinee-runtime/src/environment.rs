@@ -9,7 +9,9 @@
 
 #![allow(dead_code)]
 
-use crate::config::{ConfigurationLayer, DescriptorRegistry, ResolvedConfiguration};
+use crate::config::{
+    toml_lexical_preflight, ConfigurationLayer, DescriptorRegistry, ResolvedConfiguration,
+};
 use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
@@ -70,22 +72,32 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
     let home = platform.base_directories().map_err(project_failure)?.home;
     let paths = platform.matinee_paths().map_err(project_failure)?;
 
-    let mut layers = Vec::new();
-    if let Some(contents) =
-        read_implicit_project_file(platform, &project_root, project_root_identity)?
-    {
-        let entries = parse_configuration(
-            &contents,
-            FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
-        )?;
-        layers.push(ConfigurationLayer::project_file("matinee.toml", entries)?);
-    }
+    let explicit_config = input.config_path().is_some();
     let user_path = input
         .config_path()
         .map(|path| absolute_lexical_normalize(&project_root, path))
         .transpose()
         .map_err(|_| project_path_unavailable())?
         .unwrap_or_else(|| paths.config().join("config.toml"));
+    if !lexically_within(&home, &user_path) {
+        return Err(ConfigurationFailure::new(
+            ConfigurationFailureCode::PathUnavailable,
+            FailureSource::File(RedactedFileOrigin::UserConfiguration),
+        ));
+    }
+
+    let mut layers = Vec::new();
+    if !explicit_config {
+        if let Some(contents) =
+            read_implicit_project_file(platform, &project_root, project_root_identity)?
+        {
+            let entries = parse_configuration(
+                &contents,
+                FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+            )?;
+            layers.push(ConfigurationLayer::project_file("matinee.toml", entries)?);
+        }
+    }
     if let Some(contents) = read_optional_file(
         platform,
         &user_path,
@@ -162,6 +174,7 @@ fn parse_configuration(
     contents: &[u8],
     source: FailureSource,
 ) -> EnvironmentResult<Vec<(String, TomlValue)>> {
+    toml_lexical_preflight(contents, source)?;
     let text = str::from_utf8(contents)
         .map_err(|_| ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source))?;
     let value = text
@@ -803,6 +816,7 @@ mod tests {
                     file: 12,
                 },
             );
+
         let platform = PostReadChangedPlatform { inner: platform };
         let registry = test_registry(&["setting"]);
 
@@ -813,6 +827,81 @@ mod tests {
         )
         .expect_err("replacement during one resolver read must fail");
         assert_eq!(failure.code(), ConfigurationFailureCode::FileChanged);
+    }
+    #[test]
+    fn resolve_environment_rejects_missing_explicit_user_path_outside_home() {
+        let (platform, _) = project_fixture();
+        let failure = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project")
+                .with_config_path("/fixture/linux/outside.toml"),
+            &test_registry(&[]),
+        )
+        .expect_err("an explicit user path outside home must fail closed");
+        assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
+    }
+
+    #[test]
+    fn resolve_environment_explicit_config_skips_invalid_implicit_project_file() {
+        let (platform, root) = project_fixture();
+        let state = FileIdentity {
+            volume: 1,
+            file: 30,
+        };
+        let platform = platform
+            .with_file(
+                "/fixture/project/matinee.toml",
+                FileIdentity {
+                    volume: 1,
+                    file: 31,
+                },
+                b"this is not valid TOML =\n",
+                Some(2),
+            )
+            .with_file(
+                "/fixture/linux/home/config.toml",
+                state,
+                b"setting = \"explicit\"\nstate_dir = \"/fixture/state\"\n",
+                Some(3),
+            )
+            .with_followed_file_identity("/fixture/state", state);
+        let resolved = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project")
+                .with_config_path("/fixture/linux/home/config.toml"),
+            &test_registry(&["setting", "state_dir"]),
+        )
+        .expect("explicit config must suppress implicit project parsing");
+        assert_eq!(
+            resolved.configuration().get("setting").unwrap().value(),
+            &text("explicit")
+        );
+        assert_eq!(resolved.project_root_identity, root);
+    }
+
+    #[test]
+    fn resolve_environment_preflights_toml_before_typed_parsing() {
+        let (platform, _) = project_fixture();
+        let contents = (0..=100)
+            .map(|index| format!("setting_{index} = \"value\"\n"))
+            .collect::<String>();
+        let platform = platform.with_file(
+            "/fixture/linux/home/config.toml",
+            FileIdentity {
+                volume: 1,
+                file: 40,
+            },
+            contents,
+            Some(2),
+        );
+        let failure = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project")
+                .with_config_path("/fixture/linux/home/config.toml"),
+            &test_registry(&[]),
+        )
+        .expect_err("assignment limit must be enforced before TOML parsing");
+        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
     }
 
     #[test]
