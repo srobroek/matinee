@@ -165,10 +165,7 @@ impl TestFixture {
         }
         #[cfg(target_os = "linux")]
         {
-            self.home()
-                .join(".local")
-                .join("state")
-                .join("matinee")
+            self.home().join(".local").join("state").join("matinee")
         }
         #[cfg(target_os = "windows")]
         {
