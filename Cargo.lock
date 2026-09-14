@@ -89,6 +89,7 @@ dependencies = [
  "serde",
  "toml",
  "unicode-normalization",
+ "windows-sys",
 ]
 
 [[package]]
