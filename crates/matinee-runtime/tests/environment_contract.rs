@@ -475,6 +475,59 @@ fn one_hundred_distinct_roots_are_pairwise_isolated_without_mutation() {
         );
     }
 }
+#[test]
+fn one_hundred_canonical_roots_have_alias_convergent_exact_lock_identities_without_mutation() {
+    let fixture = TempFixture::new();
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let roots = (0..100)
+        .map(|index| {
+            let root = fixture.path(&format!("canonical-root-{index:03}"));
+            fs::create_dir(&root).expect("create canonical project root");
+            root
+        })
+        .collect::<Vec<_>>();
+    let canonical = roots
+        .iter()
+        .map(|root| {
+            resolve_environment(EnvironmentInput::new(root).with_state_dir("state"))
+                .expect("canonical root resolves")
+        })
+        .collect::<Vec<_>>();
+    let aliases = roots
+        .iter()
+        .map(|root| {
+            resolve_environment(
+                EnvironmentInput::new(root).with_state_dir("state/./nested/../state"),
+            )
+            .expect("lexical state-root alias resolves")
+        })
+        .collect::<Vec<_>>();
+
+    let state_paths = canonical
+        .iter()
+        .map(|environment| environment.state().to_owned())
+        .collect::<HashSet<_>>();
+    assert_eq!(state_paths.len(), 100, "canonical state paths must not collide");
+    for (canonical, alias) in canonical.iter().zip(&aliases) {
+        assert_eq!(canonical.lock_identity(), alias.lock_identity());
+        assert_eq!(canonical.state(), alias.state());
+        assert!(!canonical.state().exists(), "resolution must not create state");
+        assert!(!canonical.config().exists(), "resolution must not create config");
+        assert!(!canonical.runtime().exists(), "resolution must not create runtime");
+        assert!(!canonical.cache().exists(), "resolution must not create cache");
+        assert!(!canonical.log().exists(), "resolution must not create logs");
+    }
+    for (index, environment) in canonical.iter().enumerate() {
+        for other in canonical.iter().skip(index + 1) {
+            assert_ne!(
+                environment.lock_identity(),
+                other.lock_identity(),
+                "canonical roots must have pairwise-distinct exact lock identities"
+            );
+        }
+    }
+}
 
 #[test]
 fn relative_state_path_resolves_against_project_root() {
