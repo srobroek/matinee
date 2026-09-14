@@ -13,9 +13,72 @@ use crate::config::{ConfigurationLayer, DescriptorRegistry, ResolvedConfiguratio
 use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
+use crate::platform::{FileType, Platform};
 use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
 use toml::Value as TomlValue;
+
+/// Validate the implicit project configuration file before any read is attempted.
+///
+/// The project file is always `matinee.toml` directly below the selected root.  The
+/// lexical check rejects traversal first; the followed identity check then rejects a
+/// symlinked ancestor that escapes the selected root.  Finally, the no-follow snapshot
+/// rejects a symbolic-link project file itself.  Missing project files are optional and
+/// therefore return `Ok(None)`.
+pub(crate) fn validate_implicit_project_file<P: Platform>(
+    platform: &P,
+    project_root: &Path,
+) -> EnvironmentResult<Option<PathBuf>> {
+    let project_root =
+        crate::path_identity::absolute_lexical_normalize(project_root, Path::new("."))
+            .map_err(|_| project_path_unavailable())?;
+    let project_file = project_root.join("matinee.toml");
+    if !lexically_within(&project_root, &project_file) {
+        return Err(project_escape());
+    }
+
+    let root_identity = platform
+        .followed_file_identity(&project_root)?
+        .ok_or_else(project_path_unavailable)?;
+    let parent_identity = platform
+        .followed_file_identity(project_file.parent().unwrap_or(&project_root))?
+        .ok_or_else(project_path_unavailable)?;
+    if parent_identity != root_identity {
+        return Err(project_escape());
+    }
+
+    let Some(snapshot) = platform.file_snapshot(&project_file)? else {
+        return Ok(None);
+    };
+    if snapshot.file_type == FileType::Symlink {
+        return Err(project_escape());
+    }
+    if snapshot.file_type != FileType::Regular {
+        return Err(project_unreadable());
+    }
+    Ok(Some(project_file))
+}
+
+fn project_path_unavailable() -> ConfigurationFailure {
+    ConfigurationFailure::new(
+        ConfigurationFailureCode::PathUnavailable,
+        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+    )
+}
+
+fn project_escape() -> ConfigurationFailure {
+    ConfigurationFailure::new(
+        ConfigurationFailureCode::ProjectEscape,
+        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+    )
+}
+
+fn project_unreadable() -> ConfigurationFailure {
+    ConfigurationFailure::new(
+        ConfigurationFailureCode::FileUnreadable,
+        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+    )
+}
 
 /// Assemble the supplied configuration layers after applying immutable input overrides.
 ///
