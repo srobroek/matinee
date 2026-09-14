@@ -18,29 +18,12 @@ use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
 use toml::Value as TomlValue;
 
-/// Validate the implicit project configuration file before any read is attempted.
+/// Capture the selected project root once, then load its implicit configuration.
 ///
-/// The selected root identity is supplied by the resolution attempt, rather than
-/// rediscovered here. This keeps a root replacement between discovery and validation
-/// from making the containment check self-consistent around an attacker-controlled link.
-pub(crate) fn validate_implicit_project_file<P: Platform>(
-    platform: &P,
-    project_root: &Path,
-) -> EnvironmentResult<Option<PathBuf>> {
-    let root_identity = platform
-        .followed_file_identity(project_root)
-        .map_err(project_failure)?
-        .ok_or_else(project_path_unavailable)?;
-    Ok(
-        validate_implicit_project_file_at(platform, project_root, root_identity)?
-            .map(|validated| validated.path),
-    )
-}
-
-/// Open and read the implicit project configuration only after validating its
-/// containment and no-follow type. The pre-open and opened-handle snapshots are
-/// compared before bytes are accepted by the resolver.
-pub(crate) fn read_implicit_project_file<P: Platform>(
+/// Callers that already captured the root identity must use
+/// [`read_implicit_project_file`] so a root retarget cannot be hidden by a second
+/// discovery during validation.
+pub(crate) fn load_implicit_project_file<P: Platform>(
     platform: &P,
     project_root: &Path,
 ) -> EnvironmentResult<Option<Vec<u8>>> {
@@ -48,6 +31,20 @@ pub(crate) fn read_implicit_project_file<P: Platform>(
         .followed_file_identity(project_root)
         .map_err(project_failure)?
         .ok_or_else(project_path_unavailable)?;
+    read_implicit_project_file(platform, project_root, root_identity)
+}
+
+/// Validate and read an implicit project configuration using the identity
+/// captured when the resolution selected the project root.
+///
+/// The selected root identity is supplied by the resolution attempt, rather than
+/// rediscovered here. This keeps a root replacement between discovery and validation
+/// from making the containment check self-consistent around an attacker-controlled link.
+pub(crate) fn read_implicit_project_file<P: Platform>(
+    platform: &P,
+    project_root: &Path,
+    root_identity: FileIdentity,
+) -> EnvironmentResult<Option<Vec<u8>>> {
     let Some(validated) = validate_implicit_project_file_at(platform, project_root, root_identity)?
     else {
         return Ok(None);
@@ -954,7 +951,7 @@ mod tests {
 
     #[test]
     fn implicit_project_read_accepts_regular_file_after_validation() {
-        let (platform, _) = project_fixture();
+        let (platform, root) = project_fixture();
         let platform = platform.with_file(
             "/fixture/project/matinee.toml",
             FileIdentity {
@@ -965,7 +962,7 @@ mod tests {
             Some(2),
         );
         assert_eq!(
-            read_implicit_project_file(&platform, Path::new("/fixture/project"))
+            read_implicit_project_file(&platform, Path::new("/fixture/project"), root)
                 .expect("regular project file reads")
                 .as_deref(),
             Some(&b"[project]\n"[..])
@@ -974,14 +971,14 @@ mod tests {
 
     #[test]
     fn implicit_project_read_allows_missing_file_but_rejects_link_and_nonregular() {
-        let (platform, _) = project_fixture();
+        let (platform, root) = project_fixture();
         assert_eq!(
-            read_implicit_project_file(&platform, Path::new("/fixture/project"))
+            read_implicit_project_file(&platform, Path::new("/fixture/project"), root)
                 .expect("missing project file is optional"),
             None
         );
 
-        let (platform, _) = project_fixture();
+        let (platform, root) = project_fixture();
         let symlink = platform.with_snapshot(
             "/fixture/project/matinee.toml",
             FileSnapshot::symlink(
@@ -993,13 +990,13 @@ mod tests {
             ),
         );
         assert_eq!(
-            read_implicit_project_file(&symlink, Path::new("/fixture/project"))
+            read_implicit_project_file(&symlink, Path::new("/fixture/project"), root)
                 .expect_err("symlink project file is rejected")
                 .code(),
             ConfigurationFailureCode::ProjectEscape
         );
 
-        let (platform, _) = project_fixture();
+        let (platform, root) = project_fixture();
         let directory = platform.with_snapshot(
             "/fixture/project/matinee.toml",
             FileSnapshot::directory(
@@ -1011,7 +1008,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            read_implicit_project_file(&directory, Path::new("/fixture/project"))
+            read_implicit_project_file(&directory, Path::new("/fixture/project"), root)
                 .expect_err("non-regular project file is rejected")
                 .code(),
             ConfigurationFailureCode::FileUnreadable
@@ -1019,9 +1016,52 @@ mod tests {
     }
 
     #[test]
+    fn implicit_project_read_uses_selected_root_identity_after_retarget() {
+        let (platform, selected_root) = project_fixture();
+        let retargeted = platform
+            .with_followed_file_identity(
+                "/fixture/project",
+                FileIdentity {
+                    volume: 1,
+                    file: 20,
+                },
+            )
+            .with_file(
+                "/fixture/project/matinee.toml",
+                FileIdentity {
+                    volume: 1,
+                    file: 11,
+                },
+                b"[project]\n",
+                Some(2),
+            );
+        assert_eq!(
+            read_implicit_project_file(&retargeted, Path::new("/fixture/project"), selected_root,)
+                .expect_err("root retarget must fail containment")
+                .code(),
+            ConfigurationFailureCode::ProjectEscape
+        );
+    }
+
+    #[test]
+    fn implicit_project_loader_captures_root_once() {
+        let (platform, _) = project_fixture();
+        let platform = platform.with_file(
+            "/fixture/project/matinee.toml",
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            b"[project]\n",
+            Some(2),
+        );
+        assert!(load_implicit_project_file(&platform, Path::new("/fixture/project")).is_ok());
+    }
+
+    #[test]
     fn implicit_project_read_rejects_escape_replacement_and_remaps_platform_failures() {
         let platform = FixturePlatform::new(PlatformKind::Linux);
-        let failure = read_implicit_project_file(&platform, Path::new("/fixture/project"))
+        let failure = load_implicit_project_file(&platform, Path::new("/fixture/project"))
             .expect_err("missing project root is unavailable");
         assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
         assert_eq!(
@@ -1029,7 +1069,7 @@ mod tests {
             FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
         );
 
-        let (platform, _) = project_fixture();
+        let (platform, root) = project_fixture();
         let before = FileSnapshot::regular(
             FileIdentity {
                 volume: 1,
@@ -1056,7 +1096,7 @@ mod tests {
                 })],
             );
         assert_eq!(
-            read_implicit_project_file(&replaced, Path::new("/fixture/project"))
+            read_implicit_project_file(&replaced, Path::new("/fixture/project"), root)
                 .expect_err("replacement during read is rejected")
                 .code(),
             ConfigurationFailureCode::FileChanged

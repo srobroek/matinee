@@ -411,13 +411,27 @@ impl Platform for HostPlatform {
         }
         let mut contents =
             Vec::with_capacity(snapshot.byte_length.min((MAX_FILE_BYTES + 1) as u64) as usize);
-        file.take((MAX_FILE_BYTES + 1) as u64)
+        (&file)
+            .take((MAX_FILE_BYTES + 1) as u64)
             .read_to_end(&mut contents)
             .map_err(|_| file_unreadable())?;
         if contents.len() > MAX_FILE_BYTES {
             return Err(file_too_large());
         }
-        Ok(FileRead { snapshot, contents })
+        let post_read_metadata = file.metadata().map_err(|_| file_unreadable())?;
+        let post_read_snapshot = FileSnapshot {
+            identity: file_identity(&post_read_metadata).ok_or_else(file_unreadable)?,
+            file_type: file_type(&post_read_metadata),
+            byte_length: post_read_metadata.len(),
+            modified_marker: modified_marker(&post_read_metadata),
+        };
+        if post_read_snapshot.file_type != FileType::Regular {
+            return Err(file_unreadable());
+        }
+        Ok(FileRead {
+            snapshot: post_read_snapshot,
+            contents,
+        })
     }
 
     fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
