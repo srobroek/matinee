@@ -468,13 +468,17 @@ fn user_file_provenance_is_relative_and_redacted() {
     assert!(!debug.contains(home_text.as_ref()));
 }
 
-fn assert_user_config_failure(contents: &str, expected: ConfigurationFailureCode) {
+fn assert_user_config_failure(
+    contents: &str,
+    expected: ConfigurationFailureCode,
+) -> matinee_runtime::ConfigurationFailure {
     let fixture = TestFixture::new();
     fixture.write_user_config(contents);
 
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("the configuration boundary case must be rejected");
     assert_eq!(failure.code(), expected);
+    failure
 }
 
 fn exact_byte_document(byte_length: usize) -> String {
@@ -502,10 +506,13 @@ fn configuration_accepts_exact_file_byte_limit_and_rejects_one_over() {
     );
     drop(fixture);
 
-    assert_user_config_failure(
+    let failure = assert_user_config_failure(
         &exact_byte_document(FILE_BYTE_LIMIT + 1),
         ConfigurationFailureCode::FileTooLarge,
     );
+    let rendered = failure.to_string();
+    assert!(rendered.contains("source: user-configuration-file"));
+    assert!(!rendered.contains("source: built-in"));
 }
 
 #[test]
