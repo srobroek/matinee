@@ -1848,4 +1848,76 @@ mod tests {
             ConfigurationFailureCode::FileChanged
         );
     }
+
+    #[test]
+    fn implicit_project_escape_rejects_external_root_before_read() {
+        let (platform, selected_root) = project_fixture();
+        let file_snapshot = FileSnapshot::regular(
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            8,
+            Some(2),
+        );
+        let escaped = platform
+            .with_followed_file_identity(
+                "/fixture/project",
+                FileIdentity {
+                    volume: 1,
+                    file: 20,
+                },
+            )
+            .with_snapshot_results(
+                "/fixture/project/matinee.toml",
+                [Ok(Some(file_snapshot))],
+            )
+            .with_read_results(
+                "/fixture/project/matinee.toml",
+                [Ok(FileRead {
+                    snapshot: file_snapshot,
+                    contents: b"tempting".to_vec(),
+                })],
+            );
+
+        assert_eq!(
+            read_implicit_project_file(&escaped, Path::new("/fixture/project"), selected_root)
+                .expect_err("external root must fail containment")
+                .code(),
+            ConfigurationFailureCode::ProjectEscape
+        );
+        assert_eq!(escaped.read_file_count(), 0);
+    }
+
+    #[test]
+    fn implicit_project_symlink_rejects_before_read() {
+        let (platform, root) = project_fixture();
+        let symlink_snapshot = FileSnapshot::symlink(
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            Some(2),
+        );
+        let symlink = platform
+            .with_snapshot(
+                "/fixture/project/matinee.toml",
+                symlink_snapshot,
+            )
+            .with_read_results(
+                "/fixture/project/matinee.toml",
+                [Ok(FileRead {
+                    snapshot: symlink_snapshot,
+                    contents: b"tempting".to_vec(),
+                })],
+            );
+
+        assert_eq!(
+            read_implicit_project_file(&symlink, Path::new("/fixture/project"), root)
+                .expect_err("symlink project file must fail containment")
+                .code(),
+            ConfigurationFailureCode::ProjectEscape
+        );
+        assert_eq!(symlink.read_file_count(), 0);
+    }
 }

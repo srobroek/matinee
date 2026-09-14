@@ -9,7 +9,7 @@
 
 use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass};
 use directories::BaseDirs;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -511,6 +511,7 @@ pub(crate) struct FixturePlatform {
     kind: PlatformKind,
     bases: Result<BaseDirectories, ConfigurationFailure>,
     environment: BTreeMap<OsString, OsString>,
+    read_file_count: Cell<usize>,
     entries: RefCell<BTreeMap<PathBuf, FixtureEntry>>,
     followed_identities: BTreeMap<PathBuf, Result<Option<FileIdentity>, ConfigurationFailure>>,
     default_case_behavior: CaseBehavior,
@@ -564,6 +565,7 @@ impl FixturePlatform {
             kind,
             bases: Ok(bases),
             environment: BTreeMap::new(),
+            read_file_count: Cell::new(0),
             followed_identities: BTreeMap::new(),
             entries: RefCell::new(BTreeMap::new()),
             default_case_behavior: case_behavior,
@@ -694,6 +696,11 @@ impl FixturePlatform {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn read_file_count(&self) -> usize {
+        self.read_file_count.get()
+    }
+
     fn policy_for(&self, anchor: &Path) -> AnchorPolicy {
         self.anchor_policies
             .iter()
@@ -749,6 +756,8 @@ impl Platform for FixturePlatform {
     }
 
     fn read_file(&self, path: &Path) -> Result<FileRead, ConfigurationFailure> {
+        self.read_file_count
+            .set(self.read_file_count.get() + 1);
         let result = self
             .entries
             .borrow_mut()
