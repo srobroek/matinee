@@ -9,9 +9,10 @@
 #![allow(dead_code)]
 
 use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass};
-use crate::platform::{FileIdentity, FileSnapshot, Platform};
+use crate::platform::{FileIdentity, FileSnapshot, Platform, UnicodeNormalization};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use unicode_normalization::UnicodeNormalization as UnicodeNormalizationTrait;
 /// The stable identity of a path, made from its longest existing anchor and
 /// the missing tail interpreted with that anchor's native comparison rules.
 ///
@@ -34,12 +35,12 @@ impl PathIdentity {
     }
 }
 
-/// Resolve a path identity without creating or following any filesystem entry.
+/// Resolve a path identity without creating filesystem entries.
 ///
-/// The longest existing ancestor supplies the stable file identity. Every missing
-/// component is then normalized using the ancestor's native Unicode policy and
-/// case behavior, so aliases converge while distinct anchor identities remain
-/// distinct.
+/// The platform identity query follows supported symbolic-link aliases, while the
+/// separate snapshot remains no-follow evidence for callers that reject linked files.
+/// Every missing component is normalized using the anchor's native Unicode policy and
+/// case behavior, so aliases converge while distinct anchor identities remain distinct.
 pub(crate) fn resolve_path_identity<P: Platform>(
     platform: &P,
     absolute_path: &Path,
@@ -62,13 +63,17 @@ fn normalize_comparison_tail<P: Platform>(
         return Ok(PathBuf::new());
     }
     let case_behavior = platform.case_behavior(anchor)?;
+    let unicode_normalization = platform.unicode_normalization(anchor)?;
     let mut normalized = PathBuf::new();
     for component in tail.components() {
         let Component::Normal(component) = component else {
             return Err(path_unavailable());
         };
         let text = component.to_str().ok_or_else(path_unavailable)?;
-        let mut text = platform.normalize_component(anchor, text)?;
+        let mut text = match unicode_normalization {
+            UnicodeNormalization::Preserve => text.to_owned(),
+            UnicodeNormalization::CanonicalDecomposed => text.nfd().collect(),
+        };
         if case_behavior == crate::platform::CaseBehavior::Insensitive {
             text = text.to_lowercase();
         }
@@ -136,20 +141,21 @@ pub(crate) fn lexical_normalize(path: &Path) -> PathBuf {
 
 /// The longest existing path prefix and the missing lexical tail beneath it.
 ///
-/// `snapshot` is the observation returned by the platform seam for `path`. It
-/// carries the stable file identity needed by later path-identity stages while
-/// preserving the exact path used for the lookup. The tail is never probed or
-/// created here.
+/// `snapshot` is the no-follow observation returned by the platform seam for `path`.
+/// It preserves file type and link identity for callers that reject implicit links;
+/// `identity` is the followed target identity used by path identity. The tail is never
+/// probed or created here.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ExistingAncestor {
     path: PathBuf,
     snapshot: FileSnapshot,
+    identity: FileIdentity,
     comparison_tail: PathBuf,
 }
 
 impl ExistingAncestor {
     pub(crate) const fn identity(&self) -> FileIdentity {
-        self.snapshot.identity
+        self.identity
     }
 
     pub(crate) const fn snapshot(&self) -> FileSnapshot {
@@ -189,9 +195,13 @@ pub(crate) fn longest_existing_ancestor<P: Platform>(
                 for component in missing_components.iter().rev() {
                     comparison_tail.push(component);
                 }
+                let identity = platform
+                    .followed_file_identity(&anchor)?
+                    .ok_or_else(path_unavailable)?;
                 return Ok(ExistingAncestor {
                     path: anchor,
                     snapshot,
+                    identity,
                     comparison_tail,
                 });
             }
@@ -340,6 +350,69 @@ mod tests {
         let windows_identity =
             resolve_path_identity(&windows, requested).expect("windows identity");
         assert_eq!(windows_identity.comparison_tail(), Path::new("mixed/é"));
+    }
+
+    #[test]
+    fn path_identity_follows_supported_symlink_aliases_but_keeps_no_follow_snapshot() {
+        let target = FileIdentity {
+            volume: 8,
+            file: 80,
+        };
+        let first = FileSnapshot::symlink(
+            FileIdentity {
+                volume: 8,
+                file: 81,
+            },
+            None,
+        );
+        let second = FileSnapshot::symlink(
+            FileIdentity {
+                volume: 8,
+                file: 82,
+            },
+            None,
+        );
+        let distinct_target = FileIdentity {
+            volume: 8,
+            file: 83,
+        };
+        let platform = FixturePlatform::new(PlatformKind::Linux)
+            .with_snapshot("/fixture/link-one", first)
+            .with_snapshot("/fixture/link-two", second)
+            .with_snapshot(
+                "/fixture/link-three",
+                FileSnapshot::symlink(
+                    FileIdentity {
+                        volume: 8,
+                        file: 84,
+                    },
+                    None,
+                ),
+            )
+            .with_followed_file_identity("/fixture/link-one", target)
+            .with_followed_file_identity("/fixture/link-two", target)
+            .with_followed_file_identity("/fixture/link-three", distinct_target);
+
+        let first_identity =
+            resolve_path_identity(&platform, Path::new("/fixture/link-one/missing"))
+                .expect("first supported alias");
+        let second_identity =
+            resolve_path_identity(&platform, Path::new("/fixture/link-two/missing"))
+                .expect("second supported alias");
+        let distinct_identity =
+            resolve_path_identity(&platform, Path::new("/fixture/link-three/missing"))
+                .expect("distinct target alias");
+
+        assert_eq!(first_identity, second_identity);
+        assert_ne!(first_identity, distinct_identity);
+        assert_eq!(first_identity.existing_anchor_id(), target);
+        assert_eq!(first_identity.comparison_tail(), Path::new("missing"));
+        assert_eq!(
+            longest_existing_ancestor(&platform, Path::new("/fixture/link-one/missing"))
+                .expect("no-follow snapshot")
+                .snapshot(),
+            first
+        );
     }
 
     #[test]

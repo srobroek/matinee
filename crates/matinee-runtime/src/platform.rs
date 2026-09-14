@@ -273,6 +273,13 @@ pub(crate) trait Platform {
     /// Returns `Ok(None)` only when the path is absent. An existing path that
     /// cannot be interrogated remains a closed configuration failure.
     fn file_snapshot(&self, path: &Path) -> Result<Option<FileSnapshot>, ConfigurationFailure>;
+    /// Returns the stable identity of the target named by `path`, following symbolic links.
+    /// This is deliberately separate from [`Self::file_snapshot`], whose file type and
+    /// identity are the no-follow evidence used to reject implicit linked project files.
+    fn followed_file_identity(
+        &self,
+        path: &Path,
+    ) -> Result<Option<FileIdentity>, ConfigurationFailure>;
     /// Opens and reads one handle, returning the bytes and that handle's
     /// identity evidence together. The implementation enforces the bound.
     fn read_file(&self, path: &Path) -> Result<FileRead, ConfigurationFailure>;
@@ -374,6 +381,18 @@ impl Platform for HostPlatform {
             modified_marker: modified_marker(&metadata),
         }))
     }
+    fn followed_file_identity(
+        &self,
+        path: &Path,
+    ) -> Result<Option<FileIdentity>, ConfigurationFailure> {
+        match fs::metadata(path) {
+            Ok(metadata) => file_identity(&metadata)
+                .map(Some)
+                .ok_or_else(file_unreadable),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(file_unreadable()),
+        }
+    }
 
     fn read_file(&self, path: &Path) -> Result<FileRead, ConfigurationFailure> {
         let file = fs::File::open(path).map_err(|_| file_unreadable())?;
@@ -409,7 +428,7 @@ impl Platform for HostPlatform {
         &self,
         anchor: &Path,
     ) -> Result<UnicodeNormalization, ConfigurationFailure> {
-        probe_unicode_normalization(anchor)
+        probe_unicode_normalization(anchor, self.kind)
     }
 }
 
@@ -458,6 +477,13 @@ impl FixtureEntry {
         self.snapshots.pop_front().unwrap_or(self.snapshot_fallback)
     }
 
+    fn followed_identity(&self) -> Result<Option<FileIdentity>, ConfigurationFailure> {
+        self.snapshots
+            .front()
+            .cloned()
+            .unwrap_or(self.snapshot_fallback)
+            .map(|snapshot| snapshot.map(|snapshot| snapshot.identity))
+    }
     fn next_read(&mut self) -> Result<FileRead, ConfigurationFailure> {
         self.reads
             .pop_front()
@@ -472,6 +498,7 @@ pub(crate) struct FixturePlatform {
     bases: Result<BaseDirectories, ConfigurationFailure>,
     environment: BTreeMap<OsString, OsString>,
     entries: RefCell<BTreeMap<PathBuf, FixtureEntry>>,
+    followed_identities: BTreeMap<PathBuf, Result<Option<FileIdentity>, ConfigurationFailure>>,
     default_case_behavior: CaseBehavior,
     default_unicode_normalization: UnicodeNormalization,
     anchor_policies: BTreeMap<PathBuf, AnchorPolicy>,
@@ -523,6 +550,7 @@ impl FixturePlatform {
             kind,
             bases: Ok(bases),
             environment: BTreeMap::new(),
+            followed_identities: BTreeMap::new(),
             entries: RefCell::new(BTreeMap::new()),
             default_case_behavior: case_behavior,
             default_unicode_normalization: unicode_normalization,
@@ -563,6 +591,15 @@ impl FixturePlatform {
         self.entries
             .borrow_mut()
             .insert(path.into(), FixtureEntry::snapshot_only(snapshot));
+        self
+    }
+    pub(crate) fn with_followed_file_identity(
+        mut self,
+        path: impl Into<PathBuf>,
+        identity: FileIdentity,
+    ) -> Self {
+        self.followed_identities
+            .insert(path.into(), Ok(Some(identity)));
         self
     }
 
@@ -681,6 +718,19 @@ impl Platform for FixturePlatform {
             .borrow_mut()
             .get_mut(path)
             .map(FixtureEntry::next_snapshot)
+            .unwrap_or(Ok(None))
+    }
+    fn followed_file_identity(
+        &self,
+        path: &Path,
+    ) -> Result<Option<FileIdentity>, ConfigurationFailure> {
+        if let Some(identity) = self.followed_identities.get(path) {
+            return *identity;
+        }
+        self.entries
+            .borrow()
+            .get(path)
+            .map(FixtureEntry::followed_identity)
             .unwrap_or(Ok(None))
     }
 
@@ -843,57 +893,15 @@ fn probe_case_behavior(anchor: &Path) -> Result<CaseBehavior, ConfigurationFailu
     })
 }
 
-fn unicode_variants(name: &str) -> Option<(OsString, OsString)> {
-    const COMPOSED: char = '\u{00e9}';
-    const DECOMPOSED: &str = "e\u{0301}";
-    if name.contains(COMPOSED) {
-        return Some((
-            OsString::from(name),
-            OsString::from(name.replace(COMPOSED, DECOMPOSED)),
-        ));
-    }
-    if name.contains(DECOMPOSED) {
-        return Some((
-            OsString::from(name.replace(DECOMPOSED, "\u{00e9}")),
-            OsString::from(name),
-        ));
-    }
-    None
-}
-
 fn probe_unicode_normalization(
     anchor: &Path,
+    kind: PlatformKind,
 ) -> Result<UnicodeNormalization, ConfigurationFailure> {
-    let mut directory = existing_anchor(anchor)?;
-    loop {
-        let entries = fs::read_dir(&directory).map_err(|_| file_unreadable())?;
-        for entry in entries {
-            let entry = entry.map_err(|_| file_unreadable())?;
-            let name = entry.file_name();
-            let Some(name_text) = name.to_str() else {
-                continue;
-            };
-            let Some((composed, decomposed)) = unicode_variants(name_text) else {
-                continue;
-            };
-            let composed_identity = identity_at(&directory.join(composed))?;
-            let decomposed_identity = identity_at(&directory.join(decomposed))?;
-            return Ok(match (composed_identity, decomposed_identity) {
-                (Some(left), Some(right)) if left == right => {
-                    UnicodeNormalization::CanonicalDecomposed
-                }
-                _ => UnicodeNormalization::Preserve,
-            });
-        }
-        let Some(parent) = directory.parent() else {
-            break;
-        };
-        if parent == directory {
-            break;
-        }
-        directory = parent.to_path_buf();
-    }
-    Err(file_unreadable())
+    let _ = existing_anchor(anchor)?;
+    Ok(match kind {
+        PlatformKind::MacOs => UnicodeNormalization::CanonicalDecomposed,
+        PlatformKind::Linux | PlatformKind::Windows => UnicodeNormalization::Preserve,
+    })
 }
 
 const fn current_platform_kind() -> PlatformKind {
@@ -1531,11 +1539,14 @@ mod tests {
     }
 
     #[test]
-    fn host_unicode_normalization_matches_anchor_identity_probe_or_closes() {
+    fn host_unicode_normalization_is_total_for_valid_anchor_without_variant_probe() {
         let host = HostPlatform::new().expect("host platform");
         let anchor = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let independent = independent_unicode_normalization(anchor);
-        assert_unicode_probe_result(host.unicode_normalization(anchor), independent);
+        let expected = match current_platform_kind() {
+            PlatformKind::MacOs => UnicodeNormalization::CanonicalDecomposed,
+            PlatformKind::Linux | PlatformKind::Windows => UnicodeNormalization::Preserve,
+        };
+        assert_eq!(host.unicode_normalization(anchor), Ok(expected));
     }
 
     #[test]
