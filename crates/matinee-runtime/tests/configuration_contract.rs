@@ -376,7 +376,7 @@ fn unknown_key_failure_is_redacted_and_does_not_return_partial_state() {
         .expect_err("an unknown key rejects the complete resolution");
     assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
     let rendered = format!("{failure:?} {failure}");
-    assert!(rendered.contains("user-configuration-file"));
+    assert!(rendered.contains("user-file"));
     assert!(!rendered.contains(rejected_key));
     assert!(!rendered.contains(secret_value));
     let root_text = fixture.root.to_string_lossy();
