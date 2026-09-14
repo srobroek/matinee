@@ -863,6 +863,23 @@ mod tests {
                 },
                 b"setting = \"explicit\"\n",
                 Some(3),
+            )
+            .with_snapshot(
+                "/fixture/linux/home/.local/state",
+                FileSnapshot::directory(
+                    FileIdentity {
+                        volume: 1,
+                        file: 32,
+                    },
+                    Some(4),
+                ),
+            )
+            .with_followed_file_identity(
+                "/fixture/linux/home/.local/state",
+                FileIdentity {
+                    volume: 1,
+                    file: 32,
+                },
             );
         let registry = test_registry(&["setting"]);
         let resolved = resolve_environment(
