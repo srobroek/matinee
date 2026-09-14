@@ -865,11 +865,12 @@ mod tests {
                 Some(3),
             )
             .with_followed_file_identity("/fixture/state", state);
+        let registry = test_registry(&["setting", "state_dir"]);
         let resolved = resolve_environment(
             &platform,
             EnvironmentInput::new("/fixture/project")
                 .with_config_path("/fixture/linux/home/config.toml"),
-            &test_registry(&["setting", "state_dir"]),
+            &registry,
         )
         .expect("explicit config must suppress implicit project parsing");
         assert_eq!(
