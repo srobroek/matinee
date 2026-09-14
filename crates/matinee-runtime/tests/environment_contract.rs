@@ -432,15 +432,11 @@ fn state_path_normalization_removes_dot_segments_without_filesystem_access() {
     let mut environment = EnvironmentGuard::acquire();
     configure_host_environment(&fixture, &mut environment);
     let input = fixture.path("nested/./child/../normalized/./state");
-    let resolved = resolve_environment(
-        EnvironmentInput::new(fixture.project_root()).with_state_dir(&input),
-    )
-    .expect("normalized state path resolves");
+    let resolved =
+        resolve_environment(EnvironmentInput::new(fixture.project_root()).with_state_dir(&input))
+            .expect("normalized state path resolves");
 
-    assert_eq!(
-        resolved.state(),
-        fixture.path("nested/normalized/state")
-    );
+    assert_eq!(resolved.state(), fixture.path("nested/normalized/state"));
 }
 
 #[test]
@@ -451,14 +447,12 @@ fn case_equivalent_state_paths_follow_anchor_filesystem_semantics() {
     configure_host_environment(&fixture, &mut environment);
     let lower = fixture.path("case-root/state");
     let upper = fixture.path("CASE-ROOT/STATE");
-    let lower_result = resolve_environment(
-        EnvironmentInput::new(fixture.project_root()).with_state_dir(&lower),
-    )
-    .expect("lower-case state path resolves");
-    let upper_result = resolve_environment(
-        EnvironmentInput::new(fixture.project_root()).with_state_dir(&upper),
-    )
-    .expect("upper-case state path resolves");
+    let lower_result =
+        resolve_environment(EnvironmentInput::new(fixture.project_root()).with_state_dir(&lower))
+            .expect("lower-case state path resolves");
+    let upper_result =
+        resolve_environment(EnvironmentInput::new(fixture.project_root()).with_state_dir(&upper))
+            .expect("upper-case state path resolves");
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     assert_eq!(
@@ -488,10 +482,9 @@ fn supported_symbolic_link_project_root_converges_with_target_identity() {
 
     let mut environment = EnvironmentGuard::acquire();
     configure_host_environment(&fixture, &mut environment);
-    let target = resolve_environment(
-        EnvironmentInput::new(fixture.project_root()).with_state_dir("state"),
-    )
-    .expect("target project root resolves");
+    let target =
+        resolve_environment(EnvironmentInput::new(fixture.project_root()).with_state_dir("state"))
+            .expect("target project root resolves");
     let aliased = resolve_environment(EnvironmentInput::new(&alias).with_state_dir("state"))
         .expect("symbolic-link project root resolves");
 

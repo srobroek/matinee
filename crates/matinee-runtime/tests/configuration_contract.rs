@@ -355,7 +355,11 @@ fn reserved_keys_are_unknown_until_their_descriptor_is_registered() {
             _ => unreachable!("source list is closed"),
         }
         .expect_err("unregistered reserved keys must remain unknown");
-        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown, "source: {source}");
+        assert_eq!(
+            failure.code(),
+            ConfigurationFailureCode::KeyUnknown,
+            "source: {source}"
+        );
     }
 }
 
@@ -412,7 +416,7 @@ fn environment_names_that_normalize_to_one_key_are_rejected_as_duplicates() {
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("distinct environment spellings mapping to one key must fail");
     assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
-
+}
 #[test]
 fn duplicate_user_key_is_rejected() {
     // Catches a parser that lets a duplicate assignment overwrite an earlier user value.
