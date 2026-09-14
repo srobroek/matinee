@@ -16,7 +16,7 @@ use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
 use crate::path_identity::{PathIdentity, absolute_lexical_normalize, resolve_path_identity};
-use crate::platform::{FileIdentity, FileSnapshot, FileType, MatineePaths, Platform};
+use crate::platform::{FileIdentity, FileSnapshot, FileType, MAX_FILE_BYTES, MatineePaths, Platform};
 use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
 use std::str;
@@ -290,6 +290,9 @@ fn validate_implicit_project_file_at<P: Platform>(
     if snapshot.file_type != FileType::Regular {
         return Err(project_unreadable());
     }
+    if snapshot.byte_length > MAX_FILE_BYTES as u64 {
+        return Err(project_file_too_large());
+    }
     Ok(Some(ValidatedProjectFile {
         path: project_file,
         snapshot,
@@ -306,6 +309,13 @@ fn project_failure(failure: ConfigurationFailure) -> ConfigurationFailure {
 fn project_file_changed() -> ConfigurationFailure {
     ConfigurationFailure::new(
         ConfigurationFailureCode::FileChanged,
+        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+    )
+}
+
+fn project_file_too_large() -> ConfigurationFailure {
+    ConfigurationFailure::new(
+        ConfigurationFailureCode::FileTooLarge,
         FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
     )
 }
@@ -822,6 +832,114 @@ mod tests {
         .expect_err("replacement during one resolver read must fail");
         assert_eq!(failure.code(), ConfigurationFailureCode::FileChanged);
     }
+
+    #[test]
+    fn resolve_environment_rejects_oversized_captured_project_snapshot_before_read() {
+        let (platform, _) = project_fixture();
+        let snapshot = FileSnapshot::regular(
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            crate::platform::MAX_FILE_BYTES as u64 + 1,
+            Some(2),
+        );
+        let platform = platform
+            .with_snapshot("/fixture/project/matinee.toml", snapshot)
+            .with_read_results(
+                "/fixture/project/matinee.toml",
+                [Ok(FileRead {
+                    snapshot,
+                    contents: b"setting = \"project\"\n".to_vec(),
+                })],
+            );
+        let failure = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
+            &test_registry(&["setting", "state_dir"]),
+        )
+        .expect_err("an oversized captured project file must fail before read");
+        assert_eq!(failure.code(), ConfigurationFailureCode::FileTooLarge);
+        assert_eq!(
+            failure.source(),
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+        );
+    }
+
+    #[test]
+    fn resolve_environment_accepts_exact_project_snapshot_limit() {
+        let (platform, _) = project_fixture();
+        let snapshot = FileSnapshot::regular(
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            crate::platform::MAX_FILE_BYTES as u64,
+            Some(2),
+        );
+        let platform = platform
+            .with_snapshot("/fixture/project/matinee.toml", snapshot)
+            .with_read_results(
+                "/fixture/project/matinee.toml",
+                [Ok(FileRead {
+                    snapshot,
+                    contents: b"setting = \"project\"\n".to_vec(),
+                })],
+            );
+        let registry = test_registry(&["setting", "state_dir"]);
+        let resolved = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
+            &registry,
+        )
+        .expect("a project file at the exact byte limit must resolve");
+        assert_eq!(
+            resolved.configuration().get("setting").unwrap().value(),
+            &text("project")
+        );
+    }
+
+    #[test]
+    fn resolve_environment_rejects_project_modified_marker_change() {
+        let (platform, _) = project_fixture();
+        let before = FileSnapshot::regular(
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            20,
+            Some(2),
+        );
+        let after = FileSnapshot::regular(
+            FileIdentity {
+                volume: 1,
+                file: 11,
+            },
+            20,
+            Some(3),
+        );
+        let platform = platform
+            .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(before))])
+            .with_read_results(
+                "/fixture/project/matinee.toml",
+                [Ok(FileRead {
+                    snapshot: after,
+                    contents: b"setting = \"project\"\n".to_vec(),
+                })],
+            );
+        let failure = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
+            &test_registry(&["setting", "state_dir"]),
+        )
+        .expect_err("a project modified marker change must fail");
+        assert_eq!(failure.code(), ConfigurationFailureCode::FileChanged);
+        assert_eq!(
+            failure.source(),
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+        );
+    }
+
     #[test]
     fn resolve_environment_rejects_missing_explicit_user_path_outside_home() {
         let (platform, _) = project_fixture();
