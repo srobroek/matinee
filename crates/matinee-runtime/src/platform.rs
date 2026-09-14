@@ -58,6 +58,149 @@ pub(crate) struct BaseDirectories {
     pub(crate) cache: PathBuf,
 }
 
+/// Matinee-owned directories derived from the operating system base locations.
+///
+/// The values are paths only: resolution never creates any of these directories.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MatineePaths {
+    pub(crate) config: PathBuf,
+    pub(crate) state: PathBuf,
+    pub(crate) runtime: PathBuf,
+    pub(crate) cache: PathBuf,
+    pub(crate) logs: PathBuf,
+}
+
+impl MatineePaths {
+    pub(crate) fn config(&self) -> &Path {
+        &self.config
+    }
+
+    pub(crate) fn state(&self) -> &Path {
+        &self.state
+    }
+
+    pub(crate) fn runtime(&self) -> &Path {
+        &self.runtime
+    }
+
+    pub(crate) fn cache(&self) -> &Path {
+        &self.cache
+    }
+
+    pub(crate) fn logs(&self) -> &Path {
+        &self.logs
+    }
+}
+
+impl BaseDirectories {
+    /// Derive Matinee's stable directory layout from platform base locations.
+    pub(crate) fn matinee_paths(
+        &self,
+        kind: PlatformKind,
+    ) -> Result<MatineePaths, ConfigurationFailure> {
+        match kind {
+            PlatformKind::MacOs => {
+                let config_base = required_base(&self.config, kind)?;
+                let home = required_base(&self.home, kind)?;
+                let config = append_component(&config_base, kind, "Matinee");
+                let state = append_component(&config, kind, "state");
+                let runtime = append_component(&state, kind, "run");
+                let cache = append_component(&required_base(&self.cache, kind)?, kind, "Matinee");
+                let logs = append_component(
+                    &append_component(&append_component(&home, kind, "Library"), kind, "Logs"),
+                    kind,
+                    "Matinee",
+                );
+                Ok(MatineePaths {
+                    config,
+                    state,
+                    runtime,
+                    cache,
+                    logs,
+                })
+            }
+            PlatformKind::Linux => {
+                let config = append_component(&required_base(&self.config, kind)?, kind, "matinee");
+                let state_base = required_base(self.state.as_deref().ok_or_else(path_unavailable)?, kind)?;
+                let state = append_component(&state_base, kind, "matinee");
+                let runtime_base = self
+                    .runtime
+                    .as_deref()
+                    .map(|path| required_base(path, kind))
+                    .transpose()?
+                    .unwrap_or_else(|| state.clone());
+                let runtime = if self.runtime.is_some() {
+                    append_component(&runtime_base, kind, "matinee")
+                } else {
+                    append_component(&runtime_base, kind, "run")
+                };
+                let cache = append_component(&required_base(&self.cache, kind)?, kind, "matinee");
+                let logs = append_component(&state, kind, "logs");
+                Ok(MatineePaths {
+                    config,
+                    state,
+                    runtime,
+                    cache,
+                    logs,
+                })
+            }
+            PlatformKind::Windows => {
+                let config = append_component(&required_base(&self.config, kind)?, kind, "Matinee");
+                let local = append_component(&required_base(&self.data, kind)?, kind, "Matinee");
+                let state = append_component(&local, kind, "state");
+                let runtime = append_component(&state, kind, "run");
+                let cache = append_component(&local, kind, "cache");
+                let logs = append_component(&state, kind, "logs");
+                Ok(MatineePaths {
+                    config,
+                    state,
+                    runtime,
+                    cache,
+                    logs,
+                })
+            }
+        }
+    }
+}
+
+fn required_base(path: &Path, kind: PlatformKind) -> Result<PathBuf, ConfigurationFailure> {
+    if path.as_os_str().is_empty() || !is_absolute_for_platform(path, kind) {
+        return Err(path_unavailable());
+    }
+    Ok(path.to_path_buf())
+}
+
+fn is_absolute_for_platform(path: &Path, kind: PlatformKind) -> bool {
+    if path.is_absolute() {
+        return true;
+    }
+    if kind != PlatformKind::Windows {
+        return false;
+    }
+    let Some(text) = path.to_str() else {
+        return false;
+    };
+    text.starts_with("\\\\")
+        || text.starts_with("//")
+        || (text.len() >= 3
+            && text.as_bytes()[0].is_ascii_alphabetic()
+            && text.as_bytes()[1] == b':'
+            && matches!(text.as_bytes()[2], b'\\' | b'/'))
+}
+
+fn append_component(base: &Path, kind: PlatformKind, component: &str) -> PathBuf {
+    if kind == PlatformKind::Windows && cfg!(not(windows)) {
+        let mut text = base.to_string_lossy().into_owned();
+        if !text.ends_with('\\') && !text.ends_with('/') {
+            text.push('\\');
+        }
+        text.push_str(component);
+        PathBuf::from(text)
+    } else {
+        base.join(component)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct FileIdentity {
     pub(crate) volume: u64,
@@ -120,10 +263,12 @@ pub(crate) struct FileRead {
     pub(crate) contents: Vec<u8>,
 }
 
-/// Every host operation needed by environment and path resolution.
 pub(crate) trait Platform {
     fn kind(&self) -> PlatformKind;
     fn base_directories(&self) -> Result<BaseDirectories, ConfigurationFailure>;
+    fn matinee_paths(&self) -> Result<MatineePaths, ConfigurationFailure> {
+        self.base_directories()?.matinee_paths(self.kind())
+    }
     fn environment_variable(&self, name: &OsStr) -> Option<OsString>;
     fn environment_variables(&self) -> Vec<(OsString, OsString)>;
     /// Returns `Ok(None)` only when the path is absent. An existing path that
@@ -961,6 +1106,113 @@ mod tests {
             assert_eq!(bases.state, state.map(PathBuf::from));
             assert_eq!(platform.kind(), kind);
         }
+    }
+
+    #[test]
+    fn fixture_derives_matinee_paths_for_all_supported_platforms() {
+        let mac = FixturePlatform::new(PlatformKind::MacOs)
+            .matinee_paths()
+            .expect("macOS paths");
+        assert_eq!(
+            mac.config(),
+            Path::new("/fixture/macos/home/Library/Application Support/Matinee")
+        );
+        assert_eq!(
+            mac.state(),
+            Path::new("/fixture/macos/home/Library/Application Support/Matinee/state")
+        );
+        assert_eq!(
+            mac.runtime(),
+            Path::new("/fixture/macos/home/Library/Application Support/Matinee/state/run")
+        );
+        assert_eq!(
+            mac.cache(),
+            Path::new("/fixture/macos/home/Library/Caches/Matinee")
+        );
+        assert_eq!(
+            mac.logs(),
+            Path::new("/fixture/macos/home/Library/Logs/Matinee")
+        );
+
+        let linux = FixturePlatform::new(PlatformKind::Linux)
+            .matinee_paths()
+            .expect("Linux paths");
+        assert_eq!(
+            linux.config(),
+            Path::new("/fixture/linux/home/.config/matinee")
+        );
+        assert_eq!(
+            linux.state(),
+            Path::new("/fixture/linux/home/.local/state/matinee")
+        );
+        assert_eq!(linux.runtime(), Path::new("/fixture/linux/runtime/matinee"));
+        assert_eq!(linux.cache(), Path::new("/fixture/linux/home/.cache/matinee"));
+        assert_eq!(
+            linux.logs(),
+            Path::new("/fixture/linux/home/.local/state/matinee/logs")
+        );
+
+        let windows = FixturePlatform::new(PlatformKind::Windows)
+            .matinee_paths()
+            .expect("Windows paths");
+        assert_eq!(
+            windows.config(),
+            Path::new(r"C:\Users\fixture\AppData\Roaming\Matinee")
+        );
+        assert_eq!(
+            windows.state(),
+            Path::new(r"C:\Users\fixture\AppData\Local\Matinee\state")
+        );
+        assert_eq!(
+            windows.runtime(),
+            Path::new(r"C:\Users\fixture\AppData\Local\Matinee\state\run")
+        );
+        assert_eq!(
+            windows.cache(),
+            Path::new(r"C:\Users\fixture\AppData\Local\Matinee\cache")
+        );
+        assert_eq!(
+            windows.logs(),
+            Path::new(r"C:\Users\fixture\AppData\Local\Matinee\state\logs")
+        );
+    }
+
+    #[test]
+    fn linux_runtime_falls_back_to_state_run_without_mutation() {
+        let bases = BaseDirectories {
+            home: PathBuf::from("/fixture/linux/home"),
+            config: PathBuf::from("/fixture/linux/home/.config"),
+            data: PathBuf::from("/fixture/linux/home/.local/share"),
+            state: Some(PathBuf::from("/fixture/linux/home/.local/state")),
+            runtime: None,
+            cache: PathBuf::from("/fixture/linux/home/.cache"),
+        };
+        let paths = bases
+            .matinee_paths(PlatformKind::Linux)
+            .expect("state fallback");
+        assert_eq!(
+            paths.runtime(),
+            Path::new("/fixture/linux/home/.local/state/matinee/run")
+        );
+    }
+
+    #[test]
+    fn missing_linux_state_base_is_a_closed_path_failure() {
+        let bases = BaseDirectories {
+            home: PathBuf::from("/fixture/linux/home"),
+            config: PathBuf::from("/fixture/linux/home/.config"),
+            data: PathBuf::from("/fixture/linux/home/.local/share"),
+            state: None,
+            runtime: Some(PathBuf::from("/fixture/linux/runtime")),
+            cache: PathBuf::from("/fixture/linux/home/.cache"),
+        };
+        assert_eq!(
+            bases
+                .matinee_paths(PlatformKind::Linux)
+                .expect_err("missing state base")
+                .code(),
+            ConfigurationFailureCode::PathUnavailable
+        );
     }
 
     #[test]
