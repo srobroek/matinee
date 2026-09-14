@@ -127,7 +127,6 @@ impl ResolvedEnvironment {
             .map(ResolvedSetting::from_internal)
     }
 
-
     /// Iterates over the complete set of winning settings.
     pub fn settings(&self) -> impl Iterator<Item = ResolvedSetting> + '_ {
         self.resolved
