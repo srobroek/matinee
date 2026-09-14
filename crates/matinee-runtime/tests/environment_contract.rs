@@ -497,10 +497,8 @@ fn one_hundred_canonical_roots_have_alias_convergent_exact_lock_identities_witho
     let aliases = roots
         .iter()
         .map(|root| {
-            resolve_environment(
-                EnvironmentInput::new(root).with_state_dir("state/./nested/../."),
-            )
-            .expect("lexical state-root alias resolves")
+            resolve_environment(EnvironmentInput::new(root).with_state_dir("state/./nested/../."))
+                .expect("lexical state-root alias resolves")
         })
         .collect::<Vec<_>>();
 
