@@ -940,9 +940,7 @@ fn file_identity_from_handle(file: &fs::File) -> Option<FileIdentity> {
     let succeeded = unsafe { GetFileInformationByHandle(handle, &mut legacy) };
     (succeeded != 0).then_some(FileIdentity {
         volume: legacy.dwVolumeSerialNumber as u64,
-        file: u128::from(
-            ((legacy.nFileIndexHigh as u64) << 32) | legacy.nFileIndexLow as u64,
-        ),
+        file: u128::from(((legacy.nFileIndexHigh as u64) << 32) | legacy.nFileIndexLow as u64),
     })
 }
 
