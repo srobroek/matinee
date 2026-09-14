@@ -364,7 +364,6 @@ fn missing_project_root_returns_closed_failure_without_mutation() {
     );
 }
 
-
 #[test]
 fn resolution_creates_no_derived_directories() {
     // This catches a regression that eagerly creates one or more derived directories during resolution.
