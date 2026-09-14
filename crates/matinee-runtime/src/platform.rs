@@ -1116,9 +1116,15 @@ mod tests {
         assert!(is_absolute_for_platform(unix_root, PlatformKind::MacOs));
         assert!(is_absolute_for_platform(unix_root, PlatformKind::Linux));
         assert!(!is_absolute_for_platform(unix_root, PlatformKind::Windows));
-        assert!(is_absolute_for_platform(windows_drive, PlatformKind::Windows));
+        assert!(is_absolute_for_platform(
+            windows_drive,
+            PlatformKind::Windows
+        ));
         assert!(is_absolute_for_platform(windows_unc, PlatformKind::Windows));
-        assert!(!is_absolute_for_platform(windows_drive, PlatformKind::Linux));
+        assert!(!is_absolute_for_platform(
+            windows_drive,
+            PlatformKind::Linux
+        ));
         assert!(!is_absolute_for_platform(windows_unc, PlatformKind::MacOs));
     }
 
