@@ -94,10 +94,6 @@ impl EnvironmentGuard {
         }
     }
 
-    fn remove(&mut self, name: &str) {
-        self.remove_os(OsStr::new(name));
-    }
-
     fn remove_os(&mut self, name: &OsStr) {
         self.remember(name);
         // Environment mutation is serialized by ENV_LOCK for this whole test body.
@@ -118,7 +114,6 @@ impl EnvironmentGuard {
                     None
                 }
             })
-            .map(OsString::from)
             .collect::<Vec<_>>();
         for name in names {
             self.remove_os(&name);
@@ -226,7 +221,7 @@ fn crate_root_exposes_environment_resolution_contract() {
     assert_eq!(source.as_str(), "project_file");
 
     let result: EnvironmentResult<EnvironmentInput> = Ok(input.clone());
-    assert_eq!(result.expect("successful input"), input);
+    assert_eq!(result.ok(), Some(input));
     assert_eq!(
         ConfigurationFailureCode::KeyUnknown.as_str(),
         "config.key_unknown"
@@ -334,7 +329,7 @@ fn missing_required_base_returns_closed_path_failure() {
             "XDG_CACHE_HOME",
             "XDG_BIN_HOME",
         ] {
-            environment.remove(name);
+            environment.remove_os(OsStr::new(name));
         }
         let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
             .expect_err("invalid required base must fail");

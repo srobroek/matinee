@@ -35,7 +35,7 @@ impl TestFixture {
     fn new() -> Self {
         let lock = ENV_LOCK
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = unique_temp_root();
         fs::create_dir_all(root.join("project")).expect("create project fixture root");
 
