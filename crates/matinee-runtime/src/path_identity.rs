@@ -192,16 +192,10 @@ mod tests {
 
     #[test]
     fn longest_existing_ancestor_returns_anchor_and_ordered_missing_tail() {
-        let anchor = FileSnapshot::directory(
-            FileIdentity { volume: 7, file: 42 },
-            Some(9),
-        );
+        let anchor = FileSnapshot::directory(FileIdentity { volume: 7, file: 42 }, Some(9));
         let platform = FixturePlatform::new(PlatformKind::Linux)
             .with_snapshot("/fixture/project", anchor)
-            .with_snapshot_results(
-                "/fixture/project/missing/deeper",
-                [Ok(None)],
-            )
+            .with_snapshot_results("/fixture/project/missing/deeper", [Ok(None)])
             .with_snapshot_results("/fixture/project/missing", [Ok(None)]);
 
         let result = longest_existing_ancestor(
