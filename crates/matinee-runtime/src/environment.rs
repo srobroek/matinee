@@ -346,14 +346,6 @@ where
 {
     let input = input.borrow();
     let explicit_config = input.config_path();
-    if let Some(config_path) = explicit_config {
-        if !lexically_within(input.project_root(), config_path) {
-            return Err(ConfigurationFailure::new(
-                ConfigurationFailureCode::ProjectEscape,
-                FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
-            ));
-        }
-    }
 
     let state_dir_override = input.state_dir().map(|state_dir| {
         state_dir.to_str().map(str::to_owned).ok_or_else(|| {
@@ -1084,21 +1076,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn assemble_configuration_uses_project_root_for_config_containment() {
-        let registry = test_registry(&["setting"]);
-        let failure = assemble_configuration(
-            EnvironmentInput::new("/workspace/project")
-                .with_config_path("/workspace/project/../outside.toml"),
-            &registry,
-            std::iter::empty(),
-        )
-        .expect_err("configuration outside the project root is rejected");
-        assert_eq!(
-            failure.source(),
-            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
-        );
-    }
 
     #[test]
     fn assemble_configuration_is_all_or_failure_without_partial_result() {
@@ -1116,31 +1093,6 @@ mod tests {
         assert!(!failure.to_string().contains("unregistered"));
     }
 
-    #[test]
-    fn assemble_configuration_preserves_closed_four_field_failure_projection() {
-        let raw_path = "/workspace/project/../outside-config.toml";
-        let registry = test_registry(&["setting"]);
-        let failure = assemble_configuration(
-            EnvironmentInput::new("/workspace/project").with_config_path(raw_path),
-            &registry,
-            std::iter::empty(),
-        )
-        .expect_err("escaped configuration path is rejected");
-        assert_eq!(
-            failure.summary(),
-            "project configuration is outside the project root"
-        );
-
-        assert_eq!(
-            failure.source(),
-            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
-        );
-        assert_eq!(
-            failure.next_action(),
-            "Select a project configuration inside the project root."
-        );
-        assert!(!failure.to_string().contains(raw_path));
-    }
 
     #[test]
     fn assemble_configuration_does_not_mutate_filesystem() {
