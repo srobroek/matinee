@@ -61,10 +61,10 @@ impl TestFixture {
             .collect::<Vec<_>>();
 
         let home = root.join("home");
-        let config = root.join("config");
-        let state = root.join("state");
-        let data = root.join("data");
-        let cache = root.join("cache");
+        let config = home.join(".config");
+        let state = home.join(".local").join("state");
+        let data = home.join(".local").join("share");
+        let cache = home.join(".cache");
         let runtime = root.join("runtime");
         let appdata = root.join("appdata");
         let localappdata = root.join("localappdata");
@@ -120,7 +120,10 @@ impl TestFixture {
         }
         #[cfg(target_os = "linux")]
         {
-            self.root.join("config").join("matinee").join("config.toml")
+            self.home()
+                .join(".config")
+                .join("matinee")
+                .join("config.toml")
         }
         #[cfg(target_os = "windows")]
         {
@@ -162,7 +165,10 @@ impl TestFixture {
         }
         #[cfg(target_os = "linux")]
         {
-            self.root.join("state").join("matinee")
+            self.home()
+                .join(".local")
+                .join("state")
+                .join("matinee")
         }
         #[cfg(target_os = "windows")]
         {
