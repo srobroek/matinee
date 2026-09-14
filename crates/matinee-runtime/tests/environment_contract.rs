@@ -468,7 +468,10 @@ fn one_hundred_distinct_roots_are_pairwise_isolated_without_mutation() {
         .collect::<Vec<_>>();
     for (index, identity) in lock_identities.iter().enumerate() {
         for other in lock_identities.iter().skip(index + 1) {
-            assert!(identity != other, "lock identities must be pairwise distinct");
+            assert!(
+                identity != other,
+                "lock identities must be pairwise distinct"
+            );
         }
     }
     for environment in &resolved {
