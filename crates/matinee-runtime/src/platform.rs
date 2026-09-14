@@ -190,12 +190,13 @@ fn is_absolute_for_platform(path: &Path, kind: PlatformKind) -> bool {
 
 fn append_component(base: &Path, kind: PlatformKind, component: &str) -> PathBuf {
     if kind == PlatformKind::Windows && cfg!(not(windows)) {
-        let mut text = base.to_string_lossy().into_owned();
-        if !text.ends_with('\\') && !text.ends_with('/') {
-            text.push('\\');
+        let trailing = base.to_string_lossy();
+        let mut joined = base.as_os_str().to_os_string();
+        if !trailing.ends_with('\\') && !trailing.ends_with('/') {
+            joined.push("\\");
         }
-        text.push_str(component);
-        PathBuf::from(text)
+        joined.push(component);
+        PathBuf::from(joined)
     } else {
         base.join(component)
     }
