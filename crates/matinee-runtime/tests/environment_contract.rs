@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::collections::HashSet;
+
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -345,6 +347,42 @@ fn missing_required_base_returns_closed_path_failure() {
         assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
     }
 }
+#[test]
+fn missing_project_root_returns_closed_failure_without_mutation() {
+    let fixture = TempFixture::new();
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let missing = fixture.path("missing-project");
+
+    let failure = resolve_environment(EnvironmentInput::new(&missing))
+        .expect_err("missing required project root must fail closed");
+
+    assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
+    assert!(!missing.exists(), "failed resolution must not create the project root");
+}
+
+#[cfg(unix)]
+#[test]
+fn inaccessible_project_root_returns_closed_failure_without_mutation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = TempFixture::new();
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let inaccessible = fixture.path("inaccessible-project");
+    fs::create_dir(&inaccessible).expect("create inaccessible project root");
+    fs::set_permissions(&inaccessible, fs::Permissions::from_mode(0o000))
+        .expect("remove project-root permissions");
+
+    let failure = resolve_environment(EnvironmentInput::new(&inaccessible))
+        .expect_err("inaccessible required directory must fail closed");
+
+    // Restore permissions before fixture cleanup so this test remains reliable on all Unix hosts.
+    fs::set_permissions(&inaccessible, fs::Permissions::from_mode(0o700))
+        .expect("restore project-root permissions");
+    assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
+}
+
 
 #[test]
 fn resolution_creates_no_derived_directories() {
@@ -391,6 +429,49 @@ fn resolution_creates_no_derived_directories() {
         after, before,
         "Windows resolution must not create known-folder paths"
     );
+}
+
+#[test]
+fn one_hundred_distinct_roots_are_pairwise_isolated_without_mutation() {
+    let fixture = TempFixture::new();
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let roots = (0..100)
+        .map(|index| {
+            let root = fixture.path(&format!("root-{index:03}"));
+            fs::create_dir(&root).expect("create isolated project root");
+            root
+        })
+        .collect::<Vec<_>>();
+    let resolved = roots
+        .iter()
+        .map(|root| {
+            resolve_environment(EnvironmentInput::new(root).with_state_dir("state"))
+                .expect("isolated root resolves")
+        })
+        .collect::<Vec<_>>();
+
+    let state_paths = resolved
+        .iter()
+        .map(|environment| environment.state().to_owned())
+        .collect::<HashSet<_>>();
+    let lock_identities = resolved
+        .iter()
+        .map(|environment| environment.lock_identity().clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(state_paths.len(), 100, "state paths must be pairwise distinct");
+    assert_eq!(
+        lock_identities.len(),
+        100,
+        "lock identities must be pairwise distinct"
+    );
+    for environment in &resolved {
+        assert!(!environment.state().exists(), "resolution must not create state");
+        assert!(!environment.config().exists(), "resolution must not create config");
+        assert!(!environment.runtime().exists(), "resolution must not create runtime");
+        assert!(!environment.cache().exists(), "resolution must not create cache");
+        assert!(!environment.log().exists(), "resolution must not create logs");
+    }
 }
 
 #[test]
