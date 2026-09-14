@@ -876,6 +876,10 @@ mod tests {
         )
         .expect_err("replacement during one resolver read must fail");
         assert_eq!(failure.code(), ConfigurationFailureCode::FileChanged);
+        assert_eq!(
+            failure.source(),
+            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+        );
     }
 
     #[test]
