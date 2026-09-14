@@ -18,7 +18,6 @@ use crate::error::{
 use crate::path_identity::{PathIdentity, absolute_lexical_normalize, resolve_path_identity};
 use crate::platform::{FileIdentity, FileSnapshot, FileType, MatineePaths, Platform};
 use std::borrow::Borrow;
-use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::str;
 use toml::Value as TomlValue;
@@ -696,6 +695,7 @@ pub type EnvironmentResult<T> = Result<T, ConfigurationFailure>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use crate::config::{
         AllowedSources, DescriptorDefault, KeyDescriptor, MaterialClass, ValueKind,
     };
