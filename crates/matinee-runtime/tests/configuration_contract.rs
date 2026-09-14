@@ -560,7 +560,8 @@ fn configuration_accepts_exact_assignment_limit_and_rejects_one_over() {
 
     let mut one_over = String::with_capacity((ASSIGNMENT_LIMIT + 1) * 24);
     for index in 0..=ASSIGNMENT_LIMIT {
-        writeln!(&mut one_over, "unknown_{index} = \"value\"").expect("writing to String cannot fail");
+        writeln!(&mut one_over, "unknown_{index} = \"value\"")
+            .expect("writing to String cannot fail");
     }
     assert_user_config_failure(&one_over, ConfigurationFailureCode::LimitExceeded);
 }
@@ -593,7 +594,8 @@ fn pathological_exact_one_mib_toml_hits_preflight_before_size_gate() {
     const ASSIGNMENT_LIMIT: usize = 100;
     let mut assignments = String::with_capacity((ASSIGNMENT_LIMIT + 1) * 24);
     for index in 0..=ASSIGNMENT_LIMIT {
-        writeln!(&mut assignments, "unknown_{index} = \"value\"").expect("writing to String cannot fail");
+        writeln!(&mut assignments, "unknown_{index} = \"value\"")
+            .expect("writing to String cannot fail");
     }
     let mut document = assignments;
     document.push_str(&"#".repeat(FILE_BYTE_LIMIT - document.len()));
