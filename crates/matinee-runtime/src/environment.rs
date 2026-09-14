@@ -1868,10 +1868,7 @@ mod tests {
                     file: 20,
                 },
             )
-            .with_snapshot_results(
-                "/fixture/project/matinee.toml",
-                [Ok(Some(file_snapshot))],
-            )
+            .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(file_snapshot))])
             .with_read_results(
                 "/fixture/project/matinee.toml",
                 [Ok(FileRead {
@@ -1900,10 +1897,7 @@ mod tests {
             Some(2),
         );
         let symlink = platform
-            .with_snapshot(
-                "/fixture/project/matinee.toml",
-                symlink_snapshot,
-            )
+            .with_snapshot("/fixture/project/matinee.toml", symlink_snapshot)
             .with_read_results(
                 "/fixture/project/matinee.toml",
                 [Ok(FileRead {

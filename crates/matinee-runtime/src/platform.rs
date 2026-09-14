@@ -756,8 +756,7 @@ impl Platform for FixturePlatform {
     }
 
     fn read_file(&self, path: &Path) -> Result<FileRead, ConfigurationFailure> {
-        self.read_file_count
-            .set(self.read_file_count.get() + 1);
+        self.read_file_count.set(self.read_file_count.get() + 1);
         let result = self
             .entries
             .borrow_mut()
