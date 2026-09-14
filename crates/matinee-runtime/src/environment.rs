@@ -13,10 +13,156 @@ use crate::config::{ConfigurationLayer, DescriptorRegistry, ResolvedConfiguratio
 use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
-use crate::platform::{FileIdentity, FileSnapshot, FileType, Platform};
+use crate::path_identity::{absolute_lexical_normalize, resolve_path_identity, PathIdentity};
+use crate::platform::{FileIdentity, FileSnapshot, FileType, MatineePaths, Platform};
 use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
+use std::str;
 use toml::Value as TomlValue;
+
+/// The complete, immutable result of one environment-resolution attempt.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolvedEnvironment<'a> {
+    configuration: ResolvedConfiguration<'a>,
+    project_root: PathBuf,
+    project_root_identity: FileIdentity,
+    paths: MatineePaths,
+    state_root_identity: PathIdentity,
+}
+
+impl ResolvedEnvironment<'_> {
+    pub(crate) fn configuration(&self) -> &ResolvedConfiguration<'_> {
+        &self.configuration
+    }
+
+    pub(crate) fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    pub(crate) const fn project_root_identity(&self) -> FileIdentity {
+        self.project_root_identity
+    }
+
+    pub(crate) fn paths(&self) -> &MatineePaths {
+        &self.paths
+    }
+
+    pub(crate) fn state_root_identity(&self) -> &PathIdentity {
+        &self.state_root_identity
+    }
+}
+
+/// Resolve platform paths, configuration sources, and the implicit project file
+/// through one host-isolated boundary. All observations happen before the
+/// result is assembled; this function never creates filesystem entries.
+pub(crate) fn resolve_environment<'a, P: Platform>(
+    platform: &P,
+    input: impl Borrow<EnvironmentInput>,
+    registry: &'a DescriptorRegistry,
+) -> EnvironmentResult<ResolvedEnvironment<'a>> {
+    let input = input.borrow();
+    let project_root = absolute_lexical_normalize(input.project_root(), Path::new("."))
+        .map_err(|_| project_path_unavailable())?;
+    let project_root_identity = platform
+        .followed_file_identity(&project_root)
+        .map_err(project_failure)?
+        .ok_or_else(project_path_unavailable)?;
+    let paths = platform.matinee_paths().map_err(project_failure)?;
+
+    let mut layers = Vec::new();
+    if let Some(contents) = read_implicit_project_file(platform, &project_root, project_root_identity)?
+    {
+        let entries = parse_configuration(&contents, FailureSource::File(RedactedFileOrigin::ProjectConfiguration))?;
+        layers.push(ConfigurationLayer::project_file("matinee.toml", entries)?);
+    }
+    let user_path = input
+        .config_path()
+        .map(|path| absolute_lexical_normalize(&project_root, path))
+        .transpose()
+        .map_err(|_| project_path_unavailable())?
+        .unwrap_or_else(|| paths.config().join("config.toml"));
+    if let Some(contents) = read_optional_file(platform, &user_path, FailureSource::File(RedactedFileOrigin::UserConfiguration))? {
+        let entries = parse_configuration(&contents, FailureSource::File(RedactedFileOrigin::UserConfiguration))?;
+        let origin = user_path
+            .strip_prefix(&project_root)
+            .unwrap_or(user_path.as_path())
+            .to_owned();
+        layers.push(ConfigurationLayer::user_file(origin, entries)?);
+    }
+    layers.push(ConfigurationLayer::from_environment(platform, &project_root)?);
+    let configuration = assemble_configuration(input, registry, layers)?;
+    let state_path = input.state_dir().unwrap_or_else(|| paths.state());
+    let state_path = absolute_lexical_normalize(&project_root, state_path)
+        .map_err(|_| project_path_unavailable())?;
+    let state_root_identity = resolve_path_identity(platform, &state_path).map_err(project_failure)?;
+    Ok(ResolvedEnvironment {
+        configuration,
+        project_root,
+        project_root_identity,
+        paths,
+        state_root_identity,
+    })
+}
+
+fn read_optional_file<P: Platform>(
+    platform: &P,
+    path: &Path,
+    source: FailureSource,
+) -> EnvironmentResult<Option<Vec<u8>>> {
+    let Some(snapshot) = platform.file_snapshot(path).map_err(|_| {
+        ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source)
+    })? else {
+        return Ok(None);
+    };
+    if snapshot.file_type != FileType::Regular {
+        return Err(ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source));
+    }
+    let read = platform.read_file(path).map_err(|_| {
+        ConfigurationFailure::new(ConfigurationFailureCode::FileUnreadable, source)
+    })?;
+    if read.snapshot != snapshot {
+        return Err(ConfigurationFailure::new(ConfigurationFailureCode::FileChanged, source));
+    }
+    Ok(Some(read.contents))
+}
+
+fn parse_configuration(contents: &[u8], source: FailureSource) -> EnvironmentResult<Vec<(String, TomlValue)>> {
+    let text = str::from_utf8(contents).map_err(|_| {
+        ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source)
+    })?;
+    let value = text.parse::<TomlValue>().map_err(|_| {
+        ConfigurationFailure::new(ConfigurationFailureCode::SyntaxInvalid, source)
+    })?;
+    let mut entries = Vec::new();
+    flatten_toml(&value, "", &mut entries, source)?;
+    Ok(entries)
+}
+
+fn flatten_toml(
+    value: &TomlValue,
+    prefix: &str,
+    entries: &mut Vec<(String, TomlValue)>,
+    source: FailureSource,
+) -> EnvironmentResult<()> {
+    if let TomlValue::Table(table) = value {
+        for (key, value) in table {
+            let name = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            flatten_toml(value, &name, entries, source)?;
+        }
+    } else if prefix.is_empty() {
+        return Err(ConfigurationFailure::new(
+            ConfigurationFailureCode::SyntaxInvalid,
+            source,
+        ));
+    } else {
+        entries.push((prefix.to_owned(), value.clone()));
+    }
+    Ok(())
+}
 
 /// Capture the selected project root once, then load its implicit configuration.
 ///
