@@ -19,6 +19,8 @@ use unicode_normalization::UnicodeNormalization as UnicodeNormalizationTrait;
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
+use std::os::fd::{FromRawFd, AsRawFd};
 #[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(windows)]
@@ -649,6 +651,102 @@ impl Platform for HostPlatform {
             contents,
         })
     }
+    #[cfg(unix)]
+    fn read_anchored_child(
+        &self,
+        request: AnchoredReadRequest<'_>,
+    ) -> Result<AnchoredRead, AnchoredReadFailure> {
+        let root_name = std::ffi::CString::new(request.root.as_os_str().as_encoded_bytes())
+            .map_err(|_| AnchoredReadFailure::Unreadable)?;
+        let root_fd = unsafe {
+            libc::open(
+                root_name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if root_fd < 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ELOOP) => Err(AnchoredReadFailure::Escaped),
+                Some(libc::ENOENT) => Err(AnchoredReadFailure::RootChanged),
+                _ => Err(AnchoredReadFailure::Unreadable),
+            };
+        }
+        let root = unsafe { fs::File::from_raw_fd(root_fd) };
+        let root_metadata = root
+            .metadata()
+            .map_err(|_| AnchoredReadFailure::Unreadable)?;
+        let held_root_identity = file_identity(&root_metadata)
+            .ok_or(AnchoredReadFailure::Unreadable)?;
+        if held_root_identity != request.root_identity {
+            return Err(AnchoredReadFailure::RootChanged);
+        }
+
+        let child_name = std::ffi::CString::new(request.child.component())
+            .map_err(|_| AnchoredReadFailure::Unreadable)?;
+        let child_fd = unsafe {
+            libc::openat(
+                root.as_raw_fd(),
+                child_name.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if child_fd < 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ENOENT) => Ok(AnchoredRead::Missing),
+                Some(libc::ELOOP) => Err(AnchoredReadFailure::Escaped),
+                _ => Err(AnchoredReadFailure::Unreadable),
+            };
+        }
+        let child = unsafe { fs::File::from_raw_fd(child_fd) };
+        let metadata = child
+            .metadata()
+            .map_err(|_| AnchoredReadFailure::Unreadable)?;
+        let snapshot = FileSnapshot {
+            identity: file_identity(&metadata)
+                .ok_or(AnchoredReadFailure::Unreadable)?,
+            file_type: file_type(&metadata),
+            byte_length: metadata.len(),
+            modified_marker: modified_marker(&metadata),
+        };
+        if snapshot.file_type != FileType::Regular {
+            return Err(AnchoredReadFailure::NonRegular);
+        }
+        if snapshot.byte_length > request.byte_limit as u64 {
+            return Err(AnchoredReadFailure::TooLarge);
+        }
+        let mut contents = Vec::with_capacity(
+            snapshot
+                .byte_length
+                .min(request.byte_limit as u64 + 1) as usize,
+        );
+        (&child)
+            .take(request.byte_limit as u64 + 1)
+            .read_to_end(&mut contents)
+            .map_err(|_| AnchoredReadFailure::Unreadable)?;
+        if contents.len() > request.byte_limit {
+            return Err(AnchoredReadFailure::TooLarge);
+        }
+        let post_metadata = child
+            .metadata()
+            .map_err(|_| AnchoredReadFailure::Unreadable)?;
+        let post_snapshot = FileSnapshot {
+            identity: file_identity(&post_metadata)
+                .ok_or(AnchoredReadFailure::Unreadable)?,
+            file_type: file_type(&post_metadata),
+            byte_length: post_metadata.len(),
+            modified_marker: modified_marker(&post_metadata),
+        };
+        if post_snapshot != snapshot || post_snapshot.file_type != FileType::Regular {
+            return Err(AnchoredReadFailure::Changed);
+        }
+        Ok(AnchoredRead::Read(FileRead {
+            snapshot: post_snapshot,
+            contents,
+        }))
+    }
+
 
     fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
         probe_case_behavior(anchor)
