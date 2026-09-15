@@ -25,12 +25,16 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{
+    ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
+    GetLastError, HANDLE, WIN32_ERROR,
+};
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileAttributeTagInfo,
     FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    GetVolumeInformationByHandleW,
 };
 
 pub(crate) const MAX_FILE_BYTES: usize = 1_048_576;
@@ -211,10 +215,49 @@ fn append_component(base: &Path, kind: PlatformKind, component: &str) -> PathBuf
     }
 }
 
+/// Which host API produced an identity's numeric payload.
+///
+/// A 64-bit legacy file index and a complete 128-bit file id are not
+/// interchangeable evidence: the narrow form can repeat where the wide form
+/// does not. Recording the scheme inside the identity makes that distinction
+/// part of equality and hashing instead of a caller's obligation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum IdentityScheme {
+    /// The complete 128-bit file id reported for the volume.
+    Full128,
+    /// The 64-bit file index reported by the legacy handle information API.
+    Legacy64,
+}
+
+/// Identity evidence for one file, qualified by the scheme that produced it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct FileIdentity {
+    /// Private so that every identity names its scheme through a constructor.
+    /// Two schemes never compare or hash as equal, even for equal payloads.
+    scheme: IdentityScheme,
     pub(crate) volume: u64,
     pub(crate) file: u128,
+}
+
+impl FileIdentity {
+    /// Records identity evidence whose file component is a complete file id.
+    pub(crate) const fn full(volume: u64, file: u128) -> Self {
+        Self {
+            scheme: IdentityScheme::Full128,
+            volume,
+            file,
+        }
+    }
+
+    /// Records identity evidence narrowed to a 64-bit file index. Only the
+    /// legacy Windows handle information API reports identity in this form.
+    const fn legacy(volume: u64, file: u64) -> Self {
+        Self {
+            scheme: IdentityScheme::Legacy64,
+            volume,
+            file: file as u128,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -905,10 +948,7 @@ fn no_follow_file_type(file: &fs::File, metadata: &fs::Metadata) -> FileType {
 fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
     #[cfg(unix)]
     {
-        Some(FileIdentity {
-            volume: metadata.dev(),
-            file: metadata.ino() as u128,
-        })
+        Some(FileIdentity::full(metadata.dev(), metadata.ino() as u128))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -929,19 +969,81 @@ fn file_identity_from_handle(file: &fs::File) -> Option<FileIdentity> {
         )
     };
     if succeeded != 0 {
-        return Some(FileIdentity {
-            volume: information.VolumeSerialNumber,
+        return Some(FileIdentity::full(
+            information.VolumeSerialNumber,
             // FILE_ID_128 is opaque; this explicit representation preserves all bytes.
-            file: u128::from_le_bytes(information.FileId.Identifier),
-        });
+            u128::from_le_bytes(information.FileId.Identifier),
+        ));
+    }
+    // The thread error belongs to the call above, so it is read before any
+    // other host call can overwrite it.
+    let error = unsafe { GetLastError() };
+    if !file_id_info_unsupported(error) || !legacy_file_index_identifies(handle) {
+        return None;
     }
 
     let mut legacy = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
     let succeeded = unsafe { GetFileInformationByHandle(handle, &mut legacy) };
-    (succeeded != 0).then_some(FileIdentity {
-        volume: legacy.dwVolumeSerialNumber as u64,
-        file: u128::from(((legacy.nFileIndexHigh as u64) << 32) | legacy.nFileIndexLow as u64),
+    (succeeded != 0).then(|| {
+        FileIdentity::legacy(
+            legacy.dwVolumeSerialNumber as u64,
+            ((legacy.nFileIndexHigh as u64) << 32) | legacy.nFileIndexLow as u64,
+        )
     })
+}
+
+/// Whether `error` reports that the host cannot answer `FileIdInfo` at all.
+///
+/// Only these four errors describe an unsupported or unrecognised request. A
+/// permission, transient, or unknown failure says nothing about the volume's
+/// identity scheme, so it must not license the narrower legacy query.
+#[cfg(windows)]
+const fn file_id_info_unsupported(error: WIN32_ERROR) -> bool {
+    matches!(
+        error,
+        ERROR_INVALID_FUNCTION | ERROR_NOT_SUPPORTED | ERROR_INVALID_PARAMETER | ERROR_INVALID_LEVEL
+    )
+}
+
+/// Whether the filesystem behind `handle` numbers its files inside 64 bits.
+///
+/// ReFS assigns 128-bit file ids, so its legacy index is a truncation rather
+/// than an identity. The name is read from the same live handle; a failed or
+/// unnamed answer counts as insufficient, because refusing identity evidence
+/// is correct where guessing its width is not.
+#[cfg(windows)]
+fn legacy_file_index_identifies(handle: HANDLE) -> bool {
+    /// Filesystem names whose file identity needs more than 64 bits.
+    const WIDE_IDENTITY_FILESYSTEMS: [&str; 1] = ["ReFS"];
+
+    // A filesystem name is bounded by MAX_PATH characters plus its terminator.
+    let mut name = [0u16; 261];
+    let succeeded = unsafe {
+        GetVolumeInformationByHandleW(
+            handle,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return false;
+    }
+    let length = name
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(name.len());
+    if length == 0 {
+        return false;
+    }
+    let filesystem = String::from_utf16_lossy(&name[..length]);
+    !WIDE_IDENTITY_FILESYSTEMS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(filesystem.as_str()))
 }
 
 fn identity_from_open_file(file: &fs::File, metadata: &fs::Metadata) -> Option<FileIdentity> {
@@ -1087,7 +1189,7 @@ mod tests {
     use super::*;
 
     fn snapshot(file: u128, bytes: u64, marker: u128) -> FileSnapshot {
-        FileSnapshot::regular(FileIdentity { volume: 7, file }, bytes, Some(marker))
+        FileSnapshot::regular(FileIdentity::full(7, file), bytes, Some(marker))
     }
 
     fn independent_identity(path: &Path) -> Result<Option<FileIdentity>, ConfigurationFailure> {
@@ -1409,10 +1511,7 @@ mod tests {
             .with_environment("MATINEE_STATE_DIR", "/fixture/state")
             .with_file(
                 "/fixture/project/matine.toml",
-                FileIdentity {
-                    volume: 7,
-                    file: 11,
-                },
+                FileIdentity::full(7, 11),
                 b"[project]\n",
                 Some(42),
             );
@@ -1426,10 +1525,7 @@ mod tests {
             .expect("fixture file is present");
         assert_eq!(
             snapshot.identity,
-            FileIdentity {
-                volume: 7,
-                file: 11
-            }
+            FileIdentity::full(7, 11)
         );
         assert_eq!(snapshot.file_type, FileType::Regular);
         assert_eq!(snapshot.byte_length, 10);
@@ -1450,13 +1546,13 @@ mod tests {
         let platform = FixturePlatform::new(PlatformKind::Linux)
             .with_file(
                 "/fixture/bound",
-                FileIdentity { volume: 1, file: 1 },
+                FileIdentity::full(1, 1),
                 at_bound,
                 None,
             )
             .with_file(
                 "/fixture/over-bound",
-                FileIdentity { volume: 1, file: 2 },
+                FileIdentity::full(1, 2),
                 over_bound,
                 None,
             );

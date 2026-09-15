@@ -832,38 +832,26 @@ mod tests {
 
     #[test]
     fn resolve_environment_rejects_post_read_replacement_in_one_invocation() {
-        let root = FileIdentity {
-            volume: 1,
-            file: 10,
-        };
+        let root = FileIdentity::full(1, 10);
         let platform = FixturePlatform::new(PlatformKind::Linux)
             .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
             .with_followed_file_identity("/fixture/project", root)
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 11,
-                },
+                FileIdentity::full(1, 11),
                 b"setting = \"project\"\n",
                 Some(2),
             )
             .with_snapshot(
                 "/fixture/linux/home",
                 FileSnapshot::directory(
-                    FileIdentity {
-                        volume: 1,
-                        file: 12,
-                    },
+                    FileIdentity::full(1, 12),
                     Some(1),
                 ),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home",
-                FileIdentity {
-                    volume: 1,
-                    file: 12,
-                },
+                FileIdentity::full(1, 12),
             );
 
         let platform = PostReadChangedPlatform { inner: platform };
@@ -886,10 +874,7 @@ mod tests {
     fn resolve_environment_rejects_oversized_captured_project_snapshot_before_read() {
         let (platform, _) = project_fixture();
         let snapshot = FileSnapshot::regular(
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             crate::platform::MAX_FILE_BYTES as u64 + 1,
             Some(2),
         );
@@ -919,10 +904,7 @@ mod tests {
     fn resolve_environment_accepts_exact_project_snapshot_limit() {
         let (platform, _) = project_fixture();
         let snapshot = FileSnapshot::regular(
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             crate::platform::MAX_FILE_BYTES as u64,
             Some(2),
         );
@@ -952,18 +934,12 @@ mod tests {
     fn resolve_environment_rejects_project_modified_marker_change() {
         let (platform, _) = project_fixture();
         let before = FileSnapshot::regular(
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             20,
             Some(2),
         );
         let after = FileSnapshot::regular(
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             20,
             Some(3),
         );
@@ -1008,38 +984,26 @@ mod tests {
         let platform = platform
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 31,
-                },
+                FileIdentity::full(1, 31),
                 b"this is not valid TOML =\n",
                 Some(2),
             )
             .with_file(
                 "/fixture/linux/home/config.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 30,
-                },
+                FileIdentity::full(1, 30),
                 b"setting = \"explicit\"\n",
                 Some(3),
             )
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
                 FileSnapshot::directory(
-                    FileIdentity {
-                        volume: 1,
-                        file: 32,
-                    },
+                    FileIdentity::full(1, 32),
                     Some(4),
                 ),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home/.local/state",
-                FileIdentity {
-                    volume: 1,
-                    file: 32,
-                },
+                FileIdentity::full(1, 32),
             );
         let registry = test_registry(&["setting"]);
         let resolved = resolve_environment(
@@ -1159,38 +1123,26 @@ mod tests {
         let platform = platform
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 11,
-                },
+                FileIdentity::full(1, 11),
                 b"setting = \"project\"\n",
                 Some(2),
             )
             .with_file(
                 "/fixture/linux/home/.config/matinee/config.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 12,
-                },
+                FileIdentity::full(1, 12),
                 b"setting = \"user\"\n",
                 Some(3),
             )
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
                 FileSnapshot::directory(
-                    FileIdentity {
-                        volume: 1,
-                        file: 13,
-                    },
+                    FileIdentity::full(1, 13),
                     Some(4),
                 ),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home/.local/state",
-                FileIdentity {
-                    volume: 1,
-                    file: 13,
-                },
+                FileIdentity::full(1, 13),
             );
         let resolved = resolve_environment(
             &platform,
@@ -1211,29 +1163,20 @@ mod tests {
         let platform = platform
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 21,
-                },
+                FileIdentity::full(1, 21),
                 b"setting = \"project\"\n",
                 Some(2),
             )
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
                 FileSnapshot::directory(
-                    FileIdentity {
-                        volume: 1,
-                        file: 22,
-                    },
+                    FileIdentity::full(1, 22),
                     Some(4),
                 ),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home/.local/state",
-                FileIdentity {
-                    volume: 1,
-                    file: 22,
-                },
+                FileIdentity::full(1, 22),
             );
         let resolved = resolve_environment(
             &platform,
@@ -1251,38 +1194,26 @@ mod tests {
         let platform = platform
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 31,
-                },
+                FileIdentity::full(1, 31),
                 b"this is not valid TOML =\n",
                 Some(2),
             )
             .with_file(
                 "/fixture/linux/home/explicit.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 30,
-                },
+                FileIdentity::full(1, 30),
                 b"setting = \"explicit\"\n",
                 Some(3),
             )
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
                 FileSnapshot::directory(
-                    FileIdentity {
-                        volume: 1,
-                        file: 32,
-                    },
+                    FileIdentity::full(1, 32),
                     Some(4),
                 ),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home/.local/state",
-                FileIdentity {
-                    volume: 1,
-                    file: 32,
-                },
+                FileIdentity::full(1, 32),
             );
         let resolved = resolve_environment(
             &platform,
@@ -1308,10 +1239,7 @@ mod tests {
         }
         let platform = platform.with_file(
             "/fixture/linux/home/config.toml",
-            FileIdentity {
-                volume: 1,
-                file: 40,
-            },
+            FileIdentity::full(1, 40),
             contents,
             Some(2),
         );
@@ -1687,10 +1615,7 @@ mod tests {
     }
 
     fn project_fixture() -> (FixturePlatform, FileIdentity) {
-        let root = FileIdentity {
-            volume: 1,
-            file: 10,
-        };
+        let root = FileIdentity::full(1, 10);
         (
             FixturePlatform::new(PlatformKind::Linux)
                 .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
@@ -1729,10 +1654,7 @@ mod tests {
         let (platform, root) = project_fixture();
         let platform = platform.with_file(
             "/fixture/project/matinee.toml",
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             b"[project]\n",
             Some(2),
         );
@@ -1757,10 +1679,7 @@ mod tests {
         let symlink = platform.with_snapshot(
             "/fixture/project/matinee.toml",
             FileSnapshot::symlink(
-                FileIdentity {
-                    volume: 1,
-                    file: 11,
-                },
+                FileIdentity::full(1, 11),
                 Some(2),
             ),
         );
@@ -1775,10 +1694,7 @@ mod tests {
         let directory = platform.with_snapshot(
             "/fixture/project/matinee.toml",
             FileSnapshot::directory(
-                FileIdentity {
-                    volume: 1,
-                    file: 11,
-                },
+                FileIdentity::full(1, 11),
                 Some(2),
             ),
         );
@@ -1796,17 +1712,11 @@ mod tests {
         let retargeted = platform
             .with_followed_file_identity(
                 "/fixture/project",
-                FileIdentity {
-                    volume: 1,
-                    file: 20,
-                },
+                FileIdentity::full(1, 20),
             )
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 11,
-                },
+                FileIdentity::full(1, 11),
                 b"[project]\n",
                 Some(2),
             );
@@ -1823,10 +1733,7 @@ mod tests {
         let (platform, _) = project_fixture();
         let platform = platform.with_file(
             "/fixture/project/matinee.toml",
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             b"[project]\n",
             Some(2),
         );
@@ -1846,18 +1753,12 @@ mod tests {
 
         let (platform, root) = project_fixture();
         let before = FileSnapshot::regular(
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             5,
             Some(2),
         );
         let after = FileSnapshot::regular(
-            FileIdentity {
-                volume: 1,
-                file: 12,
-            },
+            FileIdentity::full(1, 12),
             5,
             Some(3),
         );
@@ -1882,20 +1783,14 @@ mod tests {
     fn implicit_project_escape_rejects_external_root_before_read() {
         let (platform, selected_root) = project_fixture();
         let file_snapshot = FileSnapshot::regular(
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             8,
             Some(2),
         );
         let escaped = platform
             .with_followed_file_identity(
                 "/fixture/project",
-                FileIdentity {
-                    volume: 1,
-                    file: 20,
-                },
+                FileIdentity::full(1, 20),
             )
             .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(file_snapshot))])
             .with_read_results(
@@ -1919,10 +1814,7 @@ mod tests {
     fn implicit_project_symlink_rejects_before_read() {
         let (platform, root) = project_fixture();
         let symlink_snapshot = FileSnapshot::symlink(
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
             Some(2),
         );
         let symlink = platform

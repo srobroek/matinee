@@ -177,20 +177,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture_platform() -> FixturePlatform {
-        let root = FileIdentity {
-            volume: 1,
-            file: 10,
-        };
+        let root = FileIdentity::full(1, 10);
         FixturePlatform::new(PlatformKind::Linux)
             .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
             .with_followed_file_identity("/fixture/project", root)
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
                 FileSnapshot::directory(
-                    FileIdentity {
-                        volume: 1,
-                        file: 11,
-                    },
+                    FileIdentity::full(1, 11),
                     Some(1),
                 ),
             )
@@ -247,10 +241,7 @@ mod tests {
     fn configuration_paths_report_only_files_that_were_loaded() {
         let with_project = fixture_platform().with_file(
             "/fixture/project/matinee.toml",
-            FileIdentity {
-                volume: 1,
-                file: 20,
-            },
+            FileIdentity::full(1, 20),
             b"",
             Some(2),
         );
@@ -266,19 +257,13 @@ mod tests {
         let explicit = fixture_platform()
             .with_file(
                 "/fixture/project/matinee.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 21,
-                },
+                FileIdentity::full(1, 21),
                 b"not valid = [",
                 Some(2),
             )
             .with_file(
                 "/fixture/linux/home/explicit.toml",
-                FileIdentity {
-                    volume: 1,
-                    file: 22,
-                },
+                FileIdentity::full(1, 22),
                 b"",
                 Some(2),
             );

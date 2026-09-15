@@ -267,10 +267,7 @@ mod tests {
     #[test]
     fn longest_existing_ancestor_returns_anchor_and_ordered_missing_tail() {
         let anchor = FileSnapshot::directory(
-            FileIdentity {
-                volume: 7,
-                file: 42,
-            },
+            FileIdentity::full(7, 42),
             Some(9),
         );
         let platform = FixturePlatform::new(PlatformKind::Linux)
@@ -313,34 +310,22 @@ mod tests {
     fn path_identity_uses_anchor_identity_and_native_comparison_rules() {
         let mac = platform_with_anchor(
             PlatformKind::MacOs,
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            },
+            FileIdentity::full(1, 11),
         );
         let linux = platform_with_anchor(
             PlatformKind::Linux,
-            FileIdentity {
-                volume: 2,
-                file: 22,
-            },
+            FileIdentity::full(2, 22),
         );
         let windows = platform_with_anchor(
             PlatformKind::Windows,
-            FileIdentity {
-                volume: 3,
-                file: 33,
-            },
+            FileIdentity::full(3, 33),
         );
         let requested = Path::new("/fixture/project/MiXeD/É");
 
         let mac_identity = resolve_path_identity(&mac, requested).expect("mac identity");
         assert_eq!(
             mac_identity.existing_anchor_id(),
-            FileIdentity {
-                volume: 1,
-                file: 11,
-            }
+            FileIdentity::full(1, 11)
         );
         assert_eq!(mac_identity.comparison_tail(), Path::new("mixed/e\u{301}"));
 
@@ -354,38 +339,23 @@ mod tests {
 
     #[test]
     fn path_identity_follows_supported_symlink_aliases_but_keeps_no_follow_snapshot() {
-        let target = FileIdentity {
-            volume: 8,
-            file: 80,
-        };
+        let target = FileIdentity::full(8, 80);
         let first = FileSnapshot::symlink(
-            FileIdentity {
-                volume: 8,
-                file: 81,
-            },
+            FileIdentity::full(8, 81),
             None,
         );
         let second = FileSnapshot::symlink(
-            FileIdentity {
-                volume: 8,
-                file: 82,
-            },
+            FileIdentity::full(8, 82),
             None,
         );
-        let distinct_target = FileIdentity {
-            volume: 8,
-            file: 83,
-        };
+        let distinct_target = FileIdentity::full(8, 83);
         let platform = FixturePlatform::new(PlatformKind::Linux)
             .with_snapshot("/fixture/link-one", first)
             .with_snapshot("/fixture/link-two", second)
             .with_snapshot(
                 "/fixture/link-three",
                 FileSnapshot::symlink(
-                    FileIdentity {
-                        volume: 8,
-                        file: 84,
-                    },
+                    FileIdentity::full(8, 84),
                     None,
                 ),
             )
@@ -423,10 +393,7 @@ mod tests {
         );
         let platform = platform_with_anchor(
             PlatformKind::Linux,
-            FileIdentity {
-                volume: 4,
-                file: 44,
-            },
+            FileIdentity::full(4, 44),
         )
         .with_case_behavior_error(failure);
 
@@ -434,10 +401,7 @@ mod tests {
             .expect("existing anchors do not require tail comparison");
         assert_eq!(
             identity.existing_anchor_id(),
-            FileIdentity {
-                volume: 4,
-                file: 44
-            }
+            FileIdentity::full(4, 44)
         );
         assert_eq!(identity.comparison_tail(), Path::new(""));
     }
@@ -450,10 +414,7 @@ mod tests {
         );
         let platform = platform_with_anchor(
             PlatformKind::Linux,
-            FileIdentity {
-                volume: 5,
-                file: 55,
-            },
+            FileIdentity::full(5, 55),
         )
         .with_case_behavior_error(failure);
 
