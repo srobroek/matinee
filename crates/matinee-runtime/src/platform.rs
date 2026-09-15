@@ -560,7 +560,7 @@ impl Platform for HostPlatform {
             let metadata = file.metadata().map_err(|_| file_unreadable())?;
             let file_type = no_follow_file_type(&file, &metadata);
             let identity = identity_from_open_file(&file, &metadata).ok_or_else(file_unreadable)?;
-            return Ok(Some(FileSnapshot {
+            Ok(Some(FileSnapshot {
                 identity,
                 file_type,
                 byte_length: if file_type == FileType::Symlink {
@@ -569,7 +569,7 @@ impl Platform for HostPlatform {
                     metadata.len()
                 },
                 modified_marker: modified_marker(&metadata),
-            }));
+            }))
         }
 
         #[cfg(not(windows))]
@@ -620,7 +620,7 @@ impl Platform for HostPlatform {
         {
             let file = fs::File::open(path).map_err(|_| file_unreadable())?;
             let snapshot = snapshot_from_open_file(&file, false)?;
-            return read_open_file(&file, snapshot, MAX_FILE_BYTES, false);
+            read_open_file(&file, snapshot, MAX_FILE_BYTES, false)
         }
 
         #[cfg(not(windows))]
@@ -1638,9 +1638,9 @@ fn identity_for_path(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err(file_unreadable()),
         };
-        return file_identity_from_handle(&file)
+        file_identity_from_handle(&file)
             .map(Some)
-            .ok_or_else(file_unreadable);
+            .ok_or_else(file_unreadable)
     }
     #[cfg(not(windows))]
     {
