@@ -173,121 +173,130 @@ fn resolve_with_platform<P: platform::Platform>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{FileIdentity, FileSnapshot, FixturePlatform, PlatformKind};
+    use crate::platform::{
+        native_fixture_kind, native_fixture_path, FileIdentity, FileSnapshot, FixturePlatform,
+        Platform, PlatformKind,
+    };
     use std::path::PathBuf;
 
     fn fixture_platform() -> FixturePlatform {
+        let kind = native_fixture_kind();
+        let fixture = FixturePlatform::new(kind);
+        let bases = fixture.base_directories().expect("fixture bases");
+        let state_anchor = match kind {
+            PlatformKind::Linux => bases.state.expect("Linux fixture state base"),
+            PlatformKind::Windows => bases.data,
+            PlatformKind::MacOs => unreachable!("native fixture kind excludes macOS"),
+        };
+        let project = native_fixture_path(["project"]);
         let root = FileIdentity::full(1, 10);
-        FixturePlatform::new(PlatformKind::Linux)
-            .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
-            .with_followed_file_identity("/fixture/project", root)
+        fixture
+            .with_snapshot(project.clone(), FileSnapshot::directory(root, Some(1)))
+            .with_followed_file_identity(project.clone(), root)
             .with_snapshot(
-                "/fixture/linux/home/.local/state",
+                state_anchor,
                 FileSnapshot::directory(FileIdentity::full(1, 11), Some(1)),
             )
-            .with_anchored_missing("/fixture/project")
+            .with_anchored_missing(project)
     }
 
     #[test]
     fn success_exposes_complete_environment_and_effective_state() {
+        let platform = fixture_platform();
+        let expected_paths = platform.matinee_paths().expect("fixture paths");
+        let project = native_fixture_path(["project"]);
+        let custom_state = project.join("custom-state");
         let environment = resolve_with_platform(
-            &fixture_platform(),
-            EnvironmentInput::new("/fixture/project")
-                .with_state_dir("/fixture/project/custom-state"),
+            &platform,
+            EnvironmentInput::new(project.clone()).with_state_dir(custom_state.clone()),
         )
         .expect("fixture environment resolves");
 
-        assert_eq!(environment.project_root(), Path::new("/fixture/project"));
+        assert_eq!(environment.project_root(), project.as_path());
         assert!(environment.user_config().is_none());
         assert!(environment.project_config().is_none());
-        assert_eq!(
-            environment.config(),
-            Path::new("/fixture/linux/home/.config/matinee")
-        );
-        assert_eq!(
-            environment.state(),
-            Path::new("/fixture/project/custom-state")
-        );
-        assert_eq!(
-            environment.runtime(),
-            Path::new("/fixture/linux/runtime/matinee")
-        );
-        assert_eq!(
-            environment.cache(),
-            Path::new("/fixture/linux/home/.cache/matinee")
-        );
-        assert_eq!(
-            environment.log(),
-            Path::new("/fixture/linux/home/.local/state/matinee/logs")
-        );
+        assert_eq!(environment.config(), expected_paths.config());
+        assert_eq!(environment.state(), custom_state.as_path());
+        assert_eq!(environment.runtime(), expected_paths.runtime());
+        assert_eq!(environment.cache(), expected_paths.cache());
+        assert_eq!(environment.log(), expected_paths.logs());
 
         let setting = environment
             .get("state_dir")
             .expect("state_dir setting is present");
         assert_eq!(setting.key(), "state_dir");
-        assert_eq!(setting.value(), "/fixture/project/custom-state");
+        assert_eq!(
+            setting.value(),
+            custom_state.to_str().expect("fixture state is UTF-8")
+        );
         assert_eq!(setting.source(), ConfigurationSource::CommandLine);
         assert_eq!(
             setting.provenance().source(),
             ConfigurationSource::CommandLine
         );
         assert_eq!(setting.provenance().key(), Some("state_dir"));
-        assert!(!format!("{:?}", environment.lock_identity()).contains("/fixture"));
+        assert!(!format!("{:?}", environment.lock_identity()).contains(
+            native_fixture_path(std::iter::empty::<&str>())
+                .to_str()
+                .expect("fixture root is UTF-8")
+        ));
     }
 
     #[test]
     fn configuration_paths_report_only_files_that_were_loaded() {
+        let project = native_fixture_path(["project"]);
+        let project_config = project.join("matinee.toml");
+        let home = FixturePlatform::new(native_fixture_kind())
+            .base_directories()
+            .expect("fixture bases")
+            .home;
+        let explicit_path = home.join("explicit.toml");
         let with_project = fixture_platform().with_anchored_file(
-            "/fixture/project",
+            project.clone(),
             FileIdentity::full(1, 20),
             b"",
             Some(2),
         );
         let environment =
-            resolve_with_platform(&with_project, EnvironmentInput::new("/fixture/project"))
+            resolve_with_platform(&with_project, EnvironmentInput::new(project.clone()))
                 .expect("implicit project configuration resolves");
         assert!(environment.user_config().is_none());
-        assert_eq!(
-            environment.project_config(),
-            Some(Path::new("/fixture/project/matinee.toml")),
-        );
+        assert_eq!(environment.project_config(), Some(project_config.as_path()),);
 
         let explicit = fixture_platform()
             .with_file(
-                "/fixture/project/matinee.toml",
+                project_config,
                 FileIdentity::full(1, 21),
                 b"not valid = [",
                 Some(2),
             )
             .with_file(
-                "/fixture/linux/home/explicit.toml",
+                explicit_path.clone(),
                 FileIdentity::full(1, 22),
                 b"",
                 Some(2),
             );
         let environment = resolve_with_platform(
             &explicit,
-            EnvironmentInput::new("/fixture/project")
-                .with_config_path("/fixture/linux/home/explicit.toml"),
+            EnvironmentInput::new(project).with_config_path(explicit_path.clone()),
         )
         .expect("explicit configuration suppresses implicit project file");
-        assert_eq!(
-            environment.user_config(),
-            Some(Path::new("/fixture/linux/home/explicit.toml")),
-        );
+        assert_eq!(environment.user_config(), Some(explicit_path.as_path()),);
         assert!(environment.project_config().is_none());
     }
 
     #[test]
     fn failure_is_closed_and_redacted() {
-        let raw_path = "/fixture/linux/outside/private.toml";
+        let project = native_fixture_path(["project"]);
+        let raw_path = native_fixture_path(["linux", "outside", "private.toml"]);
         let failure = resolve_with_platform(
             &fixture_platform(),
-            EnvironmentInput::new("/fixture/project").with_config_path(raw_path),
+            EnvironmentInput::new(project).with_config_path(raw_path.clone()),
         )
         .expect_err("configuration outside the user home is rejected");
 
         assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
+        let raw_path = raw_path.to_str().expect("fixture path is UTF-8");
         assert!(!format!("{:?}", failure).contains(raw_path));
         assert!(!failure.summary().contains(raw_path));
         assert!(!failure.next_action().contains(raw_path));
@@ -296,20 +305,23 @@ mod tests {
 
     #[test]
     fn lock_identity_is_exact_and_compares_canonical_roots() {
+        let project = native_fixture_path(["project"]);
+        let state = project.join("state");
+        let equivalent_state = project.join("./state/../state");
+        let other_state = project.join("other");
         let equivalent_a = resolve_with_platform(
             &fixture_platform(),
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/state"),
+            EnvironmentInput::new(project.clone()).with_state_dir(state),
         )
         .expect("first equivalent state root resolves");
         let equivalent_b = resolve_with_platform(
             &fixture_platform(),
-            EnvironmentInput::new("/fixture/project")
-                .with_state_dir("/fixture/project/./state/../state"),
+            EnvironmentInput::new(project.clone()).with_state_dir(equivalent_state),
         )
         .expect("second equivalent state root resolves");
         let distinct = resolve_with_platform(
             &fixture_platform(),
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/other"),
+            EnvironmentInput::new(project).with_state_dir(other_state),
         )
         .expect("distinct state root resolves");
 
@@ -319,9 +331,11 @@ mod tests {
 
     #[test]
     fn repeated_resolution_has_identical_observable_outcome() {
+        let project = native_fixture_path(["project"]);
+        let state = project.join("state");
+        let outside = native_fixture_path(["linux", "outside.toml"]);
         let platform = fixture_platform();
-        let input =
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/state");
+        let input = EnvironmentInput::new(project.clone()).with_state_dir(state);
         let first = resolve_with_platform(&platform, input.clone()).expect("first resolution");
         let second = resolve_with_platform(&platform, input).expect("second resolution");
 
@@ -330,8 +344,7 @@ mod tests {
         assert_eq!(first.lock_identity(), second.lock_identity());
         assert_eq!(first.get("state_dir"), second.get("state_dir"));
 
-        let failure_input = EnvironmentInput::new("/fixture/project")
-            .with_config_path("/fixture/linux/outside.toml");
+        let failure_input = EnvironmentInput::new(project).with_config_path(outside);
         let first_failure = resolve_with_platform(&platform, failure_input.clone())
             .expect_err("first invalid resolution fails");
         let second_failure = resolve_with_platform(&platform, failure_input)
