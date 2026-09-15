@@ -34,8 +34,9 @@ use windows_sys::Win32::Foundation::HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_NAME_NORMALIZED, FileAttributeTagInfo,
-    FileIdInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_NAME_NORMALIZED, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FileAttributeTagInfo, FileIdInfo, GetFileInformationByHandleEx,
+    GetFinalPathNameByHandleW,
 };
 
 pub(crate) const MAX_FILE_BYTES: usize = 1_048_576;
@@ -1364,12 +1365,24 @@ fn no_follow_is_escape(file: &fs::File, metadata: &fs::Metadata) -> bool {
 #[cfg(windows)]
 fn open_no_follow(path: &Path, read: bool) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
-    options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    options
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     if read {
         options.read(true);
     } else {
         options.access_mode(0);
     }
+    options.open(path)
+}
+
+#[cfg(windows)]
+fn open_follow_directory(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
     options.open(path)
 }
 
@@ -1470,7 +1483,7 @@ fn final_normalized_path(file: &fs::File) -> Option<PathBuf> {
 fn read_anchored_child_windows(
     request: AnchoredReadRequest<'_>,
 ) -> Result<AnchoredRead, AnchoredReadFailure> {
-    let root = match open_no_follow(request.root, false) {
+    let root = match open_follow_directory(request.root) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(AnchoredReadFailure::RootChanged);
@@ -1480,7 +1493,7 @@ fn read_anchored_child_windows(
     let root_metadata = root
         .metadata()
         .map_err(|_| AnchoredReadFailure::Unreadable)?;
-    if no_follow_file_type(&root, &root_metadata) != FileType::Directory {
+    if file_type(&root_metadata) != FileType::Directory {
         return Err(AnchoredReadFailure::RootChanged);
     }
     let root_identity =
@@ -1488,12 +1501,14 @@ fn read_anchored_child_windows(
     if root_identity != request.root_identity {
         return Err(AnchoredReadFailure::RootChanged);
     }
+    let final_root =
+        final_normalized_path(&root).ok_or(AnchoredReadFailure::Unreadable)?;
 
-    // The child name is resolved from the requested path rather than through a
-    // native root-relative NT call. The held child handle's normalized final
-    // path and no-follow parent identity below close that namespace window
-    // before any bytes are read.
-    let child_path = request.root.join(request.child.component());
+    // Resolve the fixed child through the held root's normalized final path,
+    // never through the mutable spelling supplied by the caller.
+    let child_path = final_root.join(request.child.component());
+    // The held child handle's normalized final path and no-follow parent
+    // identity below close the remaining namespace window before bytes read.
     let child = match open_no_follow(&child_path, true) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
