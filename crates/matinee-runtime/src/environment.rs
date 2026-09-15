@@ -649,6 +649,7 @@ mod tests {
     use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
     use crate::platform::{
         AnchoredReadFailure, FileIdentity, FileRead, FileSnapshot, FixturePlatform, PlatformKind,
+        native_fixture_kind, native_fixture_path,
     };
     use std::fmt::Write as _;
 
@@ -675,6 +676,14 @@ mod tests {
 
     fn text(value: &str) -> TomlValue {
         TomlValue::String(value.to_owned())
+    }
+
+    fn project_path() -> PathBuf {
+        native_fixture_path(["project"])
+    }
+
+    fn fixture_home(platform: &FixturePlatform) -> PathBuf {
+        platform.base_directories().expect("fixture bases").home
     }
 
     struct PostReadChangedPlatform {
@@ -735,30 +744,29 @@ mod tests {
     #[test]
     fn resolve_environment_rejects_post_read_replacement_in_one_invocation() {
         let root = FileIdentity::full(1, 10);
-        let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
-            .with_followed_file_identity("/fixture/project", root)
+        let project = project_path();
+        let home = fixture_home(&FixturePlatform::new(native_fixture_kind()));
+        let project_file = project.join("matinee.toml");
+        let platform = FixturePlatform::new(native_fixture_kind())
+            .with_snapshot(project.clone(), FileSnapshot::directory(root, Some(1)))
+            .with_followed_file_identity(project.clone(), root)
             .with_file(
-                "/fixture/project/matinee.toml",
+                project_file,
                 FileIdentity::full(1, 11),
                 b"setting = \"project\"\n",
                 Some(2),
             )
             .with_snapshot(
-                "/fixture/linux/home",
+                home.clone(),
                 FileSnapshot::directory(FileIdentity::full(1, 12), Some(1)),
             )
-            .with_followed_file_identity("/fixture/linux/home", FileIdentity::full(1, 12));
+            .with_followed_file_identity(home, FileIdentity::full(1, 12));
 
         let platform = PostReadChangedPlatform { inner: platform };
         let registry = test_registry(&["setting"]);
 
-        let failure = resolve_environment(
-            &platform,
-            EnvironmentInput::new("/fixture/project"),
-            &registry,
-        )
-        .expect_err("replacement during one resolver read must fail");
+        let failure = resolve_environment(&platform, EnvironmentInput::new(project), &registry)
+            .expect_err("replacement during one resolver read must fail");
         assert_eq!(failure.code(), ConfigurationFailureCode::FileChanged);
         assert_eq!(
             failure.source(),
@@ -769,8 +777,9 @@ mod tests {
     #[test]
     fn resolve_environment_loads_the_anchored_project_configuration() {
         let (platform, root) = project_fixture();
+        let project = project_path();
         let platform = platform.with_anchored_file(
-            "/fixture/project",
+            project.clone(),
             FileIdentity::full(1, 11),
             b"setting = \"project\"\n",
             Some(2),
@@ -778,7 +787,7 @@ mod tests {
         let registry = test_registry(&["setting", "state_dir"]);
         let resolved = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
+            EnvironmentInput::new(project.clone()).with_state_dir(project.clone()),
             &registry,
         )
         .expect("an anchored project file resolves");
@@ -789,11 +798,11 @@ mod tests {
         );
         assert_eq!(
             resolved.project_config(),
-            Some(Path::new("/fixture/project/matinee.toml"))
+            Some(project.join("matinee.toml").as_path())
         );
         let reads = platform.anchored_reads();
         assert_eq!(reads.len(), 1, "the project file is requested exactly once");
-        assert_eq!(reads[0].root, Path::new("/fixture/project"));
+        assert_eq!(reads[0].root, project);
         assert_eq!(reads[0].root_identity, root);
         assert_eq!(reads[0].child, AnchoredChild::ProjectConfiguration);
         assert_eq!(reads[0].byte_limit, MAX_FILE_BYTES);
@@ -802,10 +811,11 @@ mod tests {
     #[test]
     fn resolve_environment_treats_an_absent_anchored_project_child_as_optional() {
         let (platform, _) = project_fixture();
+        let project = project_path();
         let registry = test_registry(&["setting", "state_dir"]);
         let resolved = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
+            EnvironmentInput::new(project.clone()).with_state_dir(project),
             &registry,
         )
         .expect("an absent project file is optional");
@@ -822,8 +832,9 @@ mod tests {
     #[test]
     fn resolve_environment_anchors_the_normalized_root_for_an_alias_of_the_project_root() {
         let (platform, root) = project_fixture();
+        let project = project_path();
         let platform = platform.with_anchored_file(
-            "/fixture/project",
+            project.clone(),
             FileIdentity::full(1, 11),
             b"setting = \"project\"\n",
             Some(2),
@@ -831,7 +842,7 @@ mod tests {
         let registry = test_registry(&["setting", "state_dir"]);
         let resolved = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project/./state/..").with_state_dir("/fixture/project"),
+            EnvironmentInput::new(project.join("./state/..")).with_state_dir(project.clone()),
             &registry,
         )
         .expect("an alias of the project root resolves the same anchor");
@@ -840,10 +851,10 @@ mod tests {
             resolved.configuration().get("setting").unwrap().value(),
             &text("project")
         );
-        assert_eq!(resolved.project_root(), Path::new("/fixture/project"));
+        assert_eq!(resolved.project_root(), project.as_path());
         let reads = platform.anchored_reads();
         assert_eq!(reads.len(), 1);
-        assert_eq!(reads[0].root, Path::new("/fixture/project"));
+        assert_eq!(reads[0].root, project);
         assert_eq!(reads[0].root_identity, root);
     }
 
@@ -880,10 +891,11 @@ mod tests {
         ];
         for (rejection, code) in cases {
             let (platform, _) = project_fixture();
-            let platform = platform.with_anchored_failure("/fixture/project", rejection);
+            let project = project_path();
+            let platform = platform.with_anchored_failure(project.clone(), rejection);
             let failure = resolve_environment(
                 &platform,
-                EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
+                EnvironmentInput::new(project.clone()).with_state_dir(project),
                 &test_registry(&["setting", "state_dir"]),
             )
             .expect_err("a rejected anchor must fail the resolution");
@@ -905,10 +917,11 @@ mod tests {
     #[test]
     fn resolve_environment_rejects_missing_explicit_user_path_outside_home() {
         let (platform, _) = project_fixture();
+        let project = project_path();
+        let outside = native_fixture_path(["linux", "outside.toml"]);
         let failure = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project")
-                .with_config_path("/fixture/linux/outside.toml"),
+            EnvironmentInput::new(project).with_config_path(outside),
             &test_registry(&[]),
         )
         .expect_err("an explicit user path outside home must fail closed");
@@ -918,32 +931,31 @@ mod tests {
     #[test]
     fn resolve_environment_explicit_config_skips_the_anchored_project_read() {
         let (platform, root) = project_fixture();
+        let project = project_path();
+        let home = fixture_home(&platform);
+        let config = home.join("config.toml");
         let platform = platform
             .with_anchored_file(
-                "/fixture/project",
+                project.clone(),
                 FileIdentity::full(1, 31),
                 b"this is not valid TOML =\n",
                 Some(2),
             )
             .with_file(
-                "/fixture/linux/home/config.toml",
+                config.clone(),
                 FileIdentity::full(1, 30),
                 b"setting = \"explicit\"\n",
                 Some(3),
             )
             .with_snapshot(
-                "/fixture/linux/home/.local/state",
+                home.clone(),
                 FileSnapshot::directory(FileIdentity::full(1, 32), Some(4)),
             )
-            .with_followed_file_identity(
-                "/fixture/linux/home/.local/state",
-                FileIdentity::full(1, 32),
-            );
+            .with_followed_file_identity(home, FileIdentity::full(1, 32));
         let registry = test_registry(&["setting"]);
         let resolved = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project")
-                .with_config_path("/fixture/linux/home/config.toml"),
+            EnvironmentInput::new(project).with_config_path(config),
             &registry,
         )
         .expect("explicit config must suppress the anchored project read");
@@ -961,21 +973,20 @@ mod tests {
     #[test]
     fn resolve_environment_equivalent_state_roots_share_lock_identity() {
         let (platform, _) = project_fixture();
+        let project = project_path();
         let registry = test_registry(&["state_dir"]);
         let first = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/state"),
+            EnvironmentInput::new(project.clone()).with_state_dir(project.join("state")),
             &registry,
         )
         .expect("the first equivalent state root resolves");
         let second = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project")
-                .with_state_dir("/fixture/project/./state/../state"),
+            EnvironmentInput::new(project.clone()).with_state_dir(project.join("./state/../state")),
             &registry,
         )
         .expect("the second equivalent state root resolves");
-
         assert_eq!(first.state_root_identity(), second.state_root_identity());
         assert_eq!(first.lock_identity(), second.lock_identity());
     }
@@ -983,20 +994,20 @@ mod tests {
     #[test]
     fn resolve_environment_distinct_state_roots_have_distinct_lock_identities() {
         let (platform, _) = project_fixture();
+        let project = project_path();
         let registry = test_registry(&["state_dir"]);
         let first = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/first"),
+            EnvironmentInput::new(project.clone()).with_state_dir(project.join("first")),
             &registry,
         )
         .expect("the first distinct state root resolves");
         let second = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project/second"),
+            EnvironmentInput::new(project.clone()).with_state_dir(project.join("second")),
             &registry,
         )
         .expect("the second distinct state root resolves");
-
         assert_ne!(first.state_root_identity(), second.state_root_identity());
         assert_ne!(first.lock_identity(), second.lock_identity());
     }
@@ -1004,17 +1015,16 @@ mod tests {
     #[test]
     fn resolve_environment_lock_identity_contains_complete_state_root_identity() {
         let (platform, _) = project_fixture();
+        let project = project_path();
         let registry = test_registry(&["state_dir"]);
         let resolved = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project")
-                .with_state_dir("/fixture/project/exact-state"),
+            EnvironmentInput::new(project.clone()).with_state_dir(project.join("exact-state")),
             &registry,
         )
         .expect("the state root resolves");
         let state_root_identity = resolved.state_root_identity();
         let lock_identity = resolved.lock_identity().path_identity();
-
         assert_eq!(lock_identity, state_root_identity);
         assert_eq!(
             lock_identity.existing_anchor_id(),
@@ -1029,22 +1039,19 @@ mod tests {
     #[test]
     fn resolve_environment_uses_effective_state_path_in_resolved_paths() {
         let (platform, _) = project_fixture();
+        let project = project_path();
         let platform_paths = platform
             .matinee_paths()
             .expect("fixture platform paths resolve");
         let registry = test_registry(&["state_dir"]);
+        let effective_state = project.join("effective-state");
         let resolved = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project")
-                .with_state_dir("/fixture/project/effective-state"),
+            EnvironmentInput::new(project).with_state_dir(effective_state.clone()),
             &registry,
         )
         .expect("the effective state path resolves");
-
-        assert_eq!(
-            resolved.paths().state(),
-            Path::new("/fixture/project/effective-state")
-        );
+        assert_eq!(resolved.paths().state(), effective_state.as_path());
         assert_eq!(resolved.paths().config(), platform_paths.config());
         assert_eq!(resolved.paths().runtime(), platform_paths.runtime());
         assert_eq!(resolved.paths().cache(), platform_paths.cache());
@@ -1058,124 +1065,112 @@ mod tests {
     fn resolve_environment_reports_loaded_configuration_paths_and_skips_explicit_project_file() {
         let registry = test_registry(&["setting"]);
         let (platform, _) = project_fixture();
+        let project = project_path();
+        let home = fixture_home(&platform);
+        let user_config = platform
+            .matinee_paths()
+            .expect("fixture paths")
+            .config()
+            .join("config.toml");
         let platform = platform
             .with_anchored_file(
-                "/fixture/project",
+                project.clone(),
                 FileIdentity::full(1, 11),
                 b"setting = \"project\"\n",
                 Some(2),
             )
             .with_file(
-                "/fixture/linux/home/.config/matinee/config.toml",
+                user_config.clone(),
                 FileIdentity::full(1, 12),
                 b"setting = \"user\"\n",
                 Some(3),
             )
             .with_snapshot(
-                "/fixture/linux/home/.local/state",
+                home.clone(),
                 FileSnapshot::directory(FileIdentity::full(1, 13), Some(4)),
             )
-            .with_followed_file_identity(
-                "/fixture/linux/home/.local/state",
-                FileIdentity::full(1, 13),
-            );
-        let resolved = resolve_environment(
-            &platform,
-            EnvironmentInput::new("/fixture/project"),
-            &registry,
-        )
-        .expect("both configuration files resolve");
-        assert_eq!(
-            resolved.user_config(),
-            Some(Path::new("/fixture/linux/home/.config/matinee/config.toml"))
-        );
+            .with_followed_file_identity(home, FileIdentity::full(1, 13));
+        let resolved =
+            resolve_environment(&platform, EnvironmentInput::new(project.clone()), &registry)
+                .expect("both configuration files resolve");
+        assert_eq!(resolved.user_config(), Some(user_config.as_path()));
         assert_eq!(
             resolved.project_config(),
-            Some(Path::new("/fixture/project/matinee.toml"))
+            Some(project.join("matinee.toml").as_path())
         );
 
         let (platform, _) = project_fixture();
+        let project = project_path();
+        let home = fixture_home(&platform);
         let platform = platform
             .with_anchored_file(
-                "/fixture/project",
+                project.clone(),
                 FileIdentity::full(1, 21),
                 b"setting = \"project\"\n",
                 Some(2),
             )
             .with_snapshot(
-                "/fixture/linux/home/.local/state",
+                home.clone(),
                 FileSnapshot::directory(FileIdentity::full(1, 22), Some(4)),
             )
-            .with_followed_file_identity(
-                "/fixture/linux/home/.local/state",
-                FileIdentity::full(1, 22),
-            );
-        let resolved = resolve_environment(
-            &platform,
-            EnvironmentInput::new("/fixture/project"),
-            &registry,
-        )
-        .expect("the project-only configuration resolves");
+            .with_followed_file_identity(home, FileIdentity::full(1, 22));
+        let resolved =
+            resolve_environment(&platform, EnvironmentInput::new(project.clone()), &registry)
+                .expect("the project-only configuration resolves");
         assert_eq!(resolved.user_config(), None);
         assert_eq!(
             resolved.project_config(),
-            Some(Path::new("/fixture/project/matinee.toml"))
+            Some(project.join("matinee.toml").as_path())
         );
 
         let (platform, _) = project_fixture();
+        let project = project_path();
+        let home = fixture_home(&platform);
+        let explicit = home.join("explicit.toml");
         let platform = platform
             .with_anchored_file(
-                "/fixture/project",
+                project.clone(),
                 FileIdentity::full(1, 31),
                 b"this is not valid TOML =\n",
                 Some(2),
             )
             .with_file(
-                "/fixture/linux/home/explicit.toml",
+                explicit.clone(),
                 FileIdentity::full(1, 30),
                 b"setting = \"explicit\"\n",
                 Some(3),
             )
             .with_snapshot(
-                "/fixture/linux/home/.local/state",
+                home.clone(),
                 FileSnapshot::directory(FileIdentity::full(1, 32), Some(4)),
             )
-            .with_followed_file_identity(
-                "/fixture/linux/home/.local/state",
-                FileIdentity::full(1, 32),
-            );
+            .with_followed_file_identity(home, FileIdentity::full(1, 32));
         let resolved = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project")
-                .with_config_path("/fixture/linux/home/explicit.toml"),
+            EnvironmentInput::new(project).with_config_path(explicit.clone()),
             &registry,
         )
         .expect("explicit configuration skips the invalid project file");
-        assert_eq!(
-            resolved.user_config(),
-            Some(Path::new("/fixture/linux/home/explicit.toml"))
-        );
+        assert_eq!(resolved.user_config(), Some(explicit.as_path()));
         assert_eq!(resolved.project_config(), None);
     }
 
     #[test]
     fn resolve_environment_preflights_toml_before_typed_parsing() {
         let (platform, _) = project_fixture();
+        let project = project_path();
+        let home = fixture_home(&platform);
+        let config = home.join("config.toml");
         let mut contents = String::new();
         for index in 0..=100 {
             writeln!(contents, "setting_{index} = \"value\"")
                 .expect("writing to String cannot fail");
         }
-        let platform = platform.with_file(
-            "/fixture/linux/home/config.toml",
-            FileIdentity::full(1, 40),
-            contents,
-            Some(2),
-        );
+        let platform =
+            platform.with_file(config.clone(), FileIdentity::full(1, 40), contents, Some(2));
         let failure = resolve_environment(
             &platform,
-            EnvironmentInput::new("/fixture/project")
-                .with_config_path("/fixture/linux/home/config.toml"),
+            EnvironmentInput::new(project).with_config_path(config),
             &test_registry(&[]),
         )
         .expect_err("assignment limit must be enforced before TOML parsing");
@@ -1550,11 +1545,12 @@ mod tests {
     /// what the project root holds.
     fn project_fixture() -> (FixturePlatform, FileIdentity) {
         let root = FileIdentity::full(1, 10);
+        let project = project_path();
         (
-            FixturePlatform::new(PlatformKind::Linux)
-                .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
-                .with_followed_file_identity("/fixture/project", root)
-                .with_anchored_missing("/fixture/project"),
+            FixturePlatform::new(native_fixture_kind())
+                .with_snapshot(project.clone(), FileSnapshot::directory(root, Some(1)))
+                .with_followed_file_identity(project.clone(), root)
+                .with_anchored_missing(project),
             root,
         )
     }
@@ -1565,15 +1561,12 @@ mod tests {
             ConfigurationFailureCode::FileUnreadable,
             FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
         );
-        let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_followed_file_identity_result("/fixture/project", Err(failure));
+        let project = project_path();
+        let platform = FixturePlatform::new(native_fixture_kind())
+            .with_followed_file_identity_result(project.clone(), Err(failure));
         let registry = test_registry(&["state_dir"]);
 
-        let result = resolve_environment(
-            &platform,
-            EnvironmentInput::new("/fixture/project"),
-            &registry,
-        );
+        let result = resolve_environment(&platform, EnvironmentInput::new(project), &registry);
         let failure = result.expect_err("inaccessible project root must fail closed");
 
         assert_eq!(failure.code(), ConfigurationFailureCode::FileUnreadable);
