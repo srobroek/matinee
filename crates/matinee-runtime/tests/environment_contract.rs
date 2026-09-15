@@ -1,6 +1,6 @@
 use matinee_runtime::{
-    resolve_environment, ConfigurationFailureCode, ConfigurationSource, EnvironmentInput,
-    EnvironmentResult, ResolvedEnvironment,
+    ConfigurationFailureCode, ConfigurationSource, EnvironmentInput, EnvironmentResult,
+    ResolvedEnvironment, resolve_environment,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
