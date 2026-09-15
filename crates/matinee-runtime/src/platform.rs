@@ -682,7 +682,7 @@ impl Platform for HostPlatform {
         let root_fd = unsafe {
             libc::open(
                 root_name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
             )
         };
         if root_fd < 0 {
@@ -709,7 +709,7 @@ impl Platform for HostPlatform {
             libc::openat(
                 root.as_raw_fd(),
                 child_name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
             )
         };
         if child_fd < 0 {
