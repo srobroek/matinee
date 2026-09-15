@@ -347,4 +347,131 @@ mod tests {
         assert!(result.is_err());
         assert!(!missing.exists());
     }
+
+    #[cfg(target_os = "windows")]
+    fn windows_fixture_platform() -> FixturePlatform {
+        let project = Path::new(r"C:\fixture\project");
+        let project_identity = FileIdentity::full(7, 70);
+        let state = Path::new(r"C:\Users\fixture\AppData\Local\Matinee\state");
+        let state_identity = FileIdentity::full(7, 71);
+        FixturePlatform::new(PlatformKind::Windows)
+            .with_snapshot(
+                project,
+                FileSnapshot::directory(project_identity, Some(1)),
+            )
+            .with_followed_file_identity(project, project_identity)
+            .with_snapshot(
+                state,
+                FileSnapshot::directory(state_identity, Some(1)),
+            )
+            .with_followed_file_identity(state, state_identity)
+            .with_snapshot(
+                r"C:\fixture\project\user-state",
+                FileSnapshot::directory(FileIdentity::full(7, 73), Some(1)),
+            )
+            .with_followed_file_identity(
+                r"C:\fixture\project\user-state",
+                FileIdentity::full(7, 73),
+            )
+            .with_snapshot(
+                r"C:\fixture\project\command-line-state",
+                FileSnapshot::directory(FileIdentity::full(7, 74), Some(1)),
+            )
+            .with_followed_file_identity(
+                r"C:\fixture\project\command-line-state",
+                FileIdentity::full(7, 74),
+            )
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_fixture_uses_exact_known_folder_defaults_without_profile_access() {
+        let environment = resolve_with_platform(
+            &windows_fixture_platform(),
+            EnvironmentInput::new(r"C:\fixture\project"),
+        )
+        .expect("Windows fixture environment resolves");
+
+        assert_eq!(
+            environment.config(),
+            Path::new(r"C:\Users\fixture\AppData\Roaming\Matinee")
+        );
+        assert_eq!(
+            environment.state(),
+            Path::new(r"C:\Users\fixture\AppData\Local\Matinee\state")
+        );
+        assert_eq!(
+            environment.runtime(),
+            Path::new(r"C:\Users\fixture\AppData\Local\Matinee\state\run")
+        );
+        assert_eq!(
+            environment.cache(),
+            Path::new(r"C:\Users\fixture\AppData\Local\Matinee\cache")
+        );
+        assert_eq!(
+            environment.log(),
+            Path::new(r"C:\Users\fixture\AppData\Local\Matinee\state\logs")
+        );
+        assert!(environment.user_config().is_none());
+        assert!(environment.get("state_dir").is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_fixture_user_bytes_win_only_by_command_line_and_redacts_provenance() {
+        let user_path = Path::new(r"C:\Users\fixture\AppData\Roaming\Matinee\config.toml");
+        let user_bytes = b"state_dir = 'C:\\fixture\\project\\user-state'\n".to_vec();
+        let platform = windows_fixture_platform().with_file(
+            user_path,
+            FileIdentity::full(7, 72),
+            user_bytes,
+            Some(2),
+        );
+        let environment = resolve_with_platform(
+            &platform,
+            EnvironmentInput::new(r"C:\fixture\project")
+                .with_state_dir(r"C:\fixture\project\command-line-state"),
+        )
+        .expect("Windows user and command-line configuration resolves");
+
+        assert_eq!(
+            environment.user_config(),
+            Some(user_path),
+            "the fixture must load the exact supplied user-config bytes"
+        );
+        let setting = environment
+            .get("state_dir")
+            .expect("state_dir is supplied by configuration");
+        assert_eq!(setting.source(), ConfigurationSource::CommandLine);
+        assert_eq!(
+            setting.provenance().source(),
+            ConfigurationSource::CommandLine
+        );
+        assert_eq!(setting.provenance().key(), Some("state_dir"));
+        assert_eq!(
+            setting.value(),
+            r"C:\fixture\project\command-line-state"
+        );
+        assert_eq!(environment.state(), Path::new(r"C:\fixture\project\command-line-state"));
+
+        let user_only = resolve_with_platform(
+            &platform,
+            EnvironmentInput::new(r"C:\fixture\project"),
+        )
+        .expect("Windows user configuration resolves");
+        let user_setting = user_only
+            .get("state_dir")
+            .expect("user state_dir is present");
+        assert_eq!(user_setting.source(), ConfigurationSource::UserFile);
+        assert_eq!(
+            user_setting.provenance().source(),
+            ConfigurationSource::UserFile
+        );
+        assert_eq!(
+            user_setting.provenance().relative_path(),
+            Some(Path::new(r"AppData\Roaming\Matinee\config.toml"))
+        );
+        let debug = format!("{:?}", user_setting.provenance());
+        assert!(!debug.contains(r"C:\Users\fixture"));
+    }
 }

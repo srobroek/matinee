@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use matinee_runtime::{
     ConfigurationFailureCode, ConfigurationSource, EnvironmentInput, resolve_environment,
 };
