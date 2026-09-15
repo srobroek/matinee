@@ -689,7 +689,7 @@ impl Platform for HostPlatform {
         if root_fd < 0 {
             let error = std::io::Error::last_os_error();
             return match error.raw_os_error() {
-                Some(libc::ELOOP) => Err(AnchoredReadFailure::Escaped),
+                Some(libc::ELOOP) | Some(libc::ENOTDIR) => Err(AnchoredReadFailure::RootChanged),
                 Some(libc::ENOENT) => Err(AnchoredReadFailure::RootChanged),
                 _ => Err(AnchoredReadFailure::Unreadable),
             };
@@ -1358,10 +1358,10 @@ fn no_follow_is_escape(file: &fs::File, metadata: &fs::Metadata) -> bool {
 }
 
 #[cfg(windows)]
-fn open_no_follow(path: &Path, read: bool) -> std::io::Result<fs::File> {
+fn open_no_follow(path: &Path, read: bool, share_mode: u32) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .share_mode(share_mode)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     if read {
         options.read(true);
@@ -1380,6 +1380,7 @@ fn open_follow_directory(path: &Path) -> std::io::Result<fs::File> {
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
     options.open(path)
 }
+
 
 #[cfg(windows)]
 fn snapshot_from_metadata(
@@ -1501,7 +1502,7 @@ fn read_anchored_child_windows(
     let child_path = final_root.join(request.child.component());
     // The held child handle's normalized final path and no-follow parent
     // identity below close the remaining namespace window before bytes read.
-    let child = match open_no_follow(&child_path, true) {
+    let child = match open_no_follow(&child_path, true, FILE_SHARE_READ) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(AnchoredRead::Missing);
@@ -1526,7 +1527,7 @@ fn read_anchored_child_windows(
 
     let final_path = final_normalized_path(&child).ok_or(AnchoredReadFailure::Unreadable)?;
     let parent_path = final_path.parent().ok_or(AnchoredReadFailure::Unreadable)?;
-    let parent = match open_no_follow(parent_path, false) {
+    let parent = match open_no_follow(parent_path, false, FILE_SHARE_READ | FILE_SHARE_WRITE) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(AnchoredReadFailure::RootChanged);
