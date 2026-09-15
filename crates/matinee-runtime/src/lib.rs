@@ -442,11 +442,11 @@ mod tests {
             ConfigurationSource::CommandLine
         );
         assert_eq!(setting.provenance().key(), Some("state_dir"));
+        assert_eq!(setting.value(), r"C:\fixture\project\command-line-state");
         assert_eq!(
-            setting.value(),
-            r"C:\fixture\project\command-line-state"
+            environment.state(),
+            Path::new(r"C:\fixture\project\command-line-state")
         );
-        assert_eq!(environment.state(), Path::new(r"C:\fixture\project\command-line-state"));
 
         let user_only =
             resolve_with_platform(&platform, EnvironmentInput::new(r"C:\fixture\project"))
