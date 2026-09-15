@@ -310,39 +310,6 @@ fn environment_state_dir_is_rejected_as_forbidden() {
     assert_eq!(failure.code(), ConfigurationFailureCode::SourceForbidden);
 }
 
-#[cfg(target_os = "windows")]
-#[test]
-fn windows_case_alias_for_registered_environment_name_uses_native_comparison() {
-    // Windows environment names are case-insensitive before they are mapped to keys.
-    // A mixed-case alias must therefore reach the registered protected descriptor and
-    // be rejected for the environment source, rather than being silently ignored.
-    let fixture = TestFixture::new();
-    fixture.set_environment("matinee_state_dir", "environment-value");
-
-    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
-        .expect_err("a Windows case alias for state_dir must be rejected");
-    assert_eq!(failure.code(), ConfigurationFailureCode::SourceForbidden);
-}
-
-#[cfg(target_os = "windows")]
-#[test]
-fn windows_case_alias_for_unknown_environment_name_maps_before_lookup() {
-    // Case normalization must happen before descriptor lookup, so a mixed-case alias
-    // remains an unknown key and cannot leak its spelling or value in the failure.
-    let fixture = TestFixture::new();
-    let alias = "MaTiNeE_UnReGiStErEd";
-    let value = "windows-alias-secret";
-    fixture.set_environment(alias, value);
-
-    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
-        .expect_err("a Windows case alias for an unknown key must be rejected");
-    assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
-    let rendered = format!("{failure:?} {failure}");
-    assert!(rendered.contains("environment"));
-    assert!(!rendered.contains(alias));
-    assert!(!rendered.contains(value));
-}
-
 #[test]
 fn unknown_keys_are_rejected_in_each_external_source() {
     // Catches a source-specific parser or merge path that silently accepts unknown keys.

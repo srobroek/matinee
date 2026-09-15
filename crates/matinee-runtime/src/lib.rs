@@ -474,4 +474,94 @@ mod tests {
         let debug = format!("{:?}", user_setting.provenance());
         assert!(!debug.contains(r"C:\Users\fixture"));
     }
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_fixture_mixed_case_registered_alias_is_source_forbidden() {
+        let platform = windows_fixture_platform().with_environment(
+            "MaTiNeE_StAtE_DiR",
+            r"C:\fixture\project\environment-secret",
+        );
+        let failure = resolve_with_platform(
+            &platform,
+            EnvironmentInput::new(r"C:\fixture\project"),
+        )
+        .expect_err("a mixed-case protected environment alias must be rejected");
+
+        assert_eq!(failure.code(), ConfigurationFailureCode::SourceForbidden);
+        let rendered = format!("{failure:?} {failure}");
+        assert!(rendered.contains("environment"));
+        assert!(!rendered.contains(r"C:\fixture\project"));
+        assert!(!rendered.contains(r"C:\Users\fixture"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_fixture_mixed_case_unknown_alias_is_redacted() {
+        let alias = "MaTiNeE_UnReGiStErEd";
+        let value = "windows-alias-secret";
+        let failure = resolve_with_platform(
+            &windows_fixture_platform().with_environment(alias, value),
+            EnvironmentInput::new(r"C:\fixture\project"),
+        )
+        .expect_err("a mixed-case unknown environment alias must be rejected");
+
+        assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+        let rendered = format!("{failure:?} {failure}");
+        assert!(rendered.contains("environment"));
+        assert!(!rendered.contains(alias));
+        assert!(!rendered.contains(value));
+        assert!(!rendered.contains(r"C:\fixture\project"));
+        assert!(!rendered.contains(r"C:\Users\fixture"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_fixture_rejects_protected_sources_and_malformed_user_value() {
+        let project_file = r"C:\fixture\project\matinee.toml";
+        let project_platform = windows_fixture_platform().with_file(
+            project_file,
+            FileIdentity::full(7, 75),
+            b"state_dir = 'project-state'\n".to_vec(),
+            Some(2),
+        );
+        let project_failure = resolve_with_platform(
+            &project_platform,
+            EnvironmentInput::new(r"C:\fixture\project"),
+        )
+        .expect_err("project state_dir must remain protected");
+        assert_eq!(
+            project_failure.code(),
+            ConfigurationFailureCode::SourceForbidden
+        );
+
+        let environment_failure = resolve_with_platform(
+            &windows_fixture_platform().with_environment(
+                "MATINEE_STATE_DIR",
+                r"C:\fixture\project\environment-state",
+            ),
+            EnvironmentInput::new(r"C:\fixture\project"),
+        )
+        .expect_err("environment state_dir must remain protected");
+        assert_eq!(
+            environment_failure.code(),
+            ConfigurationFailureCode::SourceForbidden
+        );
+
+        let user_file = r"C:\Users\fixture\AppData\Roaming\Matinee\config.toml";
+        let user_failure = resolve_with_platform(
+            &windows_fixture_platform().with_file(
+                user_file,
+                FileIdentity::full(7, 76),
+                b"state_dir = true\n".to_vec(),
+                Some(2),
+            ),
+            EnvironmentInput::new(r"C:\fixture\project"),
+        )
+        .expect_err("malformed user state_dir must be rejected");
+        assert_eq!(user_failure.code(), ConfigurationFailureCode::ValueInvalid);
+        let rendered = format!("{user_failure:?} {user_failure}");
+        assert!(!rendered.contains("true"));
+        assert!(!rendered.contains(r"C:\fixture\project"));
+        assert!(!rendered.contains(r"C:\Users\fixture"));
+    }
 }
