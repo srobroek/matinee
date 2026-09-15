@@ -14,7 +14,27 @@ use std::collections::HashSet;
 #[cfg(unix)]
 use std::ffi::CString;
 #[cfg(unix)]
-use std::time::Duration;
+use std::process::Command;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
+#[cfg(unix)]
+const FIFO_HELPER_GATE: &str = "MATINEE_RUNTIME_FIFO_HELPER_GATE";
+#[cfg(unix)]
+const FIFO_HELPER_GATE_VALUE: &str = "enabled";
+#[cfg(unix)]
+const FIFO_HELPER_PATH: &str = "MATINEE_RUNTIME_FIFO_PATH";
+#[cfg(unix)]
+const FIFO_HELPER_TEST: &str = "fifo_implicit_project_file_helper";
+
+#[cfg(unix)]
+struct FifoCleanup(PathBuf);
+
+#[cfg(unix)]
+impl Drop for FifoCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -143,31 +163,35 @@ impl Drop for EnvironmentGuard {
 }
 
 fn configure_host_environment(fixture: &TempFixture, environment: &mut EnvironmentGuard) {
+    configure_host_environment_at(&fixture.root, environment);
+}
+
+fn configure_host_environment_at(root: &Path, environment: &mut EnvironmentGuard) {
     environment.clear_matinee_variables();
 
     #[cfg(target_os = "macos")]
     {
-        environment.set_path("HOME", &fixture.path("home"));
+        environment.set_path("HOME", &root.join("home"));
     }
 
     #[cfg(target_os = "linux")]
     {
-        environment.set_path("HOME", &fixture.path("home"));
-        environment.set_path("XDG_CONFIG_HOME", &fixture.path("home/xdg-config"));
-        environment.set_path("XDG_DATA_HOME", &fixture.path("xdg-data"));
-        environment.set_path("XDG_STATE_HOME", &fixture.path("xdg-state"));
-        environment.set_path("XDG_RUNTIME_DIR", &fixture.path("xdg-runtime"));
-        environment.set_path("XDG_CACHE_HOME", &fixture.path("xdg-cache"));
-        environment.set_path("XDG_BIN_HOME", &fixture.path("xdg-bin"));
+        environment.set_path("HOME", &root.join("home"));
+        environment.set_path("XDG_CONFIG_HOME", &root.join("home/xdg-config"));
+        environment.set_path("XDG_DATA_HOME", &root.join("xdg-data"));
+        environment.set_path("XDG_STATE_HOME", &root.join("xdg-state"));
+        environment.set_path("XDG_RUNTIME_DIR", &root.join("xdg-runtime"));
+        environment.set_path("XDG_CACHE_HOME", &root.join("xdg-cache"));
+        environment.set_path("XDG_BIN_HOME", &root.join("xdg-bin"));
     }
 
     #[cfg(target_os = "windows")]
     {
         // These variables are restored for hygiene, but directories 6.0 obtains Windows bases
         // from SHGetKnownFolderPath, so they cannot force a fixture profile.
-        environment.set_path("USERPROFILE", &fixture.path("profile"));
-        environment.set_path("APPDATA", &fixture.path("roaming"));
-        environment.set_path("LOCALAPPDATA", &fixture.path("local"));
+        environment.set_path("USERPROFILE", &root.join("profile"));
+        environment.set_path("APPDATA", &root.join("roaming"));
+        environment.set_path("LOCALAPPDATA", &root.join("local"));
     }
 }
 
@@ -749,28 +773,68 @@ fn fifo_implicit_project_file_is_rejected_without_blocking() {
         "create FIFO at {fifo_path:?}: {}",
         std::io::Error::last_os_error()
     );
+    let _fifo_cleanup = FifoCleanup(fifo_path.clone());
 
+    let mut child = Command::new(std::env::current_exe().expect("resolve test executable"))
+        .args(["--exact", FIFO_HELPER_TEST, "--nocapture"])
+        .env(FIFO_HELPER_GATE, FIFO_HELPER_GATE_VALUE)
+        .env(FIFO_HELPER_PATH, &fifo_path)
+        .spawn()
+        .expect("spawn FIFO helper test");
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(
+                    status.success(),
+                    "FIFO helper exited unsuccessfully: {status}"
+                );
+                break;
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let kill_result = child.kill();
+                let wait_result = child.wait();
+                panic!(
+                    "FIFO helper did not exit before deadline; kill: {kill_result:?}; wait: {wait_result:?}"
+                );
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let kill_result = child.kill();
+                let wait_result = child.wait();
+                panic!(
+                    "poll FIFO helper failed: {error}; kill: {kill_result:?}; wait: {wait_result:?}"
+                );
+            }
+        }
+    }
+
+    fs::remove_file(&fifo_path).expect("remove FIFO fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_implicit_project_file_helper() {
+    if std::env::var_os(FIFO_HELPER_GATE).as_deref() != Some(OsStr::new(FIFO_HELPER_GATE_VALUE)) {
+        return;
+    }
+
+    let fifo_path = PathBuf::from(
+        std::env::var_os(FIFO_HELPER_PATH).expect("FIFO helper path environment variable"),
+    );
+    let project_root = fifo_path.parent().expect("FIFO has project root parent");
+    let fixture_root = project_root
+        .parent()
+        .expect("project root has fixture parent");
     let mut environment = EnvironmentGuard::acquire();
-    configure_host_environment(&fixture, &mut environment);
-    let project_root = fixture.project_root().to_path_buf();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let resolver = std::thread::spawn(move || {
-        sender
-            .send(resolve_environment(EnvironmentInput::new(project_root)))
-            .expect("send FIFO resolution result");
-    });
-
-    let result = receiver
-        .recv_timeout(Duration::from_secs(5))
-        .expect("resolving a FIFO project file must not block");
-    resolver.join().expect("FIFO resolver thread must exit");
-    let failure = result.expect_err("FIFO project file must be rejected");
+    configure_host_environment_at(fixture_root, &mut environment);
+    let failure = resolve_environment(EnvironmentInput::new(project_root))
+        .expect_err("FIFO project file must be rejected");
 
     assert_eq!(failure.code(), ConfigurationFailureCode::FileUnreadable);
     assert_eq!(
         failure.to_string(),
         "config.file_unreadable: configuration file cannot be read (source: project-configuration-file; next action: Check the configuration file and its permissions.)"
     );
-
-    fs::remove_file(&fifo_path).expect("remove FIFO fixture");
 }
