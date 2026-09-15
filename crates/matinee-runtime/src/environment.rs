@@ -143,7 +143,10 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
             AnchoredRead::Read(read) => {
                 project_config = Some(project_root.join(child.component()));
                 let entries = parse_configuration(&read.contents, source)?;
-                layers.push(ConfigurationLayer::project_file(child.component(), entries)?);
+                layers.push(ConfigurationLayer::project_file(
+                    child.component(),
+                    entries,
+                )?);
             }
             AnchoredRead::Missing => {}
         }
@@ -850,12 +853,30 @@ mod tests {
         // and a child that resolves to the same file outside the root all
         // arrive here as one of these closed outcomes.
         let cases = [
-            (AnchoredReadFailure::RootChanged, ConfigurationFailureCode::ProjectEscape),
-            (AnchoredReadFailure::Escaped, ConfigurationFailureCode::ProjectEscape),
-            (AnchoredReadFailure::NonRegular, ConfigurationFailureCode::FileUnreadable),
-            (AnchoredReadFailure::TooLarge, ConfigurationFailureCode::FileTooLarge),
-            (AnchoredReadFailure::Changed, ConfigurationFailureCode::FileChanged),
-            (AnchoredReadFailure::Unreadable, ConfigurationFailureCode::FileUnreadable),
+            (
+                AnchoredReadFailure::RootChanged,
+                ConfigurationFailureCode::ProjectEscape,
+            ),
+            (
+                AnchoredReadFailure::Escaped,
+                ConfigurationFailureCode::ProjectEscape,
+            ),
+            (
+                AnchoredReadFailure::NonRegular,
+                ConfigurationFailureCode::FileUnreadable,
+            ),
+            (
+                AnchoredReadFailure::TooLarge,
+                ConfigurationFailureCode::FileTooLarge,
+            ),
+            (
+                AnchoredReadFailure::Changed,
+                ConfigurationFailureCode::FileChanged,
+            ),
+            (
+                AnchoredReadFailure::Unreadable,
+                ConfigurationFailureCode::FileUnreadable,
+            ),
         ];
         for (rejection, code) in cases {
             let (platform, _) = project_fixture();

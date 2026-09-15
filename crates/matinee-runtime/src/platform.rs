@@ -21,9 +21,9 @@ use unicode_normalization::UnicodeNormalization as UnicodeNormalizationTrait;
 use std::os::windows::ffi::OsStringExt;
 
 #[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
+use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
-use std::os::fd::{FromRawFd, AsRawFd};
+use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(windows)]
@@ -698,8 +698,8 @@ impl Platform for HostPlatform {
         let root_metadata = root
             .metadata()
             .map_err(|_| AnchoredReadFailure::Unreadable)?;
-        let held_root_identity = file_identity(&root_metadata)
-            .ok_or(AnchoredReadFailure::Unreadable)?;
+        let held_root_identity =
+            file_identity(&root_metadata).ok_or(AnchoredReadFailure::Unreadable)?;
         if held_root_identity != request.root_identity {
             return Err(AnchoredReadFailure::RootChanged);
         }
@@ -726,8 +726,7 @@ impl Platform for HostPlatform {
             .metadata()
             .map_err(|_| AnchoredReadFailure::Unreadable)?;
         let snapshot = FileSnapshot {
-            identity: file_identity(&metadata)
-                .ok_or(AnchoredReadFailure::Unreadable)?,
+            identity: file_identity(&metadata).ok_or(AnchoredReadFailure::Unreadable)?,
             file_type: file_type(&metadata),
             byte_length: metadata.len(),
             modified_marker: modified_marker(&metadata),
@@ -738,11 +737,8 @@ impl Platform for HostPlatform {
         if snapshot.byte_length > request.byte_limit as u64 {
             return Err(AnchoredReadFailure::TooLarge);
         }
-        let mut contents = Vec::with_capacity(
-            snapshot
-                .byte_length
-                .min(request.byte_limit as u64 + 1) as usize,
-        );
+        let mut contents =
+            Vec::with_capacity(snapshot.byte_length.min(request.byte_limit as u64 + 1) as usize);
         (&child)
             .take(request.byte_limit as u64 + 1)
             .read_to_end(&mut contents)
@@ -754,8 +750,7 @@ impl Platform for HostPlatform {
             .metadata()
             .map_err(|_| AnchoredReadFailure::Unreadable)?;
         let post_snapshot = FileSnapshot {
-            identity: file_identity(&post_metadata)
-                .ok_or(AnchoredReadFailure::Unreadable)?,
+            identity: file_identity(&post_metadata).ok_or(AnchoredReadFailure::Unreadable)?,
             file_type: file_type(&post_metadata),
             byte_length: post_metadata.len(),
             modified_marker: modified_marker(&post_metadata),
@@ -768,7 +763,6 @@ impl Platform for HostPlatform {
             contents,
         }))
     }
-
 
     fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
         probe_case_behavior(anchor)
@@ -1104,7 +1098,10 @@ impl FixturePlatform {
     ) -> Self {
         let contents = contents.into();
         let snapshot = FileSnapshot::regular(identity, contents.len() as u64, modified_marker);
-        self.with_anchored_outcome(root, Ok(AnchoredRead::Read(FileRead { snapshot, contents })))
+        self.with_anchored_outcome(
+            root,
+            Ok(AnchoredRead::Read(FileRead { snapshot, contents })),
+        )
     }
 
     /// Scripts `root` as an anchored root whose child is absent.
@@ -1348,9 +1345,7 @@ fn no_follow_file_type(file: &fs::File, metadata: &fs::Metadata) -> FileType {
     match no_follow_reparse_tag(file, metadata) {
         Some(tag) if tag & WINDOWS_NAME_SURROGATE == 0 => file_type(metadata),
         Some(_) => FileType::Other,
-        None if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
-            FileType::Other
-        }
+        None if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => FileType::Other,
         None => file_type(metadata),
     }
 }
@@ -1433,8 +1428,7 @@ fn read_open_file(
     }
     let read_limit = byte_limit.saturating_add(1) as u64;
     let mut contents = Vec::with_capacity(snapshot.byte_length.min(read_limit) as usize);
-    file
-        .take(read_limit)
+    file.take(read_limit)
         .read_to_end(&mut contents)
         .map_err(|_| file_unreadable())?;
     if contents.len() > byte_limit {
@@ -1496,13 +1490,11 @@ fn read_anchored_child_windows(
     if file_type(&root_metadata) != FileType::Directory {
         return Err(AnchoredReadFailure::RootChanged);
     }
-    let root_identity =
-        file_identity_from_handle(&root).ok_or(AnchoredReadFailure::Unreadable)?;
+    let root_identity = file_identity_from_handle(&root).ok_or(AnchoredReadFailure::Unreadable)?;
     if root_identity != request.root_identity {
         return Err(AnchoredReadFailure::RootChanged);
     }
-    let final_root =
-        final_normalized_path(&root).ok_or(AnchoredReadFailure::Unreadable)?;
+    let final_root = final_normalized_path(&root).ok_or(AnchoredReadFailure::Unreadable)?;
 
     // Resolve the fixed child through the held root's normalized final path,
     // never through the mutable spelling supplied by the caller.
@@ -1532,11 +1524,8 @@ fn read_anchored_child_windows(
         return Err(AnchoredReadFailure::TooLarge);
     }
 
-    let final_path =
-        final_normalized_path(&child).ok_or(AnchoredReadFailure::Unreadable)?;
-    let parent_path = final_path
-        .parent()
-        .ok_or(AnchoredReadFailure::Unreadable)?;
+    let final_path = final_normalized_path(&child).ok_or(AnchoredReadFailure::Unreadable)?;
+    let parent_path = final_path.parent().ok_or(AnchoredReadFailure::Unreadable)?;
     let parent = match open_no_follow(parent_path, false) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

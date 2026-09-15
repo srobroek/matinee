@@ -86,6 +86,7 @@ name = "matinee-runtime"
 version = "0.0.2"
 dependencies = [
  "directories",
+ "libc",
  "serde",
  "toml",
  "unicode-normalization",
