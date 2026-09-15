@@ -355,15 +355,9 @@ mod tests {
         let state = Path::new(r"C:\Users\fixture\AppData\Local\Matinee\state");
         let state_identity = FileIdentity::full(7, 71);
         FixturePlatform::new(PlatformKind::Windows)
-            .with_snapshot(
-                project,
-                FileSnapshot::directory(project_identity, Some(1)),
-            )
+            .with_snapshot(project, FileSnapshot::directory(project_identity, Some(1)))
             .with_followed_file_identity(project, project_identity)
-            .with_snapshot(
-                state,
-                FileSnapshot::directory(state_identity, Some(1)),
-            )
+            .with_snapshot(state, FileSnapshot::directory(state_identity, Some(1)))
             .with_followed_file_identity(state, state_identity)
             .with_snapshot(
                 r"C:\fixture\project\user-state",
@@ -454,11 +448,9 @@ mod tests {
         );
         assert_eq!(environment.state(), Path::new(r"C:\fixture\project\command-line-state"));
 
-        let user_only = resolve_with_platform(
-            &platform,
-            EnvironmentInput::new(r"C:\fixture\project"),
-        )
-        .expect("Windows user configuration resolves");
+        let user_only =
+            resolve_with_platform(&platform, EnvironmentInput::new(r"C:\fixture\project"))
+                .expect("Windows user configuration resolves");
         let user_setting = user_only
             .get("state_dir")
             .expect("user state_dir is present");
@@ -481,11 +473,9 @@ mod tests {
             "MaTiNeE_StAtE_DiR",
             r"C:\fixture\project\environment-secret",
         );
-        let failure = resolve_with_platform(
-            &platform,
-            EnvironmentInput::new(r"C:\fixture\project"),
-        )
-        .expect_err("a mixed-case protected environment alias must be rejected");
+        let failure =
+            resolve_with_platform(&platform, EnvironmentInput::new(r"C:\fixture\project"))
+                .expect_err("a mixed-case protected environment alias must be rejected");
 
         assert_eq!(failure.code(), ConfigurationFailureCode::SourceForbidden);
         let rendered = format!("{failure:?} {failure}");
@@ -535,10 +525,8 @@ mod tests {
         );
 
         let environment_failure = resolve_with_platform(
-            &windows_fixture_platform().with_environment(
-                "MATINEE_STATE_DIR",
-                r"C:\fixture\project\environment-state",
-            ),
+            &windows_fixture_platform()
+                .with_environment("MATINEE_STATE_DIR", r"C:\fixture\project\environment-state"),
             EnvironmentInput::new(r"C:\fixture\project"),
         )
         .expect_err("environment state_dir must remain protected");
