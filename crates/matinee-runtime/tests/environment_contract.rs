@@ -11,6 +11,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use std::collections::HashSet;
 
+#[cfg(unix)]
+use std::ffi::CString;
+#[cfg(unix)]
+use std::time::Duration;
+
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -727,4 +732,45 @@ fn linked_implicit_project_file_is_rejected_before_file_read() {
         fs::read(&target).expect("linked target remains readable"),
         b"this is not valid TOML = ["
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_implicit_project_file_is_rejected_without_blocking() {
+    let fixture = TempFixture::new();
+    let fifo_path = fixture.project_root().join("matinee.toml");
+    let fifo_name = CString::new(fifo_path.as_os_str().as_encoded_bytes())
+        .expect("fixture FIFO path contains no NUL byte");
+    // SAFETY: `fifo_name` is a valid, NUL-terminated path and mkfifo only creates that path.
+    let status = unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) };
+    assert_eq!(
+        status,
+        0,
+        "create FIFO at {fifo_path:?}: {}",
+        std::io::Error::last_os_error()
+    );
+
+    let mut environment = EnvironmentGuard::acquire();
+    configure_host_environment(&fixture, &mut environment);
+    let project_root = fixture.project_root().to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let resolver = std::thread::spawn(move || {
+        sender
+            .send(resolve_environment(EnvironmentInput::new(project_root)))
+            .expect("send FIFO resolution result");
+    });
+
+    let result = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("resolving a FIFO project file must not block");
+    resolver.join().expect("FIFO resolver thread must exit");
+    let failure = result.expect_err("FIFO project file must be rejected");
+
+    assert_eq!(failure.code(), ConfigurationFailureCode::FileUnreadable);
+    assert_eq!(
+        failure.to_string(),
+        "config.file_unreadable: configuration file cannot be read (source: project-configuration-file; next action: Check the configuration file and its permissions.)"
+    );
+
+    fs::remove_file(&fifo_path).expect("remove FIFO fixture");
 }
