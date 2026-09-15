@@ -25,16 +25,12 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{
-    ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
-    GetLastError, HANDLE, WIN32_ERROR,
-};
+use windows_sys::Win32::Foundation::HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileAttributeTagInfo,
-    FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
-    GetVolumeInformationByHandleW,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileAttributeTagInfo, FileIdInfo,
+    GetFileInformationByHandleEx,
 };
 
 pub(crate) const MAX_FILE_BYTES: usize = 1_048_576;
@@ -215,26 +211,14 @@ fn append_component(base: &Path, kind: PlatformKind, component: &str) -> PathBuf
     }
 }
 
-/// Which host API produced an identity's numeric payload.
+/// Identity evidence for one file: the volume the host reports for it, paired
+/// with its complete file id on that volume.
 ///
-/// A 64-bit legacy file index and a complete 128-bit file id are not
-/// interchangeable evidence: the narrow form can repeat where the wide form
-/// does not. Recording the scheme inside the identity makes that distinction
-/// part of equality and hashing instead of a caller's obligation.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum IdentityScheme {
-    /// The complete 128-bit file id reported for the volume.
-    Full128,
-    /// The 64-bit file index reported by the legacy handle information API.
-    Legacy64,
-}
-
-/// Identity evidence for one file, qualified by the scheme that produced it.
+/// Only a complete file id is identity evidence, so the pair compares and
+/// hashes directly. A narrower value that a volume can repeat never becomes an
+/// identity: the host seam declines to report one instead.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct FileIdentity {
-    /// Private so that every identity names its scheme through a constructor.
-    /// Two schemes never compare or hash as equal, even for equal payloads.
-    scheme: IdentityScheme,
     pub(crate) volume: u64,
     pub(crate) file: u128,
 }
@@ -242,21 +226,7 @@ pub(crate) struct FileIdentity {
 impl FileIdentity {
     /// Records identity evidence whose file component is a complete file id.
     pub(crate) const fn full(volume: u64, file: u128) -> Self {
-        Self {
-            scheme: IdentityScheme::Full128,
-            volume,
-            file,
-        }
-    }
-
-    /// Records identity evidence narrowed to a 64-bit file index. Only the
-    /// legacy Windows handle information API reports identity in this form.
-    const fn legacy(volume: u64, file: u64) -> Self {
-        Self {
-            scheme: IdentityScheme::Legacy64,
-            volume,
-            file: file as u128,
-        }
+        Self { volume, file }
     }
 }
 
@@ -968,146 +938,24 @@ fn file_identity_from_handle(file: &fs::File) -> Option<FileIdentity> {
             std::mem::size_of::<FILE_ID_INFO>() as u32,
         )
     };
-    if succeeded != 0 {
-        // FILE_ID_128 is opaque; this explicit representation preserves all bytes.
-        let identifier = u128::from_le_bytes(information.FileId.Identifier);
-        // A filesystem with no 128-bit identity to report answers successfully
-        // with an all-zero file id, which the FILE_ID_INFORMATION contract
-        // requires callers to ignore. The volume serial cannot rescue it: every
-        // file on such a volume reports the same zero id, so the tuple is not an
-        // identity whatever serial accompanies it. That routes to the same
-        // classifier as an unsupported request. No thread error describes a call
-        // that succeeded, so `GetLastError` is not read here; it would only
-        // report some older, unrelated failure.
-        if identifier != 0 {
-            return Some(FileIdentity::full(
-                information.VolumeSerialNumber,
-                identifier,
-            ));
-        }
-    } else {
-        // The thread error belongs to the call above, so it is read before any
-        // other host call can overwrite it.
-        let error = unsafe { GetLastError() };
-        if !file_id_info_unsupported(error) {
-            return None;
-        }
-    }
-
-    if !legacy_file_index_identifies(handle) {
+    if succeeded == 0 {
         return None;
     }
-
-    let mut legacy = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
-    let succeeded = unsafe { GetFileInformationByHandle(handle, &mut legacy) };
-    (succeeded != 0).then(|| {
-        FileIdentity::legacy(
-            legacy.dwVolumeSerialNumber as u64,
-            ((legacy.nFileIndexHigh as u64) << 32) | legacy.nFileIndexLow as u64,
-        )
-    })
-}
-
-/// Whether `error` reports that the host cannot answer `FileIdInfo` at all.
-///
-/// Only these four errors describe an unsupported or unrecognised request. A
-/// permission, transient, or unknown failure says nothing about the volume's
-/// identity scheme, so it must not license the narrower legacy query.
-#[cfg(windows)]
-const fn file_id_info_unsupported(error: WIN32_ERROR) -> bool {
-    matches!(
-        error,
-        ERROR_INVALID_FUNCTION
-            | ERROR_NOT_SUPPORTED
-            | ERROR_INVALID_PARAMETER
-            | ERROR_INVALID_LEVEL
-    )
-}
-
-/// Whether the volume behind `handle` numbers its files inside 64 bits.
-///
-/// The name is read from the same live handle that identity is read from, so
-/// classification can never describe a different file than the one being
-/// identified. Only a name the host actually reports, and that names a
-/// filesystem known to number its files in 64 bits, licenses the legacy query.
-/// A volume query that fails for any reason refuses, because an unclassified
-/// backing filesystem is not evidence of a narrow index, and declining
-/// identity evidence is correct where guessing its width is not.
-#[cfg(windows)]
-fn legacy_file_index_identifies(handle: HANDLE) -> bool {
-    // A filesystem name is bounded by MAX_PATH characters plus its terminator.
-    let mut name = [0u16; 261];
-    let succeeded = unsafe {
-        GetVolumeInformationByHandleW(
-            handle,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            name.as_mut_ptr(),
-            name.len() as u32,
-        )
-    };
-    if succeeded != 0 {
-        return filesystem_index_identifies(&name);
+    // FILE_ID_128 is opaque; this explicit representation preserves all bytes.
+    let identifier = u128::from_le_bytes(information.FileId.Identifier);
+    // A filesystem with no 128-bit identity to report answers successfully with
+    // an all-zero file id, which the FILE_ID_INFORMATION contract requires
+    // callers to ignore. The volume serial cannot rescue it: every file on such
+    // a volume reports the same zero id, so the tuple is not an identity
+    // whatever serial accompanies it. Declining is correct where feeding a
+    // repeatable value into an exact comparison is not.
+    if identifier == 0 {
+        return None;
     }
-    // A failed volume query leaves the backing filesystem unclassified, whatever
-    // the reason, so there is nothing to license the narrower legacy index.
-    false
-}
-
-/// Whether the filesystem named by `name` numbers its files inside 64 bits.
-///
-/// The answer is an allowlist rather than a ReFS exclusion. An unrecognised
-/// name is not evidence of a narrow index: it is a filesystem this code has
-/// never reasoned about, and treating it as narrow would be the guess the
-/// caller must avoid. `name` is the host's null-terminated buffer; an empty or
-/// unterminated answer is malformed and refuses.
-#[cfg(windows)]
-fn filesystem_index_identifies(name: &[u16]) -> bool {
-    /// Filesystem names whose file identity needs more than 64 bits. Checked
-    /// ahead of the allowlist so a wide filesystem can never become eligible by
-    /// a later careless addition below.
-    const WIDE_IDENTITY_FILESYSTEMS: [&str; 1] = ["ReFS"];
-    /// Filesystem names whose legacy 64-bit file index is the whole identity.
-    /// NTFS numbers files in 64 bits; the FAT family and the read-only disc
-    /// filesystems derive an index no wider than that. A share reports the
-    /// remote filesystem's own name, so these stay usable across SMB.
-    const NARROW_IDENTITY_FILESYSTEMS: [&str; 8] = [
-        "NTFS", "FAT", "FAT12", "FAT16", "FAT32", "exFAT", "CDFS", "UDF",
-    ];
-
-    let Some(length) = name.iter().position(|unit| *unit == 0) else {
-        return false;
-    };
-    let filesystem = &name[..length];
-    if filesystem.is_empty() {
-        return false;
-    }
-    if WIDE_IDENTITY_FILESYSTEMS
-        .iter()
-        .any(|known| wide_eq_ignore_ascii_case(filesystem, known))
-    {
-        return false;
-    }
-    NARROW_IDENTITY_FILESYSTEMS
-        .iter()
-        .any(|known| wide_eq_ignore_ascii_case(filesystem, known))
-}
-
-/// Whether the UTF-16 `wide` names the same text as the ASCII `ascii`,
-/// ignoring case.
-///
-/// Filesystem names are compared without building a `String`, so classification
-/// stays allocation-free. Every name compared against is ASCII, so one unit
-/// answers one byte and a non-ASCII unit simply cannot match.
-#[cfg(windows)]
-fn wide_eq_ignore_ascii_case(wide: &[u16], ascii: &str) -> bool {
-    wide.len() == ascii.len()
-        && std::iter::zip(wide, ascii.as_bytes()).all(|(unit, byte)| {
-            u8::try_from(*unit).is_ok_and(|unit| unit.eq_ignore_ascii_case(byte))
-        })
+    Some(FileIdentity::full(
+        information.VolumeSerialNumber,
+        identifier,
+    ))
 }
 
 fn identity_from_open_file(file: &fs::File, metadata: &fs::Metadata) -> Option<FileIdentity> {
