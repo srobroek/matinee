@@ -1078,10 +1078,9 @@ fn filesystem_index_identifies(name: &[u16]) -> bool {
         "NTFS", "FAT", "FAT12", "FAT16", "FAT32", "exFAT", "CDFS", "UDF",
     ];
 
-    let length = name
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(name.len());
+    let Some(length) = name.iter().position(|unit| *unit == 0) else {
+        return false;
+    };
     let filesystem = &name[..length];
     if filesystem.is_empty() {
         return false;
