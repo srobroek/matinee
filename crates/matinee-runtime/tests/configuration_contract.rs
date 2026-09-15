@@ -632,3 +632,63 @@ fn pathological_exact_one_mib_toml_hits_preflight_before_size_gate() {
     assert!(rendered.contains("source: user-configuration-file"));
     assert!(!rendered.contains("config.file_too_large"));
 }
+
+fn pad_toml_to_file_limit(mut document: String) -> String {
+    const FILE_BYTE_LIMIT: usize = 1_048_576;
+    assert!(document.len() <= FILE_BYTE_LIMIT);
+    document.push_str(&"#".repeat(FILE_BYTE_LIMIT - document.len()));
+    assert_eq!(document.len(), FILE_BYTE_LIMIT);
+    document
+}
+
+#[test]
+fn pathological_one_mib_assignment_overflow_is_rejected_before_typed_deserialization() {
+    let mut document = String::new();
+    for index in 0..=100 {
+        writeln!(&mut document, "unknown_{index} = \"value\"")
+            .expect("writing to String cannot fail");
+    }
+    let fixture = TestFixture::new();
+    fixture.write_user_config(&pad_toml_to_file_limit(document));
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("the assignment limit must be enforced by lexical preflight");
+    assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+    assert!(!fixture.default_state().exists());
+}
+
+#[test]
+fn pathological_one_mib_dotted_depth_overflow_is_rejected_before_typed_deserialization() {
+    let document = pad_toml_to_file_limit("one.two.three.four.five = \"value\"\n".into());
+    let fixture = TestFixture::new();
+    fixture.write_user_config(&document);
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("the dotted-key depth limit must be enforced by lexical preflight");
+    assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+    assert!(!fixture.default_state().exists());
+}
+
+#[test]
+fn pathological_one_mib_duplicate_is_rejected_before_typed_deserialization() {
+    let document = pad_toml_to_file_limit("state_dir = \"first\"\nstate_dir = \"second\"\n".into());
+    let fixture = TestFixture::new();
+    fixture.write_user_config(&document);
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("duplicate keys must be rejected by lexical preflight");
+    assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    assert!(!fixture.default_state().exists());
+}
+
+#[test]
+fn pathological_one_mib_unicode_overflow_is_rejected_before_typed_deserialization() {
+    let document = pad_toml_to_file_limit(format!("unknown = \"{}\"\n", "😀".repeat(4_097)));
+    let fixture = TestFixture::new();
+    fixture.write_user_config(&document);
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("the Unicode scalar limit must be enforced by lexical preflight");
+    assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+    assert!(!fixture.default_state().exists());
+}
