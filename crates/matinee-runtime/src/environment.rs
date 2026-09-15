@@ -17,7 +17,8 @@ use crate::error::{
 };
 use crate::path_identity::{PathIdentity, absolute_lexical_normalize, resolve_path_identity};
 use crate::platform::{
-    FileIdentity, FileSnapshot, FileType, MAX_FILE_BYTES, MatineePaths, Platform,
+    AnchoredChild, AnchoredRead, AnchoredReadRequest, FileIdentity, FileType, MAX_FILE_BYTES,
+    MatineePaths, Platform,
 };
 use std::borrow::Borrow;
 use std::path::{Component, Path, PathBuf};
@@ -125,15 +126,26 @@ pub(crate) fn resolve_environment<'a, P: Platform>(
     let mut user_config = None;
     let mut project_config = None;
     if !explicit_config {
-        if let Some(contents) =
-            read_implicit_project_file(platform, &project_root, project_root_identity)?
+        let source = FailureSource::File(RedactedFileOrigin::ProjectConfiguration);
+        let child = AnchoredChild::ProjectConfiguration;
+        // The root and the identity captured for it above travel together into
+        // the read: a root retargeted after that capture is a different anchor,
+        // and this boundary never rediscovers either one.
+        match platform
+            .read_anchored_child(AnchoredReadRequest::new(
+                &project_root,
+                project_root_identity,
+                child,
+                MAX_FILE_BYTES,
+            ))
+            .map_err(|failure| failure.failure(source))?
         {
-            project_config = Some(project_root.join("matinee.toml"));
-            let entries = parse_configuration(
-                &contents,
-                FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
-            )?;
-            layers.push(ConfigurationLayer::project_file("matinee.toml", entries)?);
+            AnchoredRead::Read(read) => {
+                project_config = Some(project_root.join(child.component()));
+                let entries = parse_configuration(&read.contents, source)?;
+                layers.push(ConfigurationLayer::project_file(child.component(), entries)?);
+            }
+            AnchoredRead::Missing => {}
         }
     }
     if let Some(contents) = read_optional_file(
@@ -257,93 +269,6 @@ fn flatten_toml(
     Ok(())
 }
 
-/// Capture the selected project root once, then load its implicit configuration.
-///
-/// Callers that already captured the root identity must use
-/// [`read_implicit_project_file`] so a root retarget cannot be hidden by a second
-/// discovery during validation.
-pub(crate) fn load_implicit_project_file<P: Platform>(
-    platform: &P,
-    project_root: &Path,
-) -> EnvironmentResult<Option<Vec<u8>>> {
-    let root_identity = platform
-        .followed_file_identity(project_root)
-        .map_err(project_failure)?
-        .ok_or_else(project_path_unavailable)?;
-    read_implicit_project_file(platform, project_root, root_identity)
-}
-
-/// Validate and read an implicit project configuration using the identity
-/// captured when the resolution selected the project root.
-///
-/// The selected root identity is supplied by the resolution attempt, rather than
-/// rediscovered here. This keeps a root replacement between discovery and validation
-/// from making the containment check self-consistent around an attacker-controlled link.
-pub(crate) fn read_implicit_project_file<P: Platform>(
-    platform: &P,
-    project_root: &Path,
-    root_identity: FileIdentity,
-) -> EnvironmentResult<Option<Vec<u8>>> {
-    let Some(validated) = validate_implicit_project_file_at(platform, project_root, root_identity)?
-    else {
-        return Ok(None);
-    };
-    let read = platform
-        .read_file(&validated.path)
-        .map_err(project_failure)?;
-    if read.snapshot != validated.snapshot {
-        return Err(project_file_changed());
-    }
-    Ok(Some(read.contents))
-}
-
-struct ValidatedProjectFile {
-    path: PathBuf,
-    snapshot: FileSnapshot,
-}
-
-fn validate_implicit_project_file_at<P: Platform>(
-    platform: &P,
-    project_root: &Path,
-    root_identity: FileIdentity,
-) -> EnvironmentResult<Option<ValidatedProjectFile>> {
-    let project_root =
-        crate::path_identity::absolute_lexical_normalize(project_root, Path::new("."))
-            .map_err(|_| project_path_unavailable())?;
-    let project_file = project_root.join("matinee.toml");
-    if !lexically_within(&project_root, &project_file) {
-        return Err(project_escape());
-    }
-
-    let parent_identity = platform
-        .followed_file_identity(project_file.parent().unwrap_or(&project_root))
-        .map_err(project_failure)?
-        .ok_or_else(project_path_unavailable)?;
-    if parent_identity != root_identity {
-        return Err(project_escape());
-    }
-
-    let Some(snapshot) = platform
-        .file_snapshot(&project_file)
-        .map_err(project_failure)?
-    else {
-        return Ok(None);
-    };
-    if snapshot.file_type == FileType::Symlink {
-        return Err(project_escape());
-    }
-    if snapshot.file_type != FileType::Regular {
-        return Err(project_unreadable());
-    }
-    if snapshot.byte_length > MAX_FILE_BYTES as u64 {
-        return Err(project_file_too_large());
-    }
-    Ok(Some(ValidatedProjectFile {
-        path: project_file,
-        snapshot,
-    }))
-}
-
 fn project_failure(failure: ConfigurationFailure) -> ConfigurationFailure {
     ConfigurationFailure::new(
         failure.code(),
@@ -351,37 +276,9 @@ fn project_failure(failure: ConfigurationFailure) -> ConfigurationFailure {
     )
 }
 
-fn project_file_changed() -> ConfigurationFailure {
-    ConfigurationFailure::new(
-        ConfigurationFailureCode::FileChanged,
-        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
-    )
-}
-
-fn project_file_too_large() -> ConfigurationFailure {
-    ConfigurationFailure::new(
-        ConfigurationFailureCode::FileTooLarge,
-        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
-    )
-}
-
 fn project_path_unavailable() -> ConfigurationFailure {
     ConfigurationFailure::new(
         ConfigurationFailureCode::PathUnavailable,
-        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
-    )
-}
-
-fn project_escape() -> ConfigurationFailure {
-    ConfigurationFailure::new(
-        ConfigurationFailureCode::ProjectEscape,
-        FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
-    )
-}
-
-fn project_unreadable() -> ConfigurationFailure {
-    ConfigurationFailure::new(
-        ConfigurationFailureCode::FileUnreadable,
         FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
     )
 }
@@ -747,7 +644,9 @@ mod tests {
         AllowedSources, DescriptorDefault, KeyDescriptor, MaterialClass, ValueKind,
     };
     use crate::error::{ConfigurationFailure, ConfigurationFailureCode, FailureSource};
-    use crate::platform::{FileIdentity, FileRead, FileSnapshot, FixturePlatform, PlatformKind};
+    use crate::platform::{
+        AnchoredReadFailure, FileIdentity, FileRead, FileSnapshot, FixturePlatform, PlatformKind,
+    };
     use std::fmt::Write as _;
 
     fn test_registry(names: &[&str]) -> DescriptorRegistry {
@@ -865,90 +764,121 @@ mod tests {
     }
 
     #[test]
-    fn resolve_environment_rejects_oversized_captured_project_snapshot_before_read() {
-        let (platform, _) = project_fixture();
-        let snapshot = FileSnapshot::regular(
+    fn resolve_environment_loads_the_anchored_project_configuration() {
+        let (platform, root) = project_fixture();
+        let platform = platform.with_anchored_file(
+            "/fixture/project",
             FileIdentity::full(1, 11),
-            crate::platform::MAX_FILE_BYTES as u64 + 1,
+            b"setting = \"project\"\n",
             Some(2),
         );
-        let platform = platform
-            .with_snapshot("/fixture/project/matinee.toml", snapshot)
-            .with_read_results(
-                "/fixture/project/matinee.toml",
-                [Ok(FileRead {
-                    snapshot,
-                    contents: b"setting = \"project\"\n".to_vec(),
-                })],
-            );
-        let failure = resolve_environment(
-            &platform,
-            EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
-            &test_registry(&["setting", "state_dir"]),
-        )
-        .expect_err("an oversized captured project file must fail before read");
-        assert_eq!(failure.code(), ConfigurationFailureCode::FileTooLarge);
-        assert_eq!(
-            failure.source(),
-            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
-        );
-    }
-
-    #[test]
-    fn resolve_environment_accepts_exact_project_snapshot_limit() {
-        let (platform, _) = project_fixture();
-        let snapshot = FileSnapshot::regular(
-            FileIdentity::full(1, 11),
-            crate::platform::MAX_FILE_BYTES as u64,
-            Some(2),
-        );
-        let platform = platform
-            .with_snapshot("/fixture/project/matinee.toml", snapshot)
-            .with_read_results(
-                "/fixture/project/matinee.toml",
-                [Ok(FileRead {
-                    snapshot,
-                    contents: b"setting = \"project\"\n".to_vec(),
-                })],
-            );
         let registry = test_registry(&["setting", "state_dir"]);
         let resolved = resolve_environment(
             &platform,
             EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
             &registry,
         )
-        .expect("a project file at the exact byte limit must resolve");
+        .expect("an anchored project file resolves");
+
         assert_eq!(
             resolved.configuration().get("setting").unwrap().value(),
             &text("project")
         );
+        assert_eq!(
+            resolved.project_config(),
+            Some(Path::new("/fixture/project/matinee.toml"))
+        );
+        let reads = platform.anchored_reads();
+        assert_eq!(reads.len(), 1, "the project file is requested exactly once");
+        assert_eq!(reads[0].root, Path::new("/fixture/project"));
+        assert_eq!(reads[0].root_identity, root);
+        assert_eq!(reads[0].child, AnchoredChild::ProjectConfiguration);
+        assert_eq!(reads[0].byte_limit, MAX_FILE_BYTES);
     }
 
     #[test]
-    fn resolve_environment_rejects_project_modified_marker_change() {
+    fn resolve_environment_treats_an_absent_anchored_project_child_as_optional() {
         let (platform, _) = project_fixture();
-        let before = FileSnapshot::regular(FileIdentity::full(1, 11), 20, Some(2));
-        let after = FileSnapshot::regular(FileIdentity::full(1, 11), 20, Some(3));
-        let platform = platform
-            .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(before))])
-            .with_read_results(
-                "/fixture/project/matinee.toml",
-                [Ok(FileRead {
-                    snapshot: after,
-                    contents: b"setting = \"project\"\n".to_vec(),
-                })],
-            );
-        let failure = resolve_environment(
+        let registry = test_registry(&["setting", "state_dir"]);
+        let resolved = resolve_environment(
             &platform,
             EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
-            &test_registry(&["setting", "state_dir"]),
+            &registry,
         )
-        .expect_err("a project modified marker change must fail");
-        assert_eq!(failure.code(), ConfigurationFailureCode::FileChanged);
+        .expect("an absent project file is optional");
+
+        assert_eq!(resolved.project_config(), None);
+        assert_eq!(platform.anchored_reads().len(), 1);
         assert_eq!(
-            failure.source(),
-            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
+            platform.read_file_count(),
+            0,
+            "an absent child delivers no bytes"
         );
+    }
+
+    #[test]
+    fn resolve_environment_anchors_the_normalized_root_for_an_alias_of_the_project_root() {
+        let (platform, root) = project_fixture();
+        let platform = platform.with_anchored_file(
+            "/fixture/project",
+            FileIdentity::full(1, 11),
+            b"setting = \"project\"\n",
+            Some(2),
+        );
+        let registry = test_registry(&["setting", "state_dir"]);
+        let resolved = resolve_environment(
+            &platform,
+            EnvironmentInput::new("/fixture/project/./state/..").with_state_dir("/fixture/project"),
+            &registry,
+        )
+        .expect("an alias of the project root resolves the same anchor");
+
+        assert_eq!(
+            resolved.configuration().get("setting").unwrap().value(),
+            &text("project")
+        );
+        assert_eq!(resolved.project_root(), Path::new("/fixture/project"));
+        let reads = platform.anchored_reads();
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].root, Path::new("/fixture/project"));
+        assert_eq!(reads[0].root_identity, root);
+    }
+
+    #[test]
+    fn resolve_environment_maps_every_anchored_rejection_without_delivering_bytes() {
+        // The seam classifies the rejection: a retargeted root, a linked child,
+        // and a child that resolves to the same file outside the root all
+        // arrive here as one of these closed outcomes.
+        let cases = [
+            (AnchoredReadFailure::RootChanged, ConfigurationFailureCode::ProjectEscape),
+            (AnchoredReadFailure::Escaped, ConfigurationFailureCode::ProjectEscape),
+            (AnchoredReadFailure::NonRegular, ConfigurationFailureCode::FileUnreadable),
+            (AnchoredReadFailure::TooLarge, ConfigurationFailureCode::FileTooLarge),
+            (AnchoredReadFailure::Changed, ConfigurationFailureCode::FileChanged),
+            (AnchoredReadFailure::Unreadable, ConfigurationFailureCode::FileUnreadable),
+        ];
+        for (rejection, code) in cases {
+            let (platform, _) = project_fixture();
+            let platform = platform.with_anchored_failure("/fixture/project", rejection);
+            let failure = resolve_environment(
+                &platform,
+                EnvironmentInput::new("/fixture/project").with_state_dir("/fixture/project"),
+                &test_registry(&["setting", "state_dir"]),
+            )
+            .expect_err("a rejected anchor must fail the resolution");
+
+            assert_eq!(failure.code(), code, "code for {rejection:?}");
+            assert_eq!(
+                failure.source(),
+                FailureSource::File(RedactedFileOrigin::ProjectConfiguration),
+                "source for {rejection:?}"
+            );
+            assert_eq!(
+                platform.read_file_count(),
+                0,
+                "no bytes are delivered for {rejection:?}"
+            );
+        }
     }
 
     #[test]
@@ -965,11 +895,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_environment_explicit_config_skips_invalid_implicit_project_file() {
+    fn resolve_environment_explicit_config_skips_the_anchored_project_read() {
         let (platform, root) = project_fixture();
         let platform = platform
-            .with_file(
-                "/fixture/project/matinee.toml",
+            .with_anchored_file(
+                "/fixture/project",
                 FileIdentity::full(1, 31),
                 b"this is not valid TOML =\n",
                 Some(2),
@@ -995,12 +925,16 @@ mod tests {
                 .with_config_path("/fixture/linux/home/config.toml"),
             &registry,
         )
-        .expect("explicit config must suppress implicit project parsing");
+        .expect("explicit config must suppress the anchored project read");
         assert_eq!(
             resolved.configuration().get("setting").unwrap().value(),
             &text("explicit")
         );
         assert_eq!(resolved.project_root_identity, root);
+        assert!(
+            platform.anchored_reads().is_empty(),
+            "an explicit config must not read the project root at all"
+        );
     }
 
     #[test]
@@ -1104,8 +1038,8 @@ mod tests {
         let registry = test_registry(&["setting"]);
         let (platform, _) = project_fixture();
         let platform = platform
-            .with_file(
-                "/fixture/project/matinee.toml",
+            .with_anchored_file(
+                "/fixture/project",
                 FileIdentity::full(1, 11),
                 b"setting = \"project\"\n",
                 Some(2),
@@ -1141,8 +1075,8 @@ mod tests {
 
         let (platform, _) = project_fixture();
         let platform = platform
-            .with_file(
-                "/fixture/project/matinee.toml",
+            .with_anchored_file(
+                "/fixture/project",
                 FileIdentity::full(1, 21),
                 b"setting = \"project\"\n",
                 Some(2),
@@ -1169,8 +1103,8 @@ mod tests {
 
         let (platform, _) = project_fixture();
         let platform = platform
-            .with_file(
-                "/fixture/project/matinee.toml",
+            .with_anchored_file(
+                "/fixture/project",
                 FileIdentity::full(1, 31),
                 b"this is not valid TOML =\n",
                 Some(2),
@@ -1588,12 +1522,18 @@ mod tests {
         }
     }
 
+    /// A Linux fixture whose project root exists and holds no project file.
+    ///
+    /// The absent child is scripted rather than left unscripted: the fixture
+    /// refuses an unscripted anchored root, so every resolver test has to say
+    /// what the project root holds.
     fn project_fixture() -> (FixturePlatform, FileIdentity) {
         let root = FileIdentity::full(1, 10);
         (
             FixturePlatform::new(PlatformKind::Linux)
                 .with_snapshot("/fixture/project", FileSnapshot::directory(root, Some(1)))
-                .with_followed_file_identity("/fixture/project", root),
+                .with_followed_file_identity("/fixture/project", root)
+                .with_anchored_missing("/fixture/project"),
             root,
         )
     }
@@ -1621,165 +1561,9 @@ mod tests {
             FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
         );
         assert_eq!(platform.read_file_count(), 0);
-    }
-
-    #[test]
-    fn implicit_project_read_accepts_regular_file_after_validation() {
-        let (platform, root) = project_fixture();
-        let platform = platform.with_file(
-            "/fixture/project/matinee.toml",
-            FileIdentity::full(1, 11),
-            b"[project]\n",
-            Some(2),
+        assert!(
+            platform.anchored_reads().is_empty(),
+            "an unreadable project root is never anchored for a read"
         );
-        assert_eq!(
-            read_implicit_project_file(&platform, Path::new("/fixture/project"), root)
-                .expect("regular project file reads")
-                .as_deref(),
-            Some(&b"[project]\n"[..])
-        );
-    }
-
-    #[test]
-    fn implicit_project_read_allows_missing_file_but_rejects_link_and_nonregular() {
-        let (platform, root) = project_fixture();
-        assert_eq!(
-            read_implicit_project_file(&platform, Path::new("/fixture/project"), root)
-                .expect("missing project file is optional"),
-            None
-        );
-
-        let (platform, root) = project_fixture();
-        let symlink = platform.with_snapshot(
-            "/fixture/project/matinee.toml",
-            FileSnapshot::symlink(FileIdentity::full(1, 11), Some(2)),
-        );
-        assert_eq!(
-            read_implicit_project_file(&symlink, Path::new("/fixture/project"), root)
-                .expect_err("symlink project file is rejected")
-                .code(),
-            ConfigurationFailureCode::ProjectEscape
-        );
-
-        let (platform, root) = project_fixture();
-        let directory = platform.with_snapshot(
-            "/fixture/project/matinee.toml",
-            FileSnapshot::directory(FileIdentity::full(1, 11), Some(2)),
-        );
-        assert_eq!(
-            read_implicit_project_file(&directory, Path::new("/fixture/project"), root)
-                .expect_err("non-regular project file is rejected")
-                .code(),
-            ConfigurationFailureCode::FileUnreadable
-        );
-    }
-
-    #[test]
-    fn implicit_project_read_uses_selected_root_identity_after_retarget() {
-        let (platform, selected_root) = project_fixture();
-        let retargeted = platform
-            .with_followed_file_identity("/fixture/project", FileIdentity::full(1, 20))
-            .with_file(
-                "/fixture/project/matinee.toml",
-                FileIdentity::full(1, 11),
-                b"[project]\n",
-                Some(2),
-            );
-        assert_eq!(
-            read_implicit_project_file(&retargeted, Path::new("/fixture/project"), selected_root,)
-                .expect_err("root retarget must fail containment")
-                .code(),
-            ConfigurationFailureCode::ProjectEscape
-        );
-    }
-
-    #[test]
-    fn implicit_project_loader_captures_root_once() {
-        let (platform, _) = project_fixture();
-        let platform = platform.with_file(
-            "/fixture/project/matinee.toml",
-            FileIdentity::full(1, 11),
-            b"[project]\n",
-            Some(2),
-        );
-        assert!(load_implicit_project_file(&platform, Path::new("/fixture/project")).is_ok());
-    }
-
-    #[test]
-    fn implicit_project_read_rejects_escape_replacement_and_remaps_platform_failures() {
-        let platform = FixturePlatform::new(PlatformKind::Linux);
-        let failure = load_implicit_project_file(&platform, Path::new("/fixture/project"))
-            .expect_err("missing project root is unavailable");
-        assert_eq!(failure.code(), ConfigurationFailureCode::PathUnavailable);
-        assert_eq!(
-            failure.source(),
-            FailureSource::File(RedactedFileOrigin::ProjectConfiguration)
-        );
-
-        let (platform, root) = project_fixture();
-        let before = FileSnapshot::regular(FileIdentity::full(1, 11), 5, Some(2));
-        let after = FileSnapshot::regular(FileIdentity::full(1, 12), 5, Some(3));
-        let replaced = platform
-            .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(before))])
-            .with_read_results(
-                "/fixture/project/matinee.toml",
-                [Ok(FileRead {
-                    snapshot: after,
-                    contents: b"hello".to_vec(),
-                })],
-            );
-        assert_eq!(
-            read_implicit_project_file(&replaced, Path::new("/fixture/project"), root)
-                .expect_err("replacement during read is rejected")
-                .code(),
-            ConfigurationFailureCode::FileChanged
-        );
-    }
-
-    #[test]
-    fn implicit_project_escape_rejects_external_root_before_read() {
-        let (platform, selected_root) = project_fixture();
-        let file_snapshot = FileSnapshot::regular(FileIdentity::full(1, 11), 8, Some(2));
-        let escaped = platform
-            .with_followed_file_identity("/fixture/project", FileIdentity::full(1, 20))
-            .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(file_snapshot))])
-            .with_read_results(
-                "/fixture/project/matinee.toml",
-                [Ok(FileRead {
-                    snapshot: file_snapshot,
-                    contents: b"tempting".to_vec(),
-                })],
-            );
-
-        assert_eq!(
-            read_implicit_project_file(&escaped, Path::new("/fixture/project"), selected_root)
-                .expect_err("external root must fail containment")
-                .code(),
-            ConfigurationFailureCode::ProjectEscape
-        );
-        assert_eq!(escaped.read_file_count(), 0);
-    }
-
-    #[test]
-    fn implicit_project_symlink_rejects_before_read() {
-        let (platform, root) = project_fixture();
-        let symlink_snapshot = FileSnapshot::symlink(FileIdentity::full(1, 11), Some(2));
-        let symlink = platform
-            .with_snapshot("/fixture/project/matinee.toml", symlink_snapshot)
-            .with_read_results(
-                "/fixture/project/matinee.toml",
-                [Ok(FileRead {
-                    snapshot: symlink_snapshot,
-                    contents: b"tempting".to_vec(),
-                })],
-            );
-
-        assert_eq!(
-            read_implicit_project_file(&symlink, Path::new("/fixture/project"), root)
-                .expect_err("symlink project file must fail containment")
-                .code(),
-            ConfigurationFailureCode::ProjectEscape
-        );
-        assert_eq!(symlink.read_file_count(), 0);
     }
 }
