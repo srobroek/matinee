@@ -474,6 +474,59 @@ fn user_file_provenance_is_relative_and_redacted() {
     assert!(!debug.contains(home_text.as_ref()));
 }
 
+#[test]
+fn project_file_failure_origin_is_relative_and_redacted() {
+    let fixture = TestFixture::new();
+    let rejected_key = "credentials.api_token";
+    let raw_value = "project-secret-value";
+    let parser_excerpt = "parser excerpt: unexpected token";
+    let project_root = fixture.project_root();
+    fixture.write_project_config(&format!(
+        "{rejected_key} = \"{raw_value}\" # {parser_excerpt} {project_root:?}\n"
+    ));
+
+    let failure = resolve_environment(EnvironmentInput::new(project_root.clone()))
+        .expect_err("an unknown project key must reject the complete resolution");
+    assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+    let rendered = format!("{failure:?} {failure}");
+    assert!(rendered.contains("project-configuration-file"));
+    for sentinel in [
+        rejected_key,
+        raw_value,
+        parser_excerpt,
+        project_root.to_string_lossy().as_ref(),
+    ] {
+        assert!(!rendered.contains(sentinel), "sentinel leaked: {sentinel}");
+    }
+}
+
+#[test]
+fn user_file_failure_projection_redacts_path_value_and_parser_excerpt() {
+    let fixture = TestFixture::new();
+    let rejected_key = "credentials.api_token";
+    let raw_value = "user-secret-value";
+    let parser_excerpt = "parser excerpt: unexpected token";
+    let raw_path = fixture.root.join("private").join("config.toml");
+    fixture.write_user_config(&format!(
+        "{rejected_key} = \"{raw_value}\" # {parser_excerpt} {raw_path:?}\n"
+    ));
+
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("an unknown user key must reject the complete resolution");
+    assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
+    let rendered = format!("{failure:?} {failure}");
+    assert!(rendered.contains("user-configuration-file"));
+    for sentinel in [
+        rejected_key,
+        raw_value,
+        parser_excerpt,
+        raw_path.to_string_lossy().as_ref(),
+        fixture.root.to_string_lossy().as_ref(),
+    ] {
+        assert!(!rendered.contains(sentinel), "sentinel leaked: {sentinel}");
+    }
+}
+
 fn assert_user_config_failure(
     contents: &str,
     expected: ConfigurationFailureCode,
