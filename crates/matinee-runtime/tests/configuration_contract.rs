@@ -843,3 +843,88 @@ fn pathological_one_mib_structural_overflow_is_rejected_before_typed_deserializa
         LIMIT_NEXT_ACTION,
     );
 }
+
+#[test]
+fn reachable_failures_render_only_closed_static_projections() {
+    fn assert_rendered(
+        failure: matinee_runtime::ConfigurationFailure,
+        code: ConfigurationFailureCode,
+        source: &str,
+        forbidden: &[&str],
+    ) {
+        assert_eq!(failure.code(), code);
+        assert_eq!(
+            failure.to_string(),
+            format!(
+                "{}: {} (source: {source}; next action: {})",
+                code.as_str(),
+                failure.summary(),
+                failure.next_action()
+            )
+        );
+        let rendered = format!("{failure:?} {failure}");
+        for value in forbidden {
+            assert!(!rendered.contains(value), "failure projection leaked {value}");
+        }
+    }
+
+    let fixture = TestFixture::new();
+    fixture.write_user_config("state_dir = [");
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("malformed user configuration must fail");
+    assert_rendered(
+        failure,
+        ConfigurationFailureCode::SyntaxInvalid,
+        "user-configuration-file",
+        &["state_dir = [", fixture.root.to_string_lossy().as_ref()],
+    );
+    drop(fixture);
+
+
+    let fixture = TestFixture::new();
+    fixture.write_project_config("state_dir = \"forbidden\"\n");
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("project state_dir must be forbidden");
+    assert_rendered(
+        failure,
+        ConfigurationFailureCode::SourceForbidden,
+        "project-file",
+        &[fixture.root.to_string_lossy().as_ref()],
+    );
+    drop(fixture);
+
+    let fixture = TestFixture::new();
+    fixture.write_user_config("state_dir = true\n");
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("invalid state_dir must fail");
+    assert_rendered(
+        failure,
+        ConfigurationFailureCode::ValueInvalid,
+        "user-file",
+        &["true", fixture.root.to_string_lossy().as_ref()],
+    );
+    drop(fixture);
+
+    let fixture = TestFixture::new();
+    fixture.write_user_config("state_dir = \"first\"\nstate_dir = \"second\"\n");
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("duplicate state_dir must fail");
+    assert_rendered(
+        failure,
+        ConfigurationFailureCode::KeyDuplicate,
+        "user-configuration-file",
+        &["first", "second", fixture.root.to_string_lossy().as_ref()],
+    );
+    drop(fixture);
+
+    let fixture = TestFixture::new();
+    fixture.set_environment("MATINEE_UNREGISTERED", "secret-value");
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("unknown environment key must fail");
+    assert_rendered(
+        failure,
+        ConfigurationFailureCode::KeyUnknown,
+        "environment",
+        &["MATINEE_UNREGISTERED", "secret-value", fixture.root.to_string_lossy().as_ref()],
+    );
+}
