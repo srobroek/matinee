@@ -10,7 +10,7 @@ use crate::error::{
     ConfigurationFailure, ConfigurationFailureCode, FailureSource, LayerClass, RedactedFileOrigin,
 };
 use crate::platform::{CaseBehavior, Platform};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::Read;
@@ -88,6 +88,17 @@ pub(crate) const MAX_DOTTED_SEGMENTS: usize = 4;
 /// The maximum number of Unicode scalar values in one text value.
 #[allow(dead_code)]
 pub(crate) const MAX_TEXT_SCALARS: usize = 4_096;
+
+/// The maximum number of structural definitions retained by the lexical preflight.
+///
+/// Table headers and array-table headers are keys that the assignment limit does
+/// not count, so without this bound a 1 MiB document of distinct header paths
+/// could force the preflight to retain state proportional to its input rather
+/// than to a fixed structural budget. The bound is an order of magnitude above
+/// the accepted-key limit, so it cannot reject a document that the assignment
+/// limit accepts with a realistic table skeleton.
+#[allow(dead_code)]
+pub(crate) const MAX_STRUCTURAL_DEFINITIONS: usize = 1_024;
 
 const MAX_LEXICAL_NESTING: usize = 64;
 
@@ -806,29 +817,84 @@ enum KeyTerminator {
     InlineTable,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The structural forms a definition can take when it is first recorded.
+///
+/// An assignment becomes an inline table only after its value is entered, which
+/// [`TomlScanner::mark_inline_table`] records on the path itself.
 enum DefinitionKind {
     Assignment,
     Table,
     ArrayTable,
-    InlineTable,
 }
 
-struct StructuralDefinition {
-    path: Vec<String>,
-    scope: Option<usize>,
-    kind: DefinitionKind,
+/// The scopes that share one exact structural path.
+///
+/// A scope of `None` is document-global and overlaps every scope, so a set is
+/// exactly one global flag plus the array-table scopes seen for that path.
+#[derive(Default)]
+struct ScopeSet {
+    global: bool,
+    scoped: BTreeSet<usize>,
+}
+
+impl ScopeSet {
+    fn insert(&mut self, scope: Option<usize>) {
+        match scope {
+            None => self.global = true,
+            Some(scope) => {
+                self.scoped.insert(scope);
+            }
+        }
+    }
+
+    fn remove(&mut self, scope: Option<usize>) -> bool {
+        match scope {
+            None => std::mem::replace(&mut self.global, false),
+            Some(scope) => self.scoped.remove(&scope),
+        }
+    }
+
+    fn overlaps(&self, scope: Option<usize>) -> bool {
+        match scope {
+            None => self.global || !self.scoped.is_empty(),
+            Some(scope) => self.global || self.scoped.contains(&scope),
+        }
+    }
+}
+
+/// Every definition recorded at one exact path, indexed by the kinds that
+/// duplicate detection distinguishes.
+#[derive(Default)]
+struct PathRecord {
+    any: ScopeSet,
+    assignment: ScopeSet,
+    inline_table: ScopeSet,
+    array_table: ScopeSet,
+    /// Scopes of definitions recorded at a strictly longer path under this one.
+    descendant: ScopeSet,
+}
+
+/// One remembered array-table scope root.
+///
+/// `stamp` orders roots by the time they were last opened. A root is shadowed
+/// once any strict ancestor is opened later, which replaces the linear retain
+/// that the vector form performed on every header.
+struct ArrayScopeRoot {
+    scope: usize,
+    stamp: u64,
 }
 
 struct TomlScanner<'a> {
     input: &'a [u8],
     source: FailureSource,
     assignments: usize,
+    definitions: usize,
     table_prefix: Vec<String>,
     active_array_scope: Option<usize>,
-    latest_array_scopes: Vec<(Vec<String>, usize)>,
+    array_scope_roots: BTreeMap<Vec<String>, ArrayScopeRoot>,
     next_array_scope: usize,
-    definitions: Vec<StructuralDefinition>,
+    next_array_stamp: u64,
+    paths: BTreeMap<Vec<String>, PathRecord>,
 }
 
 impl<'a> TomlScanner<'a> {
@@ -837,11 +903,13 @@ impl<'a> TomlScanner<'a> {
             input,
             source,
             assignments: 0,
+            definitions: 0,
             table_prefix: Vec::new(),
             active_array_scope: None,
-            latest_array_scopes: Vec::new(),
+            array_scope_roots: BTreeMap::new(),
             next_array_scope: 0,
-            definitions: Vec::new(),
+            next_array_stamp: 0,
+            paths: BTreeMap::new(),
         }
     }
 
@@ -1269,17 +1337,22 @@ impl<'a> TomlScanner<'a> {
             DefinitionKind::Table
         };
         if array_table
-            && self.definitions.iter().any(|definition| {
-                definition.path == path
-                    && definition.kind == DefinitionKind::ArrayTable
-                    && Self::scopes_overlap(definition.scope, scope)
-            })
+            && self
+                .paths
+                .get(path)
+                .is_some_and(|record| record.array_table.overlaps(scope))
         {
             return Ok(());
         }
         self.register_definition(path.to_vec(), scope, kind, false)
     }
 
+    /// Records one structural definition, rejecting the TOML duplicates that a
+    /// path can collide with.
+    ///
+    /// A path has at most [`MAX_DOTTED_SEGMENTS`] segments, so both prefix
+    /// directions are decided by a fixed number of keyed lookups instead of a
+    /// scan over every definition seen so far.
     fn register_definition(
         &mut self,
         path: Vec<String>,
@@ -1287,70 +1360,86 @@ impl<'a> TomlScanner<'a> {
         kind: DefinitionKind,
         inside_inline: bool,
     ) -> Result<(), ConfigurationFailure> {
-        let duplicate = self.definitions.iter().any(|definition| {
-            if !Self::scopes_overlap(definition.scope, scope) {
-                return false;
-            }
-            if definition.path == path {
-                return true;
-            }
-            if definition.path.len() < path.len() && path.starts_with(&definition.path) {
-                return matches!(
-                    definition.kind,
-                    DefinitionKind::Assignment | DefinitionKind::InlineTable
-                ) && !(inside_inline && definition.kind == DefinitionKind::InlineTable);
-            }
-            if path.len() < definition.path.len() && definition.path.starts_with(&path) {
-                return true;
-            }
-            false
-        });
-        if duplicate {
+        if self.duplicates(&path, scope, inside_inline) {
             return Err(ConfigurationFailure::new(
                 ConfigurationFailureCode::KeyDuplicate,
                 self.source,
             ));
         }
-        self.definitions
-            .push(StructuralDefinition { path, scope, kind });
+        if self.definitions >= MAX_STRUCTURAL_DEFINITIONS {
+            return Err(self.limit_failure());
+        }
+        self.definitions += 1;
+        for ancestor in 1..path.len() {
+            self.paths
+                .entry(path[..ancestor].to_vec())
+                .or_default()
+                .descendant
+                .insert(scope);
+        }
+        let record = self.paths.entry(path).or_default();
+        record.any.insert(scope);
+        match kind {
+            DefinitionKind::Assignment => record.assignment.insert(scope),
+            DefinitionKind::ArrayTable => record.array_table.insert(scope),
+            DefinitionKind::Table => {}
+        }
         Ok(())
     }
 
-    fn mark_inline_table(&mut self, path: &[String], scope: Option<usize>) {
-        let matching = self.definitions.iter_mut().rev().find(|definition| {
-            definition.path == path
-                && definition.kind == DefinitionKind::Assignment
-                && Self::scopes_overlap(definition.scope, scope)
-        });
-        if let Some(definition) = matching {
-            definition.kind = DefinitionKind::InlineTable;
+    fn duplicates(&self, path: &[String], scope: Option<usize>, inside_inline: bool) -> bool {
+        if let Some(record) = self.paths.get(path) {
+            // An identical path in an overlapping scope always collides, and any
+            // longer path already recorded under it makes this path a redefinition.
+            if record.any.overlaps(scope) || record.descendant.overlaps(scope) {
+                return true;
+            }
         }
+        // A shorter recorded path only collides when it terminated in a value:
+        // an assignment, or an inline table entered from outside itself.
+        (1..path.len()).any(|ancestor| {
+            self.paths.get(&path[..ancestor]).is_some_and(|record| {
+                record.assignment.overlaps(scope)
+                    || (!inside_inline && record.inline_table.overlaps(scope))
+            })
+        })
     }
 
-    fn scopes_overlap(left: Option<usize>, right: Option<usize>) -> bool {
-        left.is_none() || right.is_none() || left == right
+    fn mark_inline_table(&mut self, path: &[String], scope: Option<usize>) {
+        let Some(record) = self.paths.get_mut(path) else {
+            return;
+        };
+        // Duplicate rejection keeps at most one assignment per path and
+        // overlapping scope, so the assignment being entered is the one this
+        // exact scope recorded.
+        if record.assignment.remove(scope) {
+            record.inline_table.insert(scope);
+        }
     }
 
     fn remember_array_scope(&mut self, path: &[String], scope: usize) {
-        self.latest_array_scopes
-            .retain(|(root, _)| root == path || !root.starts_with(path));
-        if let Some((_, latest_scope)) = self
-            .latest_array_scopes
-            .iter_mut()
-            .find(|(root, _)| root == path)
-        {
-            *latest_scope = scope;
-        } else {
-            self.latest_array_scopes.push((path.to_vec(), scope));
-        }
+        let stamp = self.next_array_stamp;
+        self.next_array_stamp += 1;
+        // Roots strictly under this one are shadowed by the newer stamp instead
+        // of being removed, which would require walking every remembered root.
+        self.array_scope_roots
+            .insert(path.to_vec(), ArrayScopeRoot { scope, stamp });
     }
 
     fn array_scope_for_path(&self, path: &[String]) -> Option<usize> {
-        self.latest_array_scopes
-            .iter()
-            .filter(|(root, _)| path.starts_with(root))
-            .max_by_key(|(root, _)| root.len())
-            .map(|(_, scope)| *scope)
+        (1..=path.len()).rev().find_map(|length| {
+            let candidate = &path[..length];
+            let root = self.array_scope_roots.get(candidate)?;
+            self.root_is_live(candidate, root).then_some(root.scope)
+        })
+    }
+
+    fn root_is_live(&self, path: &[String], root: &ArrayScopeRoot) -> bool {
+        !(1..path.len()).any(|ancestor| {
+            self.array_scope_roots
+                .get(&path[..ancestor])
+                .is_some_and(|outer| outer.stamp > root.stamp)
+        })
     }
 
     fn limit_failure(&self) -> ConfigurationFailure {
@@ -1434,6 +1523,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fmt::Write as _;
     use std::io::{self, Cursor, Read};
+    use std::time::{Duration, Instant};
     fn descriptor(name: impl Into<String>) -> KeyDescriptor {
         KeyDescriptor::new(
             name,
@@ -1976,6 +2066,117 @@ mod tests {
         let failure = toml_lexical_preflight(b"first.value = 1\nfirst = { value = 2 }\n", source)
             .expect_err("a dotted key and inline table cannot collide");
         assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
+    }
+
+    /// Builds a document of `count` distinct headers wrapped in `open`/`close`.
+    fn distinct_header_document(open: &str, close: &str, count: usize) -> Vec<u8> {
+        let mut document = String::new();
+        for index in 0..count {
+            let _ = writeln!(&mut document, "{open}path{index}{close}");
+        }
+        document.into_bytes()
+    }
+
+    /// Repeats `unit` until one more line would exceed the file limit, then pads
+    /// the remainder with comment bytes so the document is exactly 1 MiB.
+    fn pathological_document(unit: impl Fn(usize) -> String) -> Vec<u8> {
+        let mut document = String::with_capacity(MAX_FILE_BYTES);
+        let mut index = 0;
+        loop {
+            let line = unit(index);
+            if document.len() + line.len() > MAX_FILE_BYTES {
+                break;
+            }
+            document.push_str(&line);
+            index += 1;
+        }
+        document.push_str(&"#".repeat(MAX_FILE_BYTES - document.len()));
+        assert_eq!(document.len(), MAX_FILE_BYTES);
+        document.into_bytes()
+    }
+
+    #[test]
+    fn lexical_preflight_enforces_exact_structural_definition_limit() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let exact = distinct_header_document("[", "]", MAX_STRUCTURAL_DEFINITIONS);
+        assert_eq!(toml_lexical_preflight(&exact, source), Ok(()));
+
+        let one_over = distinct_header_document("[", "]", MAX_STRUCTURAL_DEFINITIONS + 1);
+        let failure = toml_lexical_preflight(&one_over, source)
+            .expect_err("the table header after the structural limit is rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+    }
+
+    #[test]
+    fn lexical_preflight_counts_array_tables_against_the_structural_limit() {
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let exact = distinct_header_document("[[", "]]", MAX_STRUCTURAL_DEFINITIONS);
+        assert_eq!(toml_lexical_preflight(&exact, source), Ok(()));
+
+        let one_over = distinct_header_document("[[", "]]", MAX_STRUCTURAL_DEFINITIONS + 1);
+        let failure = toml_lexical_preflight(&one_over, source)
+            .expect_err("the array-table header after the structural limit is rejected");
+        assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
+    }
+
+    #[test]
+    fn lexical_preflight_reopens_one_array_table_without_retaining_state() {
+        // Re-opened array-table elements are one definition, so a 1 MiB document
+        // of them stays inside the structural bound and is accepted.
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let document = pathological_document(|_| "[[items]]\n".to_string());
+        assert_eq!(toml_lexical_preflight(&document, source), Ok(()));
+    }
+
+    #[test]
+    fn lexical_preflight_bounds_pathological_structural_documents() {
+        // Definition bookkeeping is keyed lookups over a fixed structural budget,
+        // so hostile header paths cost input bytes rather than a scan for every
+        // definition already seen. A superlinear scan over 1 MiB of distinct
+        // paths does not finish inside this bound.
+        let source = FailureSource::Layer(LayerClass::UserFile);
+        let cases: [(&str, Vec<u8>, Option<ConfigurationFailureCode>); 5] = [
+            (
+                "distinct tables",
+                pathological_document(|index| format!("[t{index}]\n")),
+                Some(ConfigurationFailureCode::LimitExceeded),
+            ),
+            (
+                "distinct array tables",
+                pathological_document(|index| format!("[[a{index}]]\n")),
+                Some(ConfigurationFailureCode::LimitExceeded),
+            ),
+            (
+                "distinct deep dotted tables",
+                pathological_document(|index| format!("[a.b.c.d{index}]\n")),
+                Some(ConfigurationFailureCode::LimitExceeded),
+            ),
+            (
+                "distinct array tables with nested children",
+                pathological_document(|index| format!("[[a{index}]]\n[[a{index}.child]]\n")),
+                Some(ConfigurationFailureCode::LimitExceeded),
+            ),
+            (
+                "one re-opened array table",
+                pathological_document(|_| "[[items]]\n".to_string()),
+                None,
+            ),
+        ];
+        for (name, document, expected) in cases {
+            assert_eq!(document.len(), MAX_FILE_BYTES, "{name} is not 1 MiB");
+            let started = Instant::now();
+            let outcome = toml_lexical_preflight(&document, source);
+            let elapsed = started.elapsed();
+            assert_eq!(
+                outcome.err().map(|failure| failure.code()),
+                expected,
+                "{name}"
+            );
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "{name} took {elapsed:?}, which indicates superlinear structural work"
+            );
+        }
     }
     #[test]
     fn environment_names_map_after_platform_normalization() {

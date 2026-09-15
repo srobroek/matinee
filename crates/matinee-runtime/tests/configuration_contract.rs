@@ -632,63 +632,214 @@ fn pathological_exact_one_mib_toml_hits_preflight_before_size_gate() {
     assert!(rendered.contains("source: user-configuration-file"));
     assert!(!rendered.contains("config.file_too_large"));
 }
+const FILE_BYTE_LIMIT: usize = 1_048_576;
 
+/// Assignment-, header-, and dotted-key-shaped text that the preflight must read
+/// as string content instead of syntax.
+const ASSIGNMENT_SHAPED_TEXT: &str =
+    "state_dir = 'decoy' [decoy.table] decoy.a.b.c = 1 unknown_decoy = 2";
+
+/// A line the lexical preflight passes over and typed TOML parsing rejects.
+const TYPED_PARSE_POISON: &str = "this line carries no assignment\n";
+
+/// The value of the one accepted assignment, ending in assignment-shaped text.
+fn seam_state_value(fixture: &TestFixture) -> String {
+    format!(
+        "{}/{ASSIGNMENT_SHAPED_TEXT}",
+        fixture.state_value("seam-observable").to_string_lossy()
+    )
+}
+
+/// Builds the document whose only syntax is one accepted assignment. Every other
+/// assignment-, header-, and dotted-key-shaped token is string or comment
+/// content, so a preflight that read either as syntax would reject this document
+/// for a duplicate, an unknown key, or a limit it never actually exceeded.
+fn assignment_shaped_control(fixture: &TestFixture) -> String {
+    format!(
+        "# state_dir = \"comment-decoy\"\n\
+         # [comment.decoy]\n\
+         # unknown_comment_decoy = 1\n\
+         state_dir = \"{}\" # state_dir = \"trailing-decoy\"\n",
+        seam_state_value(fixture)
+    )
+}
+
+/// Pads to exactly 1 MiB with assignment-shaped comment lines, so the padding is
+/// itself a control against comment content being read as syntax.
 fn pad_toml_to_file_limit(mut document: String) -> String {
-    const FILE_BYTE_LIMIT: usize = 1_048_576;
+    const PADDING: &str = "# state_dir = \"padding-decoy\"\n";
     assert!(document.len() <= FILE_BYTE_LIMIT);
+    while document.len() + PADDING.len() <= FILE_BYTE_LIMIT {
+        document.push_str(PADDING);
+    }
     document.push_str(&"#".repeat(FILE_BYTE_LIMIT - document.len()));
     assert_eq!(document.len(), FILE_BYTE_LIMIT);
     document
 }
 
+/// Asserts the complete public failure projection and that no part of the
+/// rejected document can be reconstructed from it.
+fn assert_closed_failure_projection(
+    failure: matinee_runtime::ConfigurationFailure,
+    expected: ConfigurationFailureCode,
+    expected_summary: &str,
+    expected_next_action: &str,
+    offense: &str,
+    fixture: &TestFixture,
+) {
+    assert_eq!(failure.code(), expected);
+    assert_eq!(failure.summary(), expected_summary);
+    assert_eq!(failure.next_action(), expected_next_action);
+    assert_eq!(
+        failure.to_string(),
+        format!(
+            "{}: {expected_summary} (source: user-configuration-file; \
+             next action: {expected_next_action})",
+            expected.as_str()
+        )
+    );
+
+    let rendered = format!("{failure:?} {failure}");
+    let seam = seam_state_value(fixture);
+    let root = fixture.root.to_string_lossy().into_owned();
+    for sentinel in [
+        ASSIGNMENT_SHAPED_TEXT,
+        seam.as_str(),
+        root.as_str(),
+        "decoy",
+        "state_dir",
+        TYPED_PARSE_POISON.trim(),
+    ] {
+        assert!(!rendered.contains(sentinel), "sentinel leaked: {sentinel}");
+    }
+    for line in offense
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        assert!(!rendered.contains(line), "offense text leaked: {line}");
+    }
+}
+
+/// Proves one preflight rejection is observable, non-vacuous, and ordered before
+/// typed deserialization and merge.
+///
+/// The control document establishes that the surrounding string and comment
+/// content is accepted and that its assignment reaches merge with an observable
+/// value. The poisoned control establishes that typed deserialization is the only
+/// stage that can reject the poison line. The rejected document carries the
+/// offense and that same poison: observing the preflight code instead of
+/// `config.syntax_invalid` proves the document never reached the parser, and the
+/// absent resolution proves the control value it also carried never reached merge.
+fn assert_preflight_rejects_before_typed_deserialization(
+    offense: &str,
+    expected: ConfigurationFailureCode,
+    expected_summary: &str,
+    expected_next_action: &str,
+) {
+    {
+        let fixture = TestFixture::new();
+        fixture.write_user_config(&pad_toml_to_file_limit(assignment_shaped_control(&fixture)));
+        let environment = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+            .expect("the assignment-shaped control document resolves");
+        let setting = environment
+            .get("state_dir")
+            .expect("the control assignment reaches merge");
+        assert_eq!(setting.source(), ConfigurationSource::UserFile);
+        assert_eq!(setting.value(), seam_state_value(&fixture));
+        assert_eq!(environment.state(), Path::new(&seam_state_value(&fixture)));
+    }
+
+    {
+        let fixture = TestFixture::new();
+        fixture.write_user_config(&pad_toml_to_file_limit(format!(
+            "{}{TYPED_PARSE_POISON}",
+            assignment_shaped_control(&fixture)
+        )));
+        let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+            .expect_err("the poison line must fail typed TOML parsing");
+        assert_eq!(failure.code(), ConfigurationFailureCode::SyntaxInvalid);
+    }
+
+    let fixture = TestFixture::new();
+    fixture.write_user_config(&pad_toml_to_file_limit(format!(
+        "{}{offense}{TYPED_PARSE_POISON}",
+        assignment_shaped_control(&fixture)
+    )));
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("the lexical preflight must reject the document");
+    assert_closed_failure_projection(
+        failure,
+        expected,
+        expected_summary,
+        expected_next_action,
+        offense,
+        &fixture,
+    );
+    assert!(!fixture.default_state().exists());
+    assert!(!fixture.state_value("seam-observable").exists());
+}
+
+const LIMIT_SUMMARY: &str = "configuration limit exceeded";
+const LIMIT_NEXT_ACTION: &str = "Reduce the configuration to stay within its limits.";
+
 #[test]
 fn pathological_one_mib_assignment_overflow_is_rejected_before_typed_deserialization() {
-    let mut document = String::new();
+    let mut offense = String::new();
     for index in 0..=100 {
-        writeln!(&mut document, "unknown_{index} = \"value\"")
+        writeln!(&mut offense, "unknown_{index} = \"value\"")
             .expect("writing to String cannot fail");
     }
-    let fixture = TestFixture::new();
-    fixture.write_user_config(&pad_toml_to_file_limit(document));
-
-    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
-        .expect_err("the assignment limit must be enforced by lexical preflight");
-    assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
-    assert!(!fixture.default_state().exists());
+    assert_preflight_rejects_before_typed_deserialization(
+        &offense,
+        ConfigurationFailureCode::LimitExceeded,
+        LIMIT_SUMMARY,
+        LIMIT_NEXT_ACTION,
+    );
 }
 
 #[test]
 fn pathological_one_mib_dotted_depth_overflow_is_rejected_before_typed_deserialization() {
-    let document = pad_toml_to_file_limit("one.two.three.four.five = \"value\"\n".into());
-    let fixture = TestFixture::new();
-    fixture.write_user_config(&document);
-
-    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
-        .expect_err("the dotted-key depth limit must be enforced by lexical preflight");
-    assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
-    assert!(!fixture.default_state().exists());
+    assert_preflight_rejects_before_typed_deserialization(
+        "one.two.three.four.five = \"value\"\n",
+        ConfigurationFailureCode::LimitExceeded,
+        LIMIT_SUMMARY,
+        LIMIT_NEXT_ACTION,
+    );
 }
 
 #[test]
 fn pathological_one_mib_duplicate_is_rejected_before_typed_deserialization() {
-    let document = pad_toml_to_file_limit("state_dir = \"first\"\nstate_dir = \"second\"\n".into());
-    let fixture = TestFixture::new();
-    fixture.write_user_config(&document);
-
-    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
-        .expect_err("duplicate keys must be rejected by lexical preflight");
-    assert_eq!(failure.code(), ConfigurationFailureCode::KeyDuplicate);
-    assert!(!fixture.default_state().exists());
+    assert_preflight_rejects_before_typed_deserialization(
+        "state_dir = \"second\"\n",
+        ConfigurationFailureCode::KeyDuplicate,
+        "configuration key is duplicated",
+        "Remove duplicate configuration keys.",
+    );
 }
 
 #[test]
 fn pathological_one_mib_unicode_overflow_is_rejected_before_typed_deserialization() {
-    let document = pad_toml_to_file_limit(format!("unknown = \"{}\"\n", "😀".repeat(4_097)));
-    let fixture = TestFixture::new();
-    fixture.write_user_config(&document);
+    assert_preflight_rejects_before_typed_deserialization(
+        &format!("unknown = \"{}\"\n", "😀".repeat(4_097)),
+        ConfigurationFailureCode::LimitExceeded,
+        LIMIT_SUMMARY,
+        LIMIT_NEXT_ACTION,
+    );
+}
 
-    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
-        .expect_err("the Unicode scalar limit must be enforced by lexical preflight");
-    assert_eq!(failure.code(), ConfigurationFailureCode::LimitExceeded);
-    assert!(!fixture.default_state().exists());
+#[test]
+fn pathological_one_mib_structural_overflow_is_rejected_before_typed_deserialization() {
+    // Table headers are keys that the assignment limit never counts, so a
+    // document of distinct header paths is the hostile structural shape.
+    let mut offense = String::new();
+    for index in 0..=1_024 {
+        writeln!(&mut offense, "[table{index}]").expect("writing to String cannot fail");
+    }
+    assert_preflight_rejects_before_typed_deserialization(
+        &offense,
+        ConfigurationFailureCode::LimitExceeded,
+        LIMIT_SUMMARY,
+        LIMIT_NEXT_ACTION,
+    );
 }
