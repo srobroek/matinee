@@ -1,6 +1,6 @@
 use matinee_runtime::{
-    ConfigurationFailureCode, ConfigurationSource, EnvironmentInput, EnvironmentResult,
-    ResolvedEnvironment, resolve_environment,
+    resolve_environment, ConfigurationFailureCode, ConfigurationSource, EnvironmentInput,
+    EnvironmentResult, ResolvedEnvironment,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -109,6 +109,7 @@ impl EnvironmentGuard {
         self.set_os(OsStr::new(name), value.as_os_str());
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn set_value(&mut self, name: &str, value: &str) {
         self.set_os(OsStr::new(name), OsStr::new(value));
     }
