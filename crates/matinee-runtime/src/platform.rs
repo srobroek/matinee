@@ -33,8 +33,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-    FILE_REMOTE_PROTOCOL_INFO, FileAttributeTagInfo, FileIdInfo, FileRemoteProtocolInfo,
-    GetFileInformationByHandle, GetFileInformationByHandleEx, GetVolumeInformationByHandleW,
+    FileAttributeTagInfo, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    GetVolumeInformationByHandleW,
 };
 
 pub(crate) const MAX_FILE_BYTES: usize = 1_048_576;
@@ -1028,9 +1028,10 @@ const fn file_id_info_unsupported(error: WIN32_ERROR) -> bool {
 ///
 /// The name is read from the same live handle that identity is read from, so
 /// classification can never describe a different file than the one being
-/// identified. Where the host answers, the name decides. Where the host cannot
-/// answer the volume query at all, a remote transport can still be recognised
-/// from that same handle. Every other outcome refuses, because declining
+/// identified. Only a name the host actually reports, and that names a
+/// filesystem known to number its files in 64 bits, licenses the legacy query.
+/// A volume query that fails for any reason refuses, because an unclassified
+/// backing filesystem is not evidence of a narrow index, and declining
 /// identity evidence is correct where guessing its width is not.
 #[cfg(windows)]
 fn legacy_file_index_identifies(handle: HANDLE) -> bool {
@@ -1051,10 +1052,9 @@ fn legacy_file_index_identifies(handle: HANDLE) -> bool {
     if succeeded != 0 {
         return filesystem_index_identifies(&name);
     }
-    // The thread error belongs to the call above, so it is read before any
-    // other host call can overwrite it.
-    let error = unsafe { GetLastError() };
-    volume_information_unsupported(error) && remote_transport_index_identifies(handle)
+    // A failed volume query leaves the backing filesystem unclassified, whatever
+    // the reason, so there is nothing to license the narrower legacy index.
+    false
 }
 
 /// Whether the filesystem named by `name` numbers its files inside 64 bits.
@@ -1108,62 +1108,6 @@ fn wide_eq_ignore_ascii_case(wide: &[u16], ascii: &str) -> bool {
         && std::iter::zip(wide, ascii.as_bytes()).all(|(unit, byte)| {
             u8::try_from(*unit).is_ok_and(|unit| unit.eq_ignore_ascii_case(byte))
         })
-}
-
-/// Whether `error` reports that the volume cannot answer a volume information
-/// query at all.
-///
-/// SMB and other network redirectors do not implement the volume management
-/// functions and refuse them with one of these two codes. The set is narrower
-/// than the `FileIdInfo` one on purpose: a volume query carries no information
-/// class, so an invalid level or parameter would describe this code's own call
-/// rather than the volume. A permission, transient, or unknown failure likewise
-/// says nothing about the API's reach, and none of them may license the
-/// alternate classification.
-#[cfg(windows)]
-const fn volume_information_unsupported(error: WIN32_ERROR) -> bool {
-    matches!(error, ERROR_INVALID_FUNCTION | ERROR_NOT_SUPPORTED)
-}
-
-/// Whether `handle` reaches its file over a remote protocol that reports no
-/// identity wider than the legacy 64-bit index.
-///
-/// This runs only where the host answered neither the 128-bit file id nor the
-/// volume query, which is the shape of a network redirector rather than a local
-/// volume. Such a transport carries a 64-bit file index and nothing wider, so
-/// that index is the complete identity it is able to express; it stays tagged
-/// `Legacy64`, so it still never compares equal to a 128-bit id.
-///
-/// The classification is positive: the query must succeed on this same handle
-/// and describe a real protocol. The host reports the structure version and the
-/// byte count it filled, and a protocol is an assigned network provider number,
-/// never zero. A failed query, an answer too short to reach the protocol field,
-/// one claiming more bytes than the buffer given, or a zero protocol all mean
-/// the transport was not identified, and refuse.
-#[cfg(windows)]
-fn remote_transport_index_identifies(handle: HANDLE) -> bool {
-    /// Bytes of `FILE_REMOTE_PROTOCOL_INFO` up to and including `Protocol`,
-    /// which is the whole prefix this classification reads.
-    const PROTOCOL_PREFIX_BYTES: usize =
-        std::mem::offset_of!(FILE_REMOTE_PROTOCOL_INFO, Protocol) + std::mem::size_of::<u32>();
-
-    let mut protocol = unsafe { std::mem::zeroed::<FILE_REMOTE_PROTOCOL_INFO>() };
-    let succeeded = unsafe {
-        GetFileInformationByHandleEx(
-            handle,
-            FileRemoteProtocolInfo,
-            &mut protocol as *mut FILE_REMOTE_PROTOCOL_INFO as *mut _,
-            std::mem::size_of::<FILE_REMOTE_PROTOCOL_INFO>() as u32,
-        )
-    };
-    if succeeded == 0 {
-        return false;
-    }
-    let reported = usize::from(protocol.StructureSize);
-    protocol.StructureVersion != 0
-        && reported >= PROTOCOL_PREFIX_BYTES
-        && reported <= std::mem::size_of::<FILE_REMOTE_PROTOCOL_INFO>()
-        && protocol.Protocol != 0
 }
 
 fn identity_from_open_file(file: &fs::File, metadata: &fs::Metadata) -> Option<FileIdentity> {
