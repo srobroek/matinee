@@ -174,8 +174,8 @@ fn resolve_with_platform<P: platform::Platform>(
 mod tests {
     use super::*;
     use crate::platform::{
-        native_fixture_kind, native_fixture_path, FileIdentity, FileSnapshot, FixturePlatform,
-        Platform, PlatformKind,
+        FileIdentity, FileSnapshot, FixturePlatform, Platform, PlatformKind, native_fixture_kind,
+        native_fixture_path,
     };
     use std::path::PathBuf;
 
@@ -235,11 +235,13 @@ mod tests {
             ConfigurationSource::CommandLine
         );
         assert_eq!(setting.provenance().key(), Some("state_dir"));
-        assert!(!format!("{:?}", environment.lock_identity()).contains(
-            native_fixture_path(std::iter::empty::<&str>())
-                .to_str()
-                .expect("fixture root is UTF-8")
-        ));
+        assert!(
+            !format!("{:?}", environment.lock_identity()).contains(
+                native_fixture_path(std::iter::empty::<&str>())
+                    .to_str()
+                    .expect("fixture root is UTF-8")
+            )
+        );
     }
 
     #[test]
