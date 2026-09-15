@@ -1001,7 +1001,10 @@ fn file_identity_from_handle(file: &fs::File) -> Option<FileIdentity> {
 const fn file_id_info_unsupported(error: WIN32_ERROR) -> bool {
     matches!(
         error,
-        ERROR_INVALID_FUNCTION | ERROR_NOT_SUPPORTED | ERROR_INVALID_PARAMETER | ERROR_INVALID_LEVEL
+        ERROR_INVALID_FUNCTION
+            | ERROR_NOT_SUPPORTED
+            | ERROR_INVALID_PARAMETER
+            | ERROR_INVALID_LEVEL
     )
 }
 
@@ -1523,10 +1526,7 @@ mod tests {
             .file_snapshot(Path::new("/fixture/project/matine.toml"))
             .expect("fixture snapshot")
             .expect("fixture file is present");
-        assert_eq!(
-            snapshot.identity,
-            FileIdentity::full(7, 11)
-        );
+        assert_eq!(snapshot.identity, FileIdentity::full(7, 11));
         assert_eq!(snapshot.file_type, FileType::Regular);
         assert_eq!(snapshot.byte_length, 10);
         assert_eq!(snapshot.modified_marker, Some(42));
@@ -1544,12 +1544,7 @@ mod tests {
         let at_bound = vec![b'a'; 1_048_576];
         let over_bound = vec![b'b'; 1_048_577];
         let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_file(
-                "/fixture/bound",
-                FileIdentity::full(1, 1),
-                at_bound,
-                None,
-            )
+            .with_file("/fixture/bound", FileIdentity::full(1, 1), at_bound, None)
             .with_file(
                 "/fixture/over-bound",
                 FileIdentity::full(1, 2),

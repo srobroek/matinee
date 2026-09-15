@@ -183,10 +183,7 @@ mod tests {
             .with_followed_file_identity("/fixture/project", root)
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
-                FileSnapshot::directory(
-                    FileIdentity::full(1, 11),
-                    Some(1),
-                ),
+                FileSnapshot::directory(FileIdentity::full(1, 11), Some(1)),
             )
     }
 

@@ -844,15 +844,9 @@ mod tests {
             )
             .with_snapshot(
                 "/fixture/linux/home",
-                FileSnapshot::directory(
-                    FileIdentity::full(1, 12),
-                    Some(1),
-                ),
+                FileSnapshot::directory(FileIdentity::full(1, 12), Some(1)),
             )
-            .with_followed_file_identity(
-                "/fixture/linux/home",
-                FileIdentity::full(1, 12),
-            );
+            .with_followed_file_identity("/fixture/linux/home", FileIdentity::full(1, 12));
 
         let platform = PostReadChangedPlatform { inner: platform };
         let registry = test_registry(&["setting"]);
@@ -933,16 +927,8 @@ mod tests {
     #[test]
     fn resolve_environment_rejects_project_modified_marker_change() {
         let (platform, _) = project_fixture();
-        let before = FileSnapshot::regular(
-            FileIdentity::full(1, 11),
-            20,
-            Some(2),
-        );
-        let after = FileSnapshot::regular(
-            FileIdentity::full(1, 11),
-            20,
-            Some(3),
-        );
+        let before = FileSnapshot::regular(FileIdentity::full(1, 11), 20, Some(2));
+        let after = FileSnapshot::regular(FileIdentity::full(1, 11), 20, Some(3));
         let platform = platform
             .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(before))])
             .with_read_results(
@@ -996,10 +982,7 @@ mod tests {
             )
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
-                FileSnapshot::directory(
-                    FileIdentity::full(1, 32),
-                    Some(4),
-                ),
+                FileSnapshot::directory(FileIdentity::full(1, 32), Some(4)),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home/.local/state",
@@ -1135,10 +1118,7 @@ mod tests {
             )
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
-                FileSnapshot::directory(
-                    FileIdentity::full(1, 13),
-                    Some(4),
-                ),
+                FileSnapshot::directory(FileIdentity::full(1, 13), Some(4)),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home/.local/state",
@@ -1169,10 +1149,7 @@ mod tests {
             )
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
-                FileSnapshot::directory(
-                    FileIdentity::full(1, 22),
-                    Some(4),
-                ),
+                FileSnapshot::directory(FileIdentity::full(1, 22), Some(4)),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home/.local/state",
@@ -1206,10 +1183,7 @@ mod tests {
             )
             .with_snapshot(
                 "/fixture/linux/home/.local/state",
-                FileSnapshot::directory(
-                    FileIdentity::full(1, 32),
-                    Some(4),
-                ),
+                FileSnapshot::directory(FileIdentity::full(1, 32), Some(4)),
             )
             .with_followed_file_identity(
                 "/fixture/linux/home/.local/state",
@@ -1678,10 +1652,7 @@ mod tests {
         let (platform, root) = project_fixture();
         let symlink = platform.with_snapshot(
             "/fixture/project/matinee.toml",
-            FileSnapshot::symlink(
-                FileIdentity::full(1, 11),
-                Some(2),
-            ),
+            FileSnapshot::symlink(FileIdentity::full(1, 11), Some(2)),
         );
         assert_eq!(
             read_implicit_project_file(&symlink, Path::new("/fixture/project"), root)
@@ -1693,10 +1664,7 @@ mod tests {
         let (platform, root) = project_fixture();
         let directory = platform.with_snapshot(
             "/fixture/project/matinee.toml",
-            FileSnapshot::directory(
-                FileIdentity::full(1, 11),
-                Some(2),
-            ),
+            FileSnapshot::directory(FileIdentity::full(1, 11), Some(2)),
         );
         assert_eq!(
             read_implicit_project_file(&directory, Path::new("/fixture/project"), root)
@@ -1710,10 +1678,7 @@ mod tests {
     fn implicit_project_read_uses_selected_root_identity_after_retarget() {
         let (platform, selected_root) = project_fixture();
         let retargeted = platform
-            .with_followed_file_identity(
-                "/fixture/project",
-                FileIdentity::full(1, 20),
-            )
+            .with_followed_file_identity("/fixture/project", FileIdentity::full(1, 20))
             .with_file(
                 "/fixture/project/matinee.toml",
                 FileIdentity::full(1, 11),
@@ -1752,16 +1717,8 @@ mod tests {
         );
 
         let (platform, root) = project_fixture();
-        let before = FileSnapshot::regular(
-            FileIdentity::full(1, 11),
-            5,
-            Some(2),
-        );
-        let after = FileSnapshot::regular(
-            FileIdentity::full(1, 12),
-            5,
-            Some(3),
-        );
+        let before = FileSnapshot::regular(FileIdentity::full(1, 11), 5, Some(2));
+        let after = FileSnapshot::regular(FileIdentity::full(1, 12), 5, Some(3));
         let replaced = platform
             .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(before))])
             .with_read_results(
@@ -1782,16 +1739,9 @@ mod tests {
     #[test]
     fn implicit_project_escape_rejects_external_root_before_read() {
         let (platform, selected_root) = project_fixture();
-        let file_snapshot = FileSnapshot::regular(
-            FileIdentity::full(1, 11),
-            8,
-            Some(2),
-        );
+        let file_snapshot = FileSnapshot::regular(FileIdentity::full(1, 11), 8, Some(2));
         let escaped = platform
-            .with_followed_file_identity(
-                "/fixture/project",
-                FileIdentity::full(1, 20),
-            )
+            .with_followed_file_identity("/fixture/project", FileIdentity::full(1, 20))
             .with_snapshot_results("/fixture/project/matinee.toml", [Ok(Some(file_snapshot))])
             .with_read_results(
                 "/fixture/project/matinee.toml",
@@ -1813,10 +1763,7 @@ mod tests {
     #[test]
     fn implicit_project_symlink_rejects_before_read() {
         let (platform, root) = project_fixture();
-        let symlink_snapshot = FileSnapshot::symlink(
-            FileIdentity::full(1, 11),
-            Some(2),
-        );
+        let symlink_snapshot = FileSnapshot::symlink(FileIdentity::full(1, 11), Some(2));
         let symlink = platform
             .with_snapshot("/fixture/project/matinee.toml", symlink_snapshot)
             .with_read_results(
