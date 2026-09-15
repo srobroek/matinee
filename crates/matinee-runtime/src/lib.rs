@@ -185,6 +185,7 @@ mod tests {
                 "/fixture/linux/home/.local/state",
                 FileSnapshot::directory(FileIdentity::full(1, 11), Some(1)),
             )
+            .with_anchored_missing("/fixture/project")
     }
 
     #[test]
@@ -236,8 +237,8 @@ mod tests {
 
     #[test]
     fn configuration_paths_report_only_files_that_were_loaded() {
-        let with_project = fixture_platform().with_file(
-            "/fixture/project/matinee.toml",
+        let with_project = fixture_platform().with_anchored_file(
+            "/fixture/project",
             FileIdentity::full(1, 20),
             b"",
             Some(2),
@@ -375,6 +376,7 @@ mod tests {
                 r"C:\fixture\project\command-line-state",
                 FileIdentity::full(7, 74),
             )
+            .with_anchored_missing(project)
     }
 
     #[cfg(target_os = "windows")]
@@ -507,9 +509,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_fixture_rejects_protected_sources_and_malformed_user_value() {
-        let project_file = r"C:\fixture\project\matinee.toml";
-        let project_platform = windows_fixture_platform().with_file(
-            project_file,
+        let project_platform = windows_fixture_platform().with_anchored_file(
+            r"C:\fixture\project",
             FileIdentity::full(7, 75),
             b"state_dir = 'project-state'\n".to_vec(),
             Some(2),
