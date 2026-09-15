@@ -17,6 +17,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization as UnicodeNormalizationTrait;
 
+#[cfg(windows)]
+use std::os::windows::ffi::OsStringExt;
+
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
@@ -31,8 +34,8 @@ use windows_sys::Win32::Foundation::HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileAttributeTagInfo, FileIdInfo,
-    GetFileInformationByHandleEx,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_NAME_NORMALIZED, FileAttributeTagInfo,
+    FileIdInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
 };
 
 pub(crate) const MAX_FILE_BYTES: usize = 1_048_576;
@@ -612,44 +615,62 @@ impl Platform for HostPlatform {
     }
 
     fn read_file(&self, path: &Path) -> Result<FileRead, ConfigurationFailure> {
-        let file = fs::File::open(path).map_err(|_| file_unreadable())?;
-        let metadata = file.metadata().map_err(|_| file_unreadable())?;
-        let snapshot = FileSnapshot {
-            identity: identity_from_open_file(&file, &metadata).ok_or_else(file_unreadable)?,
-            file_type: file_type(&metadata),
-            byte_length: metadata.len(),
-            modified_marker: modified_marker(&metadata),
-        };
-        if snapshot.file_type != FileType::Regular {
-            return Err(file_unreadable());
+        #[cfg(windows)]
+        {
+            let file = fs::File::open(path).map_err(|_| file_unreadable())?;
+            let snapshot = snapshot_from_open_file(&file, false)?;
+            return read_open_file(&file, snapshot, MAX_FILE_BYTES, false);
         }
-        if snapshot.byte_length > MAX_FILE_BYTES as u64 {
-            return Err(file_too_large());
+
+        #[cfg(not(windows))]
+        {
+            let file = fs::File::open(path).map_err(|_| file_unreadable())?;
+            let metadata = file.metadata().map_err(|_| file_unreadable())?;
+            let snapshot = FileSnapshot {
+                identity: identity_from_open_file(&file, &metadata).ok_or_else(file_unreadable)?,
+                file_type: file_type(&metadata),
+                byte_length: metadata.len(),
+                modified_marker: modified_marker(&metadata),
+            };
+            if snapshot.file_type != FileType::Regular {
+                return Err(file_unreadable());
+            }
+            if snapshot.byte_length > MAX_FILE_BYTES as u64 {
+                return Err(file_too_large());
+            }
+            let mut contents =
+                Vec::with_capacity(snapshot.byte_length.min((MAX_FILE_BYTES + 1) as u64) as usize);
+            (&file)
+                .take((MAX_FILE_BYTES + 1) as u64)
+                .read_to_end(&mut contents)
+                .map_err(|_| file_unreadable())?;
+            if contents.len() > MAX_FILE_BYTES {
+                return Err(file_too_large());
+            }
+            let post_read_metadata = file.metadata().map_err(|_| file_unreadable())?;
+            let post_read_snapshot = FileSnapshot {
+                identity: identity_from_open_file(&file, &post_read_metadata)
+                    .ok_or_else(file_unreadable)?,
+                file_type: file_type(&post_read_metadata),
+                byte_length: post_read_metadata.len(),
+                modified_marker: modified_marker(&post_read_metadata),
+            };
+            if post_read_snapshot.file_type != FileType::Regular {
+                return Err(file_unreadable());
+            }
+            Ok(FileRead {
+                snapshot: post_read_snapshot,
+                contents,
+            })
         }
-        let mut contents =
-            Vec::with_capacity(snapshot.byte_length.min((MAX_FILE_BYTES + 1) as u64) as usize);
-        (&file)
-            .take((MAX_FILE_BYTES + 1) as u64)
-            .read_to_end(&mut contents)
-            .map_err(|_| file_unreadable())?;
-        if contents.len() > MAX_FILE_BYTES {
-            return Err(file_too_large());
-        }
-        let post_read_metadata = file.metadata().map_err(|_| file_unreadable())?;
-        let post_read_snapshot = FileSnapshot {
-            identity: identity_from_open_file(&file, &post_read_metadata)
-                .ok_or_else(file_unreadable)?,
-            file_type: file_type(&post_read_metadata),
-            byte_length: post_read_metadata.len(),
-            modified_marker: modified_marker(&post_read_metadata),
-        };
-        if post_read_snapshot.file_type != FileType::Regular {
-            return Err(file_unreadable());
-        }
-        Ok(FileRead {
-            snapshot: post_read_snapshot,
-            contents,
-        })
+    }
+
+    #[cfg(windows)]
+    fn read_anchored_child(
+        &self,
+        request: AnchoredReadRequest<'_>,
+    ) -> Result<AnchoredRead, AnchoredReadFailure> {
+        read_anchored_child_windows(request)
     }
     #[cfg(unix)]
     fn read_anchored_child(
@@ -1299,14 +1320,13 @@ fn modified_marker(metadata: &fs::Metadata) -> Option<u128> {
 }
 
 #[cfg(windows)]
-fn no_follow_file_type(file: &fs::File, metadata: &fs::Metadata) -> FileType {
-    if metadata.file_type().is_symlink() {
-        return FileType::Symlink;
-    }
-    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-        return file_type(metadata);
-    }
+const WINDOWS_NAME_SURROGATE: u32 = 0x2000_0000;
 
+#[cfg(windows)]
+fn no_follow_reparse_tag(file: &fs::File, metadata: &fs::Metadata) -> Option<u32> {
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return None;
+    }
     let mut tag_info = unsafe { std::mem::zeroed::<FILE_ATTRIBUTE_TAG_INFO>() };
     let succeeded = unsafe {
         GetFileInformationByHandleEx(
@@ -1316,11 +1336,228 @@ fn no_follow_file_type(file: &fs::File, metadata: &fs::Metadata) -> FileType {
             std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
         )
     };
-    if succeeded != 0 && tag_info.ReparseTag & 0x2000_0000 == 0 {
-        file_type(metadata)
-    } else {
-        FileType::Other
+    (succeeded != 0).then_some(tag_info.ReparseTag)
+}
+
+#[cfg(windows)]
+fn no_follow_file_type(file: &fs::File, metadata: &fs::Metadata) -> FileType {
+    if metadata.file_type().is_symlink() {
+        return FileType::Symlink;
     }
+    match no_follow_reparse_tag(file, metadata) {
+        Some(tag) if tag & WINDOWS_NAME_SURROGATE == 0 => file_type(metadata),
+        Some(_) => FileType::Other,
+        None if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+            FileType::Other
+        }
+        None => file_type(metadata),
+    }
+}
+
+#[cfg(windows)]
+fn no_follow_is_escape(file: &fs::File, metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+        || no_follow_reparse_tag(file, metadata)
+            .is_some_and(|tag| tag & WINDOWS_NAME_SURROGATE != 0)
+}
+
+#[cfg(windows)]
+fn open_no_follow(path: &Path, read: bool) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    if read {
+        options.read(true);
+    } else {
+        options.access_mode(0);
+    }
+    options.open(path)
+}
+
+#[cfg(windows)]
+fn snapshot_from_metadata(
+    file: &fs::File,
+    metadata: &fs::Metadata,
+    no_follow: bool,
+) -> Result<FileSnapshot, ConfigurationFailure> {
+    let file_type = if no_follow {
+        no_follow_file_type(file, metadata)
+    } else {
+        file_type(metadata)
+    };
+    Ok(FileSnapshot {
+        identity: identity_from_open_file(file, metadata).ok_or_else(file_unreadable)?,
+        file_type,
+        byte_length: if file_type == FileType::Symlink {
+            0
+        } else {
+            metadata.len()
+        },
+        modified_marker: modified_marker(metadata),
+    })
+}
+
+#[cfg(windows)]
+fn snapshot_from_open_file(
+    file: &fs::File,
+    no_follow: bool,
+) -> Result<FileSnapshot, ConfigurationFailure> {
+    let metadata = file.metadata().map_err(|_| file_unreadable())?;
+    snapshot_from_metadata(file, &metadata, no_follow)
+}
+
+#[cfg(windows)]
+fn read_open_file(
+    file: &fs::File,
+    snapshot: FileSnapshot,
+    byte_limit: usize,
+    no_follow: bool,
+) -> Result<FileRead, ConfigurationFailure> {
+    if snapshot.file_type != FileType::Regular {
+        return Err(file_unreadable());
+    }
+    if snapshot.byte_length > byte_limit as u64 {
+        return Err(file_too_large());
+    }
+    let read_limit = byte_limit.saturating_add(1) as u64;
+    let mut contents = Vec::with_capacity(snapshot.byte_length.min(read_limit) as usize);
+    file
+        .take(read_limit)
+        .read_to_end(&mut contents)
+        .map_err(|_| file_unreadable())?;
+    if contents.len() > byte_limit {
+        return Err(file_too_large());
+    }
+    let post_read_snapshot = snapshot_from_open_file(file, no_follow)?;
+    if post_read_snapshot.file_type != FileType::Regular {
+        return Err(file_unreadable());
+    }
+    Ok(FileRead {
+        snapshot: post_read_snapshot,
+        contents,
+    })
+}
+
+#[cfg(windows)]
+fn final_normalized_path(file: &fs::File) -> Option<PathBuf> {
+    const INITIAL_CAPACITY: usize = 512;
+    const MAX_CAPACITY: usize = 32_768;
+    let mut buffer = vec![0u16; INITIAL_CAPACITY];
+    loop {
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle() as HANDLE,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                FILE_NAME_NORMALIZED,
+            )
+        } as usize;
+        if length == 0 {
+            return None;
+        }
+        if length < buffer.len() {
+            buffer.truncate(length);
+            return Some(PathBuf::from(OsString::from_wide(&buffer)));
+        }
+        let required = length.checked_add(1)?;
+        if required > MAX_CAPACITY {
+            return None;
+        }
+        buffer.resize(required, 0);
+    }
+}
+
+#[cfg(windows)]
+fn read_anchored_child_windows(
+    request: AnchoredReadRequest<'_>,
+) -> Result<AnchoredRead, AnchoredReadFailure> {
+    let root = match open_no_follow(request.root, false) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AnchoredReadFailure::RootChanged);
+        }
+        Err(_) => return Err(AnchoredReadFailure::Unreadable),
+    };
+    let root_metadata = root
+        .metadata()
+        .map_err(|_| AnchoredReadFailure::Unreadable)?;
+    if no_follow_file_type(&root, &root_metadata) != FileType::Directory {
+        return Err(AnchoredReadFailure::RootChanged);
+    }
+    let root_identity =
+        file_identity_from_handle(&root).ok_or(AnchoredReadFailure::Unreadable)?;
+    if root_identity != request.root_identity {
+        return Err(AnchoredReadFailure::RootChanged);
+    }
+
+    // The child name is resolved from the requested path rather than through a
+    // native root-relative NT call. The held child handle's normalized final
+    // path and no-follow parent identity below close that namespace window
+    // before any bytes are read.
+    let child_path = request.root.join(request.child.component());
+    let child = match open_no_follow(&child_path, true) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AnchoredRead::Missing);
+        }
+        Err(_) => return Err(AnchoredReadFailure::Unreadable),
+    };
+    let child_metadata = child
+        .metadata()
+        .map_err(|_| AnchoredReadFailure::Unreadable)?;
+    if no_follow_is_escape(&child, &child_metadata) {
+        return Err(AnchoredReadFailure::Escaped);
+    }
+    let child_type = no_follow_file_type(&child, &child_metadata);
+    if child_type != FileType::Regular {
+        return Err(AnchoredReadFailure::NonRegular);
+    }
+    let snapshot = snapshot_from_metadata(&child, &child_metadata, true)
+        .map_err(|_| AnchoredReadFailure::Unreadable)?;
+    if snapshot.byte_length > request.byte_limit as u64 {
+        return Err(AnchoredReadFailure::TooLarge);
+    }
+
+    let final_path =
+        final_normalized_path(&child).ok_or(AnchoredReadFailure::Unreadable)?;
+    let parent_path = final_path
+        .parent()
+        .ok_or(AnchoredReadFailure::Unreadable)?;
+    let parent = match open_no_follow(parent_path, false) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AnchoredReadFailure::RootChanged);
+        }
+        Err(_) => return Err(AnchoredReadFailure::Unreadable),
+    };
+    let parent_metadata = parent
+        .metadata()
+        .map_err(|_| AnchoredReadFailure::Unreadable)?;
+    if no_follow_is_escape(&parent, &parent_metadata) {
+        return Err(AnchoredReadFailure::Escaped);
+    }
+    if no_follow_file_type(&parent, &parent_metadata) != FileType::Directory {
+        return Err(AnchoredReadFailure::RootChanged);
+    }
+    let parent_identity =
+        file_identity_from_handle(&parent).ok_or(AnchoredReadFailure::Unreadable)?;
+    if parent_identity != request.root_identity {
+        return Err(AnchoredReadFailure::RootChanged);
+    }
+
+    let read = read_open_file(&child, snapshot, request.byte_limit, true).map_err(|failure| {
+        if failure.code() == ConfigurationFailureCode::FileTooLarge {
+            AnchoredReadFailure::TooLarge
+        } else {
+            AnchoredReadFailure::Unreadable
+        }
+    })?;
+    if read.snapshot != snapshot {
+        return Err(AnchoredReadFailure::Changed);
+    }
+    if read.contents.len() > request.byte_limit {
+        return Err(AnchoredReadFailure::TooLarge);
+    }
+    Ok(AnchoredRead::Read(read))
 }
 
 #[cfg(not(windows))]
