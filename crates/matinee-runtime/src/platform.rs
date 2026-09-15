@@ -286,6 +286,110 @@ pub(crate) struct FileRead {
     pub(crate) contents: Vec<u8>,
 }
 
+/// The fixed relative child that an anchored read may name under a root.
+///
+/// The child is a closed set rather than a caller-supplied path, so an anchored
+/// read has no traversal surface to validate: it cannot be steered at an
+/// arbitrary location in the first place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AnchoredChild {
+    /// The implicit project configuration file directly inside a project root.
+    ProjectConfiguration,
+}
+
+impl AnchoredChild {
+    /// The single path component this child names inside the anchored root.
+    pub(crate) const fn component(self) -> &'static str {
+        match self {
+            Self::ProjectConfiguration => "matinee.toml",
+        }
+    }
+}
+
+/// One anchored read: the root the caller selected, the identity it captured
+/// for that root, the fixed child to read, and the most bytes it will accept.
+///
+/// The captured identity travels with the request because the caller, not the
+/// host seam, is the boundary that chose the root. A root retargeted after that
+/// choice is a different anchor, and the request carries the evidence to say so.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AnchoredReadRequest<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) root_identity: FileIdentity,
+    pub(crate) child: AnchoredChild,
+    pub(crate) byte_limit: usize,
+}
+
+impl<'a> AnchoredReadRequest<'a> {
+    pub(crate) const fn new(
+        root: &'a Path,
+        root_identity: FileIdentity,
+        child: AnchoredChild,
+        byte_limit: usize,
+    ) -> Self {
+        Self {
+            root,
+            root_identity,
+            child,
+            byte_limit,
+        }
+    }
+}
+
+/// What an anchored read produced when the anchor held.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AnchoredRead {
+    /// The child is absent inside the anchored root. No bytes were produced.
+    Missing,
+    /// The child was read whole within the requested bound, paired with the
+    /// identity evidence observed on the completed read.
+    Read(FileRead),
+}
+
+/// Why an anchored read produced no bytes.
+///
+/// Every rejection is one closed outcome mapped by [`AnchoredReadFailure::code`],
+/// so no anchored refusal can reach a caller as an untyped error, and none can
+/// reach it as a partial read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AnchoredReadFailure {
+    /// The root no longer presents the identity the caller captured: the anchor
+    /// the request named is not the anchor the host holds. A vanished root is
+    /// reported here rather than as an absent child.
+    RootChanged,
+    /// The child does not resolve inside the anchored root: it is a link, or it
+    /// resolves through one.
+    Escaped,
+    /// The child exists inside the root but is not a regular file.
+    NonRegular,
+    /// The child is longer than the bound the request carried.
+    TooLarge,
+    /// The child changed between validation and the completed read.
+    Changed,
+    /// The host refused the root or the child.
+    Unreadable,
+}
+
+impl AnchoredReadFailure {
+    /// The closed configuration code this rejection reports.
+    pub(crate) const fn code(self) -> ConfigurationFailureCode {
+        match self {
+            Self::RootChanged | Self::Escaped => ConfigurationFailureCode::ProjectEscape,
+            Self::NonRegular | Self::Unreadable => ConfigurationFailureCode::FileUnreadable,
+            Self::TooLarge => ConfigurationFailureCode::FileTooLarge,
+            Self::Changed => ConfigurationFailureCode::FileChanged,
+        }
+    }
+
+    /// Reports this rejection against the origin the calling layer owns.
+    ///
+    /// The seam classifies the rejection; it never names the configuration the
+    /// caller was loading.
+    pub(crate) fn failure(self, source: FailureSource) -> ConfigurationFailure {
+        ConfigurationFailure::new(self.code(), source)
+    }
+}
+
 pub(crate) trait Platform {
     fn kind(&self) -> PlatformKind;
     fn base_directories(&self) -> Result<BaseDirectories, ConfigurationFailure>;
@@ -307,6 +411,64 @@ pub(crate) trait Platform {
     /// Opens and reads one handle, returning the bytes and that handle's
     /// identity evidence together. The implementation enforces the bound.
     fn read_file(&self, path: &Path) -> Result<FileRead, ConfigurationFailure>;
+    /// Reads one fixed child of an anchored root, or reports why no bytes were
+    /// produced.
+    ///
+    /// The anchor is proven before anything is read and the bytes are proven
+    /// after: a rejected anchor yields no bytes at all, and a delivered read
+    /// never exceeds `request.byte_limit`.
+    ///
+    /// The default composes this operation from the seam's own snapshot and read
+    /// primitives, which is the portable behaviour every host supports. A host
+    /// able to anchor the child to an open root handle overrides it, and closes
+    /// the window between resolving the child's name and opening it.
+    fn read_anchored_child(
+        &self,
+        request: AnchoredReadRequest<'_>,
+    ) -> Result<AnchoredRead, AnchoredReadFailure> {
+        let root_identity = self
+            .followed_file_identity(request.root)
+            .map_err(|_| AnchoredReadFailure::Unreadable)?
+            .ok_or(AnchoredReadFailure::RootChanged)?;
+        if root_identity != request.root_identity {
+            return Err(AnchoredReadFailure::RootChanged);
+        }
+        let child = request.root.join(request.child.component());
+        let Some(snapshot) = self
+            .file_snapshot(&child)
+            .map_err(|_| AnchoredReadFailure::Unreadable)?
+        else {
+            return Ok(AnchoredRead::Missing);
+        };
+        match snapshot.file_type {
+            FileType::Regular => {}
+            // A linked child is a way out of the anchored root, not a file that
+            // happens to be unreadable.
+            FileType::Symlink => return Err(AnchoredReadFailure::Escaped),
+            FileType::Directory | FileType::Other => {
+                return Err(AnchoredReadFailure::NonRegular);
+            }
+        }
+        if snapshot.byte_length > request.byte_limit as u64 {
+            return Err(AnchoredReadFailure::TooLarge);
+        }
+        let read = self
+            .read_file(&child)
+            .map_err(|failure| match failure.code() {
+                ConfigurationFailureCode::FileTooLarge => AnchoredReadFailure::TooLarge,
+                _ => AnchoredReadFailure::Unreadable,
+            })?;
+        // The no-follow snapshot and the completed read must describe the same
+        // file id: a substitution during the read is a change, not a success.
+        if read.snapshot != snapshot {
+            return Err(AnchoredReadFailure::Changed);
+        }
+        if read.contents.len() > request.byte_limit {
+            return Err(AnchoredReadFailure::TooLarge);
+        }
+        Ok(AnchoredRead::Read(read))
+    }
+
     fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure>;
     fn unicode_normalization(
         &self,
@@ -514,6 +676,55 @@ struct FixtureEntry {
     read_fallback: Result<FileRead, ConfigurationFailure>,
 }
 
+/// The anchored-read outcomes scripted for one root.
+///
+/// The child is fixed, so a root is the whole key. The final outcome repeats,
+/// matching how the per-path snapshot and read queues behave.
+#[derive(Clone, Debug)]
+struct AnchoredScript {
+    outcomes: VecDeque<Result<AnchoredRead, AnchoredReadFailure>>,
+    fallback: Result<AnchoredRead, AnchoredReadFailure>,
+}
+
+impl AnchoredScript {
+    fn once(outcome: Result<AnchoredRead, AnchoredReadFailure>) -> Self {
+        Self {
+            outcomes: VecDeque::new(),
+            fallback: outcome,
+        }
+    }
+
+    fn scripted<I>(outcomes: I) -> Self
+    where
+        I: IntoIterator<Item = Result<AnchoredRead, AnchoredReadFailure>>,
+    {
+        let outcomes: Vec<_> = outcomes.into_iter().collect();
+        let fallback = outcomes
+            .last()
+            .cloned()
+            .unwrap_or(Err(AnchoredReadFailure::Unreadable));
+        Self {
+            outcomes: outcomes.into(),
+            fallback,
+        }
+    }
+
+    fn next_outcome(&mut self) -> Result<AnchoredRead, AnchoredReadFailure> {
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| self.fallback.clone())
+    }
+}
+
+/// One anchored read the fixture was asked for, exactly as the caller framed it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AnchoredReadObservation {
+    pub(crate) root: PathBuf,
+    pub(crate) root_identity: FileIdentity,
+    pub(crate) child: AnchoredChild,
+    pub(crate) byte_limit: usize,
+}
+
 impl FixtureEntry {
     fn empty() -> Self {
         Self {
@@ -573,6 +784,8 @@ pub(crate) struct FixturePlatform {
     anchor_policies: BTreeMap<PathBuf, AnchorPolicy>,
     case_behavior_error: Option<ConfigurationFailure>,
     unicode_normalization_error: Option<ConfigurationFailure>,
+    anchored_scripts: RefCell<BTreeMap<PathBuf, AnchoredScript>>,
+    anchored_requests: RefCell<Vec<AnchoredReadObservation>>,
 }
 
 impl FixturePlatform {
@@ -627,6 +840,8 @@ impl FixturePlatform {
             anchor_policies: BTreeMap::new(),
             case_behavior_error: None,
             unicode_normalization_error: None,
+            anchored_scripts: RefCell::new(BTreeMap::new()),
+            anchored_requests: RefCell::new(Vec::new()),
         }
     }
 
@@ -759,6 +974,64 @@ impl FixturePlatform {
         self
     }
 
+    /// Scripts anchored reads of `root` that deliver `contents` as the child.
+    pub(crate) fn with_anchored_file(
+        self,
+        root: impl Into<PathBuf>,
+        identity: FileIdentity,
+        contents: impl Into<Vec<u8>>,
+        modified_marker: Option<u128>,
+    ) -> Self {
+        let contents = contents.into();
+        let snapshot = FileSnapshot::regular(identity, contents.len() as u64, modified_marker);
+        self.with_anchored_outcome(root, Ok(AnchoredRead::Read(FileRead { snapshot, contents })))
+    }
+
+    /// Scripts `root` as an anchored root whose child is absent.
+    pub(crate) fn with_anchored_missing(self, root: impl Into<PathBuf>) -> Self {
+        self.with_anchored_outcome(root, Ok(AnchoredRead::Missing))
+    }
+
+    /// Scripts `root` to reject every anchored read with `failure`.
+    pub(crate) fn with_anchored_failure(
+        self,
+        root: impl Into<PathBuf>,
+        failure: AnchoredReadFailure,
+    ) -> Self {
+        self.with_anchored_outcome(root, Err(failure))
+    }
+
+    pub(crate) fn with_anchored_outcome(
+        self,
+        root: impl Into<PathBuf>,
+        outcome: Result<AnchoredRead, AnchoredReadFailure>,
+    ) -> Self {
+        self.anchored_scripts
+            .borrow_mut()
+            .insert(root.into(), AnchoredScript::once(outcome));
+        self
+    }
+
+    /// Scripts consecutive anchored reads of `root`; the last outcome repeats.
+    pub(crate) fn with_anchored_results<I>(self, root: impl Into<PathBuf>, results: I) -> Self
+    where
+        I: IntoIterator<Item = Result<AnchoredRead, AnchoredReadFailure>>,
+    {
+        self.anchored_scripts
+            .borrow_mut()
+            .insert(root.into(), AnchoredScript::scripted(results));
+        self
+    }
+
+    /// Every anchored read requested so far, in order.
+    ///
+    /// A caller that forgets to carry the root identity it captured, or that
+    /// widens the byte bound, is visible here rather than only in the outcome.
+    #[cfg(test)]
+    pub(crate) fn anchored_reads(&self) -> Vec<AnchoredReadObservation> {
+        self.anchored_requests.borrow().clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn read_file_count(&self) -> usize {
         self.read_file_count.get()
@@ -830,6 +1103,44 @@ impl Platform for FixturePlatform {
             return Err(file_too_large());
         }
         Ok(result)
+    }
+
+    /// Replays the scripted outcome for `request.root`, counting only a
+    /// delivered read.
+    ///
+    /// An unscripted root is refused rather than silently treated as empty, so
+    /// a fixture cannot pass a consumer by omission.
+    fn read_anchored_child(
+        &self,
+        request: AnchoredReadRequest<'_>,
+    ) -> Result<AnchoredRead, AnchoredReadFailure> {
+        self.anchored_requests
+            .borrow_mut()
+            .push(AnchoredReadObservation {
+                root: request.root.to_path_buf(),
+                root_identity: request.root_identity,
+                child: request.child,
+                byte_limit: request.byte_limit,
+            });
+        let outcome = self
+            .anchored_scripts
+            .borrow_mut()
+            .get_mut(request.root)
+            .map_or(Err(AnchoredReadFailure::Unreadable), |script| {
+                script.next_outcome()
+            })?;
+        let AnchoredRead::Read(read) = outcome else {
+            return Ok(AnchoredRead::Missing);
+        };
+        // A scripted payload never escapes the caller's bound: a fixture must
+        // not be able to make a consumer look tolerant of an over-long file.
+        if read.contents.len() > request.byte_limit {
+            return Err(AnchoredReadFailure::TooLarge);
+        }
+        // Only a delivery counts as a read, so `read_file_count` staying at
+        // zero is what proves a rejected anchor produced no bytes.
+        self.read_file_count.set(self.read_file_count.get() + 1);
+        Ok(AnchoredRead::Read(read))
     }
 
     fn case_behavior(&self, anchor: &Path) -> Result<CaseBehavior, ConfigurationFailure> {
