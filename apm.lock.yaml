@@ -1,0 +1,648 @@
+lockfile_version: '2'
+generated_at: '2026-09-11T11:25:13.549988+00:00'
+apm_version: 0.28.0
+dependencies:
+- repo_url: srobroek/speckit-conductor
+  name: speckit-conductor
+  host: github.com
+  resolved_commit: 1e544165a237a9bf588d5a135fd50498108cb11a
+  version: 6.0.3
+  package_type: apm_package
+  deployed_files:
+  - .agents/skills/speckit-bugfix
+  - .agents/skills/speckit-bugfix/SKILL.md
+  - .agents/skills/speckit-setup
+  - .agents/skills/speckit-setup/SKILL.md
+  - .agents/skills/speckit-setup/scripts/setup-speckit.sh
+  - .claude/agents/speckit-sync.md
+  - .claude/agents/speckit-verify.md
+  - .claude/hooks/speckit-conductor/scripts/speckit-dispatcher.py
+  - .claude/hooks/speckit-conductor/scripts/speckit-pr-title.py
+  - .claude/hooks/speckit-conductor/scripts/speckit-tasks-guard.py
+  - .claude/hooks/speckit-conductor/scripts/speckit_instructions.py
+  - .claude/rules/50-speckit-workflow.md
+  - .claude/skills/speckit-bugfix
+  - .claude/skills/speckit-bugfix/SKILL.md
+  - .claude/skills/speckit-setup
+  - .claude/skills/speckit-setup/SKILL.md
+  - .claude/skills/speckit-setup/scripts/setup-speckit.sh
+  - .codex/agents/speckit-sync.toml
+  - .codex/agents/speckit-verify.toml
+  - .codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py
+  - .codex/hooks/speckit-conductor/scripts/speckit-pr-title.py
+  - .codex/hooks/speckit-conductor/scripts/speckit-tasks-guard.py
+  - .codex/hooks/speckit-conductor/scripts/speckit_instructions.py
+  deployed_file_hashes:
+    .agents/skills/speckit-bugfix/SKILL.md: sha256:5481a31a034b2c86add33823e493487fc15eb4d4f23552e9ccc81ccf797349e8
+    .agents/skills/speckit-setup/SKILL.md: sha256:d0a1ff1722481fcedbcbd058de29af805edac1221ad91d63c61e33d259a52ffc
+    .agents/skills/speckit-setup/scripts/setup-speckit.sh: sha256:2b123f8a50eca9d7e7615e13ba3d799f0d8e9b18b85bde72337a24a4b58b354c
+    .claude/agents/speckit-sync.md: sha256:c9814adea46662225ab6adcf371017700bfa25548a27a5a54fed65e4ed914282
+    .claude/agents/speckit-verify.md: sha256:9d254878f85e6c9e2d9c1d493bdd84a69d02662ed5e72215a42882726d0c8961
+    .claude/hooks/speckit-conductor/scripts/speckit-dispatcher.py: sha256:ae462403964b0beee2a5a5c97c4448cebbce0a29553bc069db7c9495aa604c98
+    .claude/hooks/speckit-conductor/scripts/speckit-pr-title.py: sha256:66e580b4740a429b279c076189665a227d92d1d77bbf6ef4b98818d4771dcb1b
+    .claude/hooks/speckit-conductor/scripts/speckit-tasks-guard.py: sha256:4a2b2587cbcb58198b9f5053719c3ad89724b06d69edb7765a73883db69bd757
+    .claude/hooks/speckit-conductor/scripts/speckit_instructions.py: sha256:a1869422ef2afa6b80d91f8b7dd5de9f7b9a5ee9994a7a04192acb3b56f17c64
+    .claude/rules/50-speckit-workflow.md: sha256:da99eed1809fbff1af063a45eb7f2b621814693ffae30f33a4eb64cd6e3e437b
+    .claude/skills/speckit-bugfix/SKILL.md: sha256:5481a31a034b2c86add33823e493487fc15eb4d4f23552e9ccc81ccf797349e8
+    .claude/skills/speckit-setup/SKILL.md: sha256:d0a1ff1722481fcedbcbd058de29af805edac1221ad91d63c61e33d259a52ffc
+    .claude/skills/speckit-setup/scripts/setup-speckit.sh: sha256:2b123f8a50eca9d7e7615e13ba3d799f0d8e9b18b85bde72337a24a4b58b354c
+    .codex/agents/speckit-sync.toml: sha256:f3b130132b5617da39c7b1f972548b00f1f967c5a985bb24958ca8c1cfd3bad9
+    .codex/agents/speckit-verify.toml: sha256:0c926f2ac2bbb76467afffe8511e6ee01f2ee00d9451b2fd6dd85d89130b25e7
+    .codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py: sha256:ae462403964b0beee2a5a5c97c4448cebbce0a29553bc069db7c9495aa604c98
+    .codex/hooks/speckit-conductor/scripts/speckit-pr-title.py: sha256:66e580b4740a429b279c076189665a227d92d1d77bbf6ef4b98818d4771dcb1b
+    .codex/hooks/speckit-conductor/scripts/speckit-tasks-guard.py: sha256:4a2b2587cbcb58198b9f5053719c3ad89724b06d69edb7765a73883db69bd757
+    .codex/hooks/speckit-conductor/scripts/speckit_instructions.py: sha256:a1869422ef2afa6b80d91f8b7dd5de9f7b9a5ee9994a7a04192acb3b56f17c64
+  content_hash: sha256:106d16e686762294662407da314a106e2faa1bb26dafdab5a8b3d22b60082d8f
+  declared_license: Apache-2.0
+- repo_url: srobroek/agentic-packages
+  name: adr-as-beads
+  host: github.com
+  resolved_commit: c5ef14ecabb8be05d51e9bf4b648e12fd3da74c4
+  resolved_ref: adr-as-beads--v1.1.0
+  version: 1.1.0
+  virtual_path: packages/adr-as-beads
+  is_virtual: true
+  depth: 2
+  resolved_by: srobroek/speckit-conductor
+  package_type: marketplace_plugin
+  deployed_files:
+  - .agents/skills/adr
+  - .agents/skills/adr/SKILL.md
+  - .claude/hooks/adr-as-beads/scripts/adr-write-guard.py
+  - .claude/hooks/adr-as-beads/scripts/render_adrs.py
+  - .claude/rules/26-adr.md
+  - .claude/skills/adr
+  - .claude/skills/adr/SKILL.md
+  - .codex/hooks/adr-as-beads/scripts/adr-write-guard.py
+  - .codex/hooks/adr-as-beads/scripts/render_adrs.py
+  deployed_file_hashes:
+    .agents/skills/adr/SKILL.md: sha256:deceb2ff9078ef040424d7a4eb69dfe6b69227e772d6ce6ecabed377ba59413d
+    .claude/hooks/adr-as-beads/scripts/adr-write-guard.py: sha256:05d9cdc34d30e912cc3c4861e7d0398f6c3b61ecec4b54952a98a820e2174750
+    .claude/hooks/adr-as-beads/scripts/render_adrs.py: sha256:ada461160b3ce3bb820aee9974e43acf1530b91ff234e227165d4668f0a0449b
+    .claude/rules/26-adr.md: sha256:32313b21c90daa462edb91b2f5b6291fd23ba7b8b09188979ad64abb8593e0f4
+    .claude/skills/adr/SKILL.md: sha256:deceb2ff9078ef040424d7a4eb69dfe6b69227e772d6ce6ecabed377ba59413d
+    .codex/hooks/adr-as-beads/scripts/adr-write-guard.py: sha256:05d9cdc34d30e912cc3c4861e7d0398f6c3b61ecec4b54952a98a820e2174750
+    .codex/hooks/adr-as-beads/scripts/render_adrs.py: sha256:ada461160b3ce3bb820aee9974e43acf1530b91ff234e227165d4668f0a0449b
+  content_hash: sha256:e438911c00dd285614fa0cf3c9142919f484e71cb6e5b88e7b0660266d3db900
+  constraint: '>=1.0.0 <2.0.0'
+  resolved_tag: adr-as-beads--v1.1.0
+  resolved_at: '2026-09-11T11:25:02+00:00'
+  declared_license: Apache-2.0
+- repo_url: srobroek/agentic-packages
+  name: beads
+  host: github.com
+  resolved_commit: 3d63ee3b6cd064367b8598c38e96e2629ab7e34f
+  resolved_ref: beads--v1.0.0
+  version: 1.0.0
+  virtual_path: packages/beads
+  is_virtual: true
+  depth: 2
+  resolved_by: srobroek/speckit-conductor
+  package_type: marketplace_plugin
+  deployed_files:
+  - .agents/skills/build-formula
+  - .agents/skills/build-formula/SKILL.md
+  - .agents/skills/build-formula/formulas/build-formula.formula.toml
+  - .agents/skills/build-formula/references/authoring.md
+  - .agents/skills/build-formula/references/composition.md
+  - .agents/skills/build-formula/references/conditions.md
+  - .agents/skills/build-formula/references/gates.md
+  - .agents/skills/build-formula/references/verify.md
+  - .agents/skills/build-formula/scripts/assert-formula.py
+  - .claude/hooks/beads/scripts/beads-gh-issue-guard.py
+  - .claude/hooks/beads/scripts/beads-subagent-reminder.py
+  - .claude/rules/40-beads.md
+  - .claude/skills/build-formula
+  - .claude/skills/build-formula/SKILL.md
+  - .claude/skills/build-formula/formulas/build-formula.formula.toml
+  - .claude/skills/build-formula/references/authoring.md
+  - .claude/skills/build-formula/references/composition.md
+  - .claude/skills/build-formula/references/conditions.md
+  - .claude/skills/build-formula/references/gates.md
+  - .claude/skills/build-formula/references/verify.md
+  - .claude/skills/build-formula/scripts/assert-formula.py
+  - .codex/hooks/beads/scripts/beads-gh-issue-guard.py
+  - .codex/hooks/beads/scripts/beads-subagent-reminder.py
+  deployed_file_hashes:
+    .agents/skills/build-formula/SKILL.md: sha256:63d966c93b0627d22b502c72196483968e2920cab2610212cfd0811cec86accb
+    .agents/skills/build-formula/formulas/build-formula.formula.toml: sha256:7fa98c248e7ab9704910da1e6648109789ac46ebe350d8a6d32016bc45f3158a
+    .agents/skills/build-formula/references/authoring.md: sha256:434c8f5cbaa1b8f1c68265930f0e2baa9d03190d92f4f0998ff54cc455c88fd5
+    .agents/skills/build-formula/references/composition.md: sha256:367dcca7f9564075dc8f2cab2111cd8c53bcb78f7e54dbebe8f419f991525666
+    .agents/skills/build-formula/references/conditions.md: sha256:b8782302c9e328b0236a2c58e0f47de8af77bf400b3aa67006a8a00b9498939a
+    .agents/skills/build-formula/references/gates.md: sha256:aa673589ab101173e643f787b49676ff888b83e03a9affc6b85d15575f4fe0e3
+    .agents/skills/build-formula/references/verify.md: sha256:c55f32a8202cabe6cc0d2ec8128da40bd97388325dadd9f3e54637c399aedddc
+    .agents/skills/build-formula/scripts/assert-formula.py: sha256:eb53b441a7691ca0616477e5808914e9886384bfc516e1bd7f5f8f72695a480c
+    .claude/hooks/beads/scripts/beads-gh-issue-guard.py: sha256:d5955e86474e8bf6f5f762bd8cad795a59327ffe2577f9620845ca88e035ace7
+    .claude/hooks/beads/scripts/beads-subagent-reminder.py: sha256:eea01727c72e457d0fb41d4834da7d9395ef8f1758b023d066142b5cf8e2faca
+    .claude/rules/40-beads.md: sha256:6689cea392c6cef853fdfc05a0b2e4a69b500d04492e8cc5215f93aa9cbda595
+    .claude/skills/build-formula/SKILL.md: sha256:63d966c93b0627d22b502c72196483968e2920cab2610212cfd0811cec86accb
+    .claude/skills/build-formula/formulas/build-formula.formula.toml: sha256:7fa98c248e7ab9704910da1e6648109789ac46ebe350d8a6d32016bc45f3158a
+    .claude/skills/build-formula/references/authoring.md: sha256:434c8f5cbaa1b8f1c68265930f0e2baa9d03190d92f4f0998ff54cc455c88fd5
+    .claude/skills/build-formula/references/composition.md: sha256:367dcca7f9564075dc8f2cab2111cd8c53bcb78f7e54dbebe8f419f991525666
+    .claude/skills/build-formula/references/conditions.md: sha256:b8782302c9e328b0236a2c58e0f47de8af77bf400b3aa67006a8a00b9498939a
+    .claude/skills/build-formula/references/gates.md: sha256:aa673589ab101173e643f787b49676ff888b83e03a9affc6b85d15575f4fe0e3
+    .claude/skills/build-formula/references/verify.md: sha256:c55f32a8202cabe6cc0d2ec8128da40bd97388325dadd9f3e54637c399aedddc
+    .claude/skills/build-formula/scripts/assert-formula.py: sha256:eb53b441a7691ca0616477e5808914e9886384bfc516e1bd7f5f8f72695a480c
+    .codex/hooks/beads/scripts/beads-gh-issue-guard.py: sha256:d5955e86474e8bf6f5f762bd8cad795a59327ffe2577f9620845ca88e035ace7
+    .codex/hooks/beads/scripts/beads-subagent-reminder.py: sha256:eea01727c72e457d0fb41d4834da7d9395ef8f1758b023d066142b5cf8e2faca
+  content_hash: sha256:9cde64292f0849e54d3d3e343bfd8d0df34c7952fcecbfb562d66395d4f498e4
+  constraint: '>=1.0.0 <2.0.0'
+  resolved_tag: beads--v1.0.0
+  resolved_at: '2026-09-11T11:25:02+00:00'
+  declared_license: Apache-2.0
+deployments:
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/adr
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/adr/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: sha256:deceb2ff9078ef040424d7a4eb69dfe6b69227e772d6ce6ecabed377ba59413d
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:63d966c93b0627d22b502c72196483968e2920cab2610212cfd0811cec86accb
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula/formulas/build-formula.formula.toml
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:7fa98c248e7ab9704910da1e6648109789ac46ebe350d8a6d32016bc45f3158a
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula/references/authoring.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:434c8f5cbaa1b8f1c68265930f0e2baa9d03190d92f4f0998ff54cc455c88fd5
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula/references/composition.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:367dcca7f9564075dc8f2cab2111cd8c53bcb78f7e54dbebe8f419f991525666
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula/references/conditions.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:b8782302c9e328b0236a2c58e0f47de8af77bf400b3aa67006a8a00b9498939a
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula/references/gates.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:aa673589ab101173e643f787b49676ff888b83e03a9affc6b85d15575f4fe0e3
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula/references/verify.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:c55f32a8202cabe6cc0d2ec8128da40bd97388325dadd9f3e54637c399aedddc
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/build-formula/scripts/assert-formula.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:eb53b441a7691ca0616477e5808914e9886384bfc516e1bd7f5f8f72695a480c
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/speckit-bugfix
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/speckit-bugfix/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:5481a31a034b2c86add33823e493487fc15eb4d4f23552e9ccc81ccf797349e8
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/speckit-setup
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/speckit-setup/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:d0a1ff1722481fcedbcbd058de29af805edac1221ad91d63c61e33d259a52ffc
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/speckit-setup/scripts/setup-speckit.sh
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:2b123f8a50eca9d7e7615e13ba3d799f0d8e9b18b85bde72337a24a4b58b354c
+- kind: project-relative
+  target: claude
+  value: .claude/agents/speckit-sync.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:c9814adea46662225ab6adcf371017700bfa25548a27a5a54fed65e4ed914282
+- kind: project-relative
+  target: claude
+  value: .claude/agents/speckit-verify.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:9d254878f85e6c9e2d9c1d493bdd84a69d02662ed5e72215a42882726d0c8961
+- kind: project-relative
+  target: claude
+  value: .claude/hooks/adr-as-beads/scripts/adr-write-guard.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: sha256:05d9cdc34d30e912cc3c4861e7d0398f6c3b61ecec4b54952a98a820e2174750
+- kind: project-relative
+  target: claude
+  value: .claude/hooks/adr-as-beads/scripts/render_adrs.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: sha256:ada461160b3ce3bb820aee9974e43acf1530b91ff234e227165d4668f0a0449b
+- kind: project-relative
+  target: claude
+  value: .claude/hooks/beads/scripts/beads-gh-issue-guard.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:d5955e86474e8bf6f5f762bd8cad795a59327ffe2577f9620845ca88e035ace7
+- kind: project-relative
+  target: claude
+  value: .claude/hooks/beads/scripts/beads-subagent-reminder.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:eea01727c72e457d0fb41d4834da7d9395ef8f1758b023d066142b5cf8e2faca
+- kind: project-relative
+  target: claude
+  value: .claude/hooks/speckit-conductor/scripts/speckit-dispatcher.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:ae462403964b0beee2a5a5c97c4448cebbce0a29553bc069db7c9495aa604c98
+- kind: project-relative
+  target: claude
+  value: .claude/hooks/speckit-conductor/scripts/speckit-pr-title.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:66e580b4740a429b279c076189665a227d92d1d77bbf6ef4b98818d4771dcb1b
+- kind: project-relative
+  target: claude
+  value: .claude/hooks/speckit-conductor/scripts/speckit-tasks-guard.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:4a2b2587cbcb58198b9f5053719c3ad89724b06d69edb7765a73883db69bd757
+- kind: project-relative
+  target: claude
+  value: .claude/hooks/speckit-conductor/scripts/speckit_instructions.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:a1869422ef2afa6b80d91f8b7dd5de9f7b9a5ee9994a7a04192acb3b56f17c64
+- kind: project-relative
+  target: claude
+  value: .claude/rules/26-adr.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: sha256:32313b21c90daa462edb91b2f5b6291fd23ba7b8b09188979ad64abb8593e0f4
+- kind: project-relative
+  target: claude
+  value: .claude/rules/40-beads.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:6689cea392c6cef853fdfc05a0b2e4a69b500d04492e8cc5215f93aa9cbda595
+- kind: project-relative
+  target: claude
+  value: .claude/rules/50-speckit-workflow.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:da99eed1809fbff1af063a45eb7f2b621814693ffae30f33a4eb64cd6e3e437b
+- kind: project-relative
+  target: claude
+  value: .claude/skills/adr
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/adr/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: sha256:deceb2ff9078ef040424d7a4eb69dfe6b69227e772d6ce6ecabed377ba59413d
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:63d966c93b0627d22b502c72196483968e2920cab2610212cfd0811cec86accb
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula/formulas/build-formula.formula.toml
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:7fa98c248e7ab9704910da1e6648109789ac46ebe350d8a6d32016bc45f3158a
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula/references/authoring.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:434c8f5cbaa1b8f1c68265930f0e2baa9d03190d92f4f0998ff54cc455c88fd5
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula/references/composition.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:367dcca7f9564075dc8f2cab2111cd8c53bcb78f7e54dbebe8f419f991525666
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula/references/conditions.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:b8782302c9e328b0236a2c58e0f47de8af77bf400b3aa67006a8a00b9498939a
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula/references/gates.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:aa673589ab101173e643f787b49676ff888b83e03a9affc6b85d15575f4fe0e3
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula/references/verify.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:c55f32a8202cabe6cc0d2ec8128da40bd97388325dadd9f3e54637c399aedddc
+- kind: project-relative
+  target: claude
+  value: .claude/skills/build-formula/scripts/assert-formula.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:eb53b441a7691ca0616477e5808914e9886384bfc516e1bd7f5f8f72695a480c
+- kind: project-relative
+  target: claude
+  value: .claude/skills/speckit-bugfix
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/speckit-bugfix/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:5481a31a034b2c86add33823e493487fc15eb4d4f23552e9ccc81ccf797349e8
+- kind: project-relative
+  target: claude
+  value: .claude/skills/speckit-setup
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/speckit-setup/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:d0a1ff1722481fcedbcbd058de29af805edac1221ad91d63c61e33d259a52ffc
+- kind: project-relative
+  target: claude
+  value: .claude/skills/speckit-setup/scripts/setup-speckit.sh
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:2b123f8a50eca9d7e7615e13ba3d799f0d8e9b18b85bde72337a24a4b58b354c
+- kind: project-relative
+  target: codex
+  value: .codex/agents/speckit-sync.toml
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:f3b130132b5617da39c7b1f972548b00f1f967c5a985bb24958ca8c1cfd3bad9
+- kind: project-relative
+  target: codex
+  value: .codex/agents/speckit-verify.toml
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:0c926f2ac2bbb76467afffe8511e6ee01f2ee00d9451b2fd6dd85d89130b25e7
+- kind: project-relative
+  target: codex
+  value: .codex/hooks/adr-as-beads/scripts/adr-write-guard.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: sha256:05d9cdc34d30e912cc3c4861e7d0398f6c3b61ecec4b54952a98a820e2174750
+- kind: project-relative
+  target: codex
+  value: .codex/hooks/adr-as-beads/scripts/render_adrs.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/adr-as-beads
+  active_owner: srobroek/agentic-packages/packages/adr-as-beads
+  content_hash: sha256:ada461160b3ce3bb820aee9974e43acf1530b91ff234e227165d4668f0a0449b
+- kind: project-relative
+  target: codex
+  value: .codex/hooks/beads/scripts/beads-gh-issue-guard.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:d5955e86474e8bf6f5f762bd8cad795a59327ffe2577f9620845ca88e035ace7
+- kind: project-relative
+  target: codex
+  value: .codex/hooks/beads/scripts/beads-subagent-reminder.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/agentic-packages/packages/beads
+  active_owner: srobroek/agentic-packages/packages/beads
+  content_hash: sha256:eea01727c72e457d0fb41d4834da7d9395ef8f1758b023d066142b5cf8e2faca
+- kind: project-relative
+  target: codex
+  value: .codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:ae462403964b0beee2a5a5c97c4448cebbce0a29553bc069db7c9495aa604c98
+- kind: project-relative
+  target: codex
+  value: .codex/hooks/speckit-conductor/scripts/speckit-pr-title.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:66e580b4740a429b279c076189665a227d92d1d77bbf6ef4b98818d4771dcb1b
+- kind: project-relative
+  target: codex
+  value: .codex/hooks/speckit-conductor/scripts/speckit-tasks-guard.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:4a2b2587cbcb58198b9f5053719c3ad89724b06d69edb7765a73883db69bd757
+- kind: project-relative
+  target: codex
+  value: .codex/hooks/speckit-conductor/scripts/speckit_instructions.py
+  runtime: null
+  scope: project
+  owners:
+  - srobroek/speckit-conductor
+  active_owner: srobroek/speckit-conductor
+  content_hash: sha256:a1869422ef2afa6b80d91f8b7dd5de9f7b9a5ee9994a7a04192acb3b56f17c64

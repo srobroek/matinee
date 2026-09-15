@@ -1,0 +1,208 @@
+# Agent Assignments
+# Feature: 005-runtime-foundation
+# Generated: 2026-09-12
+# Command: /speckit.agent-assign.assign
+# User approval: assign all 47 implementation tasks to default.
+feature: "005-runtime-foundation"
+generated: "2026-09-12"
+task_source: "Beads"
+agents_scanned:
+  - name: "default"
+    source: "builtin"
+    description: "General implementation agent"
+  - name: "speckit-verify"
+    source: "project"
+    description: "Read-only verification agent; not permitted to implement tasks"
+  - name: "speckit-sync"
+    source: "project"
+    description: "Read-only synchronization agent; not permitted to implement tasks"
+assignments:
+  T001:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T002:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T003:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T004:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T005:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T006:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T007:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T008:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T009:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T010:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T011:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T012:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T013:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T014:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T015:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T016:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T017:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T018:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T019:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T020:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T021:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T022:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T023:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T024:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T025:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T026:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T027:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T028:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T029:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T030:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T031:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T032:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T033:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T034:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T035:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T036:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T037:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T038:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T039:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T040:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T041:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T042:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T043:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  T044:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  TASK-SEC-006:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  TASK-SEC-007:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+  TASK-SEC-008:
+    agent: "default"
+    reason: "No registered agent is permitted to implement this task; user approved default."
+task_beads:
+  T001: "matinee-mol-hyr.1.1"
+  T002: "matinee-mol-hyr.3.1"
+  T003: "matinee-mol-hyr.1.2"
+  T004: "matinee-mol-hyr.3.2"
+  T005: "matinee-mol-hyr.3.3"
+  T006: "matinee-mol-hyr.3.4"
+  T007: "matinee-mol-hyr.1.3"
+  T008: "matinee-mol-hyr.1.4"
+  T009: "matinee-mol-hyr.1.5"
+  T010: "matinee-mol-hyr.1.6"
+  T011: "matinee-mol-hyr.1.7"
+  T012: "matinee-mol-hyr.1.8"
+  T013: "matinee-mol-hyr.1.9"
+  T014: "matinee-mol-hyr.3.5"
+  T015: "matinee-mol-hyr.3.6"
+  T016: "matinee-mol-hyr.3.7"
+  T017: "matinee-mol-hyr.3.8"
+  T018: "matinee-mol-hyr.3.9"
+  T019: "matinee-mol-hyr.3.10"
+  T020: "matinee-mol-hyr.3.11"
+  T021: "matinee-mol-hyr.3.12"
+  T022: "matinee-mol-hyr.3.13"
+  T023: "matinee-mol-hyr.3.14"
+  T024: "matinee-mol-hyr.3.15"
+  T025: "matinee-mol-hyr.3.16"
+  T026: "matinee-mol-hyr.3.17"
+  T027: "matinee-mol-hyr.3.18"
+  T028: "matinee-mol-hyr.3.19"
+  T029: "matinee-mol-hyr.3.20"
+  T030: "matinee-mol-hyr.3.21"
+  T031: "matinee-mol-hyr.3.22"
+  T032: "matinee-mol-hyr.3.23"
+  T033: "matinee-mol-hyr.3.24"
+  T034: "matinee-mol-hyr.3.25"
+  T035: "matinee-mol-hyr.3.26"
+  T036: "matinee-mol-hyr.3.27"
+  T037: "matinee-mol-hyr.3.28"
+  T038: "matinee-mol-hyr.2.1"
+  T039: "matinee-mol-hyr.2.2"
+  T040: "matinee-mol-hyr.2.3"
+  T041: "matinee-mol-hyr.2.4"
+  T042: "matinee-mol-hyr.2.5"
+  T043: "matinee-mol-hyr.2.6"
+  T044: "matinee-mol-hyr.2.7"
+  TASK-SEC-006: "matinee-mol-hyr.3.29"
+  TASK-SEC-007: "matinee-mol-hyr.3.30"
+  TASK-SEC-008: "matinee-mol-hyr.3.31"
