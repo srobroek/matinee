@@ -148,7 +148,7 @@ fn configure_host_environment(fixture: &TempFixture, environment: &mut Environme
     #[cfg(target_os = "linux")]
     {
         environment.set_path("HOME", &fixture.path("home"));
-        environment.set_path("XDG_CONFIG_HOME", &fixture.path("home/.config"));
+        environment.set_path("XDG_CONFIG_HOME", &fixture.path("home/xdg-config"));
         environment.set_path("XDG_DATA_HOME", &fixture.path("xdg-data"));
         environment.set_path("XDG_STATE_HOME", &fixture.path("xdg-state"));
         environment.set_path("XDG_RUNTIME_DIR", &fixture.path("xdg-runtime"));
@@ -257,7 +257,7 @@ fn host_base_directories_derive_exact_paths() {
 
     #[cfg(target_os = "linux")]
     {
-        let config = fixture.path("home/.config").join("matinee");
+        let config = fixture.path("home/xdg-config").join("matinee");
         let state = fixture.path("xdg-state").join("matinee");
         let resolved = resolve_environment(EnvironmentInput::new(fixture.project_root()))
             .expect("Linux host paths resolve");
@@ -373,7 +373,7 @@ fn resolution_creates_no_derived_directories() {
     #[cfg(not(target_os = "windows"))]
     let fixture_bases = [
         fixture.path("home"),
-        fixture.path("home/.config"),
+        fixture.path("home/xdg-config"),
         fixture.path("xdg-state"),
         fixture.path("xdg-runtime"),
         fixture.path("xdg-cache"),

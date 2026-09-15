@@ -61,7 +61,7 @@ impl TestFixture {
             .collect::<Vec<_>>();
 
         let home = root.join("home");
-        let config = home.join(".config");
+        let config = home.join("xdg-config");
         let state = home.join(".local").join("state");
         let data = home.join(".local").join("share");
         let cache = home.join(".cache");
@@ -121,7 +121,7 @@ impl TestFixture {
         #[cfg(target_os = "linux")]
         {
             self.home()
-                .join(".config")
+                .join("xdg-config")
                 .join("matinee")
                 .join("config.toml")
         }
