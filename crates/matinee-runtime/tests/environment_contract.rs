@@ -188,11 +188,9 @@ fn configure_host_environment_at(root: &Path, environment: &mut EnvironmentGuard
 
     #[cfg(target_os = "windows")]
     {
-        // These variables are restored for hygiene, but directories 6.0 obtains Windows bases
-        // from SHGetKnownFolderPath, so they cannot force a fixture profile.
-        environment.set_path("USERPROFILE", &root.join("profile"));
-        environment.set_path("APPDATA", &root.join("roaming"));
-        environment.set_path("LOCALAPPDATA", &root.join("local"));
+        // Windows base directories come from native known-folder APIs. Preserve the host
+        // USERPROFILE, APPDATA, and LOCALAPPDATA while clearing Matinee overrides above.
+        let _ = root;
     }
 }
 
