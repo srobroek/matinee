@@ -228,33 +228,38 @@ fn path_unavailable() -> ConfigurationFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{FileIdentity, FileSnapshot, FixturePlatform, PlatformKind};
+    use crate::platform::{
+        FileIdentity, FileSnapshot, FixturePlatform, PlatformKind, native_fixture_kind,
+        native_fixture_path,
+    };
 
     #[test]
     fn absolute_normalization_resolves_relative_input_without_host_access() {
         assert_eq!(
             absolute_lexical_normalize(
-                Path::new("/fixture/project/./nested"),
+                &native_fixture_path(["project", ".", "nested"]),
                 Path::new("../state/./root"),
             )
             .expect("absolute result"),
-            Path::new("/fixture/project/state/root"),
+            native_fixture_path(["project", "state", "root"]),
         );
         assert_eq!(
             absolute_lexical_normalize(
-                Path::new("/fixture/project"),
-                Path::new("/fixture/other/../state"),
+                &native_fixture_path(["project"]),
+                &native_fixture_path(["other", "..", "state"]),
             )
             .expect("absolute input"),
-            Path::new("/fixture/state"),
+            native_fixture_path(["state"]),
         );
     }
 
     #[test]
     fn absolute_normalization_discards_parent_segments_at_root() {
         assert_eq!(
-            lexical_normalize(Path::new("/../../fixture/./project/../state")),
-            Path::new("/fixture/state"),
+            lexical_normalize(&native_fixture_path([
+                "..", "..", "fixture", ".", "project", "..", "state"
+            ])),
+            native_fixture_path(["state"]),
         );
         assert_eq!(
             absolute_lexical_normalize(Path::new("relative"), Path::new("child"))
@@ -267,16 +272,21 @@ mod tests {
     #[test]
     fn longest_existing_ancestor_returns_anchor_and_ordered_missing_tail() {
         let anchor = FileSnapshot::directory(FileIdentity::full(7, 42), Some(9));
-        let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_snapshot("/fixture/project", anchor)
-            .with_snapshot_results("/fixture/project/missing/deeper", [Ok(None)])
-            .with_snapshot_results("/fixture/project/missing", [Ok(None)]);
+        let platform = FixturePlatform::new(native_fixture_kind())
+            .with_snapshot(native_fixture_path(["project"]), anchor)
+            .with_snapshot_results(
+                native_fixture_path(["project", "missing", "deeper"]),
+                [Ok(None)],
+            )
+            .with_snapshot_results(native_fixture_path(["project", "missing"]), [Ok(None)]);
 
-        let result =
-            longest_existing_ancestor(&platform, Path::new("/fixture/project/missing/./deeper"))
-                .expect("configured anchor");
+        let result = longest_existing_ancestor(
+            &platform,
+            &native_fixture_path(["project", "missing", ".", "deeper"]),
+        )
+        .expect("configured anchor");
 
-        assert_eq!(result.path(), Path::new("/fixture/project"));
+        assert_eq!(result.path(), native_fixture_path(["project"]));
         assert_eq!(result.identity(), anchor.identity);
         assert_eq!(result.comparison_tail(), Path::new("missing/deeper"));
     }
@@ -287,11 +297,11 @@ mod tests {
             ConfigurationFailureCode::FileUnreadable,
             FailureSource::Layer(LayerClass::BuiltIn),
         );
-        let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_snapshot_results("/fixture/project/missing", [Err(failure)]);
+        let platform = FixturePlatform::new(native_fixture_kind())
+            .with_snapshot_results(native_fixture_path(["project", "missing"]), [Err(failure)]);
 
         assert_eq!(
-            longest_existing_ancestor(&platform, Path::new("/fixture/project/missing"))
+            longest_existing_ancestor(&platform, &native_fixture_path(["project", "missing"]))
                 .expect_err("platform failure")
                 .code(),
             ConfigurationFailureCode::FileUnreadable,
@@ -299,8 +309,10 @@ mod tests {
     }
 
     fn platform_with_anchor(kind: PlatformKind, identity: FileIdentity) -> FixturePlatform {
-        FixturePlatform::new(kind)
-            .with_snapshot("/fixture/project", FileSnapshot::directory(identity, None))
+        FixturePlatform::new(kind).with_snapshot(
+            native_fixture_path(["project"]),
+            FileSnapshot::directory(identity, None),
+        )
     }
 
     #[test]
@@ -308,17 +320,17 @@ mod tests {
         let mac = platform_with_anchor(PlatformKind::MacOs, FileIdentity::full(1, 11));
         let linux = platform_with_anchor(PlatformKind::Linux, FileIdentity::full(2, 22));
         let windows = platform_with_anchor(PlatformKind::Windows, FileIdentity::full(3, 33));
-        let requested = Path::new("/fixture/project/MiXeD/É");
+        let requested = native_fixture_path(["project", "MiXeD", "É"]);
 
-        let mac_identity = resolve_path_identity(&mac, requested).expect("mac identity");
+        let mac_identity = resolve_path_identity(&mac, &requested).expect("mac identity");
         assert_eq!(mac_identity.existing_anchor_id(), FileIdentity::full(1, 11));
         assert_eq!(mac_identity.comparison_tail(), Path::new("mixed/e\u{301}"));
 
-        let linux_identity = resolve_path_identity(&linux, requested).expect("linux identity");
+        let linux_identity = resolve_path_identity(&linux, &requested).expect("linux identity");
         assert_eq!(linux_identity.comparison_tail(), Path::new("MiXeD/É"));
 
         let windows_identity =
-            resolve_path_identity(&windows, requested).expect("windows identity");
+            resolve_path_identity(&windows, &requested).expect("windows identity");
         assert_eq!(windows_identity.comparison_tail(), Path::new("mixed/é"));
     }
 
@@ -328,25 +340,25 @@ mod tests {
         let first = FileSnapshot::symlink(FileIdentity::full(8, 81), None);
         let second = FileSnapshot::symlink(FileIdentity::full(8, 82), None);
         let distinct_target = FileIdentity::full(8, 83);
-        let platform = FixturePlatform::new(PlatformKind::Linux)
-            .with_snapshot("/fixture/link-one", first)
-            .with_snapshot("/fixture/link-two", second)
+        let platform = FixturePlatform::new(native_fixture_kind())
+            .with_snapshot(native_fixture_path(["link-one"]), first)
+            .with_snapshot(native_fixture_path(["link-two"]), second)
             .with_snapshot(
-                "/fixture/link-three",
+                native_fixture_path(["link-three"]),
                 FileSnapshot::symlink(FileIdentity::full(8, 84), None),
             )
-            .with_followed_file_identity("/fixture/link-one", target)
-            .with_followed_file_identity("/fixture/link-two", target)
-            .with_followed_file_identity("/fixture/link-three", distinct_target);
+            .with_followed_file_identity(native_fixture_path(["link-one"]), target)
+            .with_followed_file_identity(native_fixture_path(["link-two"]), target)
+            .with_followed_file_identity(native_fixture_path(["link-three"]), distinct_target);
 
         let first_identity =
-            resolve_path_identity(&platform, Path::new("/fixture/link-one/missing"))
+            resolve_path_identity(&platform, &native_fixture_path(["link-one", "missing"]))
                 .expect("first supported alias");
         let second_identity =
-            resolve_path_identity(&platform, Path::new("/fixture/link-two/missing"))
+            resolve_path_identity(&platform, &native_fixture_path(["link-two", "missing"]))
                 .expect("second supported alias");
         let distinct_identity =
-            resolve_path_identity(&platform, Path::new("/fixture/link-three/missing"))
+            resolve_path_identity(&platform, &native_fixture_path(["link-three", "missing"]))
                 .expect("distinct target alias");
 
         assert_eq!(first_identity, second_identity);
@@ -354,7 +366,7 @@ mod tests {
         assert_eq!(first_identity.existing_anchor_id(), target);
         assert_eq!(first_identity.comparison_tail(), Path::new("missing"));
         assert_eq!(
-            longest_existing_ancestor(&platform, Path::new("/fixture/link-one/missing"))
+            longest_existing_ancestor(&platform, &native_fixture_path(["link-one", "missing"]))
                 .expect("no-follow snapshot")
                 .snapshot(),
             first
@@ -367,10 +379,10 @@ mod tests {
             ConfigurationFailureCode::FileUnreadable,
             FailureSource::Layer(LayerClass::BuiltIn),
         );
-        let platform = platform_with_anchor(PlatformKind::Linux, FileIdentity::full(4, 44))
+        let platform = platform_with_anchor(native_fixture_kind(), FileIdentity::full(4, 44))
             .with_case_behavior_error(failure);
 
-        let identity = resolve_path_identity(&platform, Path::new("/fixture/project"))
+        let identity = resolve_path_identity(&platform, &native_fixture_path(["project"]))
             .expect("existing anchors do not require tail comparison");
         assert_eq!(identity.existing_anchor_id(), FileIdentity::full(4, 44));
         assert_eq!(identity.comparison_tail(), Path::new(""));
@@ -386,7 +398,7 @@ mod tests {
             .with_case_behavior_error(failure);
 
         assert_eq!(
-            resolve_path_identity(&platform, Path::new("/fixture/project/missing"))
+            resolve_path_identity(&platform, &native_fixture_path(["project", "missing"]))
                 .expect_err("comparison failure")
                 .code(),
             ConfigurationFailureCode::FileUnreadable
