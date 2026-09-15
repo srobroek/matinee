@@ -105,6 +105,7 @@ impl EnvironmentGuard {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn set_path(&mut self, name: &str, value: &Path) {
         self.set_os(OsStr::new(name), value.as_os_str());
     }
@@ -114,6 +115,7 @@ impl EnvironmentGuard {
         self.set_os(OsStr::new(name), OsStr::new(value));
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn set_os(&mut self, name: &OsStr, value: &OsStr) {
         self.remember(name);
         // Environment mutation is unsafe in edition 2024 because other threads may read it.
