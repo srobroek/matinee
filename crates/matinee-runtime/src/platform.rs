@@ -1381,7 +1381,6 @@ fn open_follow_directory(path: &Path) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
-
 #[cfg(windows)]
 fn snapshot_from_metadata(
     file: &fs::File,
