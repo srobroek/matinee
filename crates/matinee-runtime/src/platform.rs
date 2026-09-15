@@ -1746,6 +1746,37 @@ const fn current_platform_kind() -> PlatformKind {
     }
 }
 
+/// Returns a host-native absolute fixture path for the supplied relative children.
+#[cfg(test)]
+pub(crate) fn native_fixture_path<I, P>(components: I) -> PathBuf
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let mut path = if cfg!(windows) {
+        PathBuf::from(r"C:\fixture")
+    } else {
+        PathBuf::from("/fixture")
+    };
+    for component in components {
+        path.push(component.as_ref());
+    }
+    path
+}
+
+/// Returns the platform kind matching the host-native fixture path.
+#[cfg(test)]
+pub(crate) const fn native_fixture_kind() -> PlatformKind {
+    #[cfg(windows)]
+    {
+        PlatformKind::Windows
+    }
+    #[cfg(not(windows))]
+    {
+        PlatformKind::Linux
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
