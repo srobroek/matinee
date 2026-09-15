@@ -477,25 +477,50 @@ fn user_file_provenance_is_relative_and_redacted() {
 #[test]
 fn project_file_failure_origin_is_relative_and_redacted() {
     let fixture = TestFixture::new();
-    let rejected_key = "credentials.api_token";
     let raw_value = "project-secret-value";
-    let parser_excerpt = "parser excerpt: unexpected token";
-    let project_root = fixture.project_root();
+    let raw_path = fixture.project_root().join("loaded-project.toml");
     fixture.write_project_config(&format!(
-        "{rejected_key} = \"{raw_value}\" # {parser_excerpt} {project_root:?}\n"
+        "credentials_api_token = \"{raw_value}\"\nloaded_path = \"{}\"\n",
+        raw_path.display()
     ));
+    let untouched = [
+        fixture.default_state(),
+        fixture.state_value("project-secret"),
+    ];
+    let before = untouched
+        .iter()
+        .map(|path| path.exists())
+        .collect::<Vec<_>>();
 
-    let failure = resolve_environment(EnvironmentInput::new(project_root.clone()))
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("an unknown project key must reject the complete resolution");
     assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
     let rendered = format!("{failure:?} {failure}");
-    assert!(rendered.contains("project-configuration-file"));
+    assert!(rendered.contains("project-file"));
     for sentinel in [
-        rejected_key,
+        "credentials_api_token",
         raw_value,
-        parser_excerpt,
-        project_root.to_string_lossy().as_ref(),
+        raw_path.to_string_lossy().as_ref(),
+        fixture.root.to_string_lossy().as_ref(),
     ] {
+        assert!(!rendered.contains(sentinel), "sentinel leaked: {sentinel}");
+    }
+    assert_unchanged_paths(&untouched, &before);
+    drop(fixture);
+
+    let fixture = TestFixture::new();
+    let raw_path = fixture.project_root().join("loaded-project.toml");
+    let parser_excerpt = "this is malformed";
+    fixture.write_project_config(&format!(
+        "state_dir = \"unterminated\n{parser_excerpt}: {}\n",
+        raw_path.display()
+    ));
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("malformed project configuration must fail");
+    assert_eq!(failure.code(), ConfigurationFailureCode::SyntaxInvalid);
+    let rendered = format!("{failure:?} {failure}");
+    assert!(rendered.contains("project-configuration-file"));
+    for sentinel in [parser_excerpt, raw_path.to_string_lossy().as_ref()] {
         assert!(!rendered.contains(sentinel), "sentinel leaked: {sentinel}");
     }
 }
@@ -503,28 +528,54 @@ fn project_file_failure_origin_is_relative_and_redacted() {
 #[test]
 fn user_file_failure_projection_redacts_path_value_and_parser_excerpt() {
     let fixture = TestFixture::new();
-    let rejected_key = "credentials.api_token";
     let raw_value = "user-secret-value";
-    let parser_excerpt = "parser excerpt: unexpected token";
-    let raw_path = fixture.root.join("private").join("config.toml");
+    let raw_path = fixture.user_config();
     fixture.write_user_config(&format!(
-        "{rejected_key} = \"{raw_value}\" # {parser_excerpt} {raw_path:?}\n"
+        "credentials_api_token = \"{raw_value}\"\nloaded_path = \"{}\"\n",
+        raw_path.display()
     ));
+    let untouched = [fixture.default_state(), fixture.state_value("user-secret")];
+    let before = untouched
+        .iter()
+        .map(|path| path.exists())
+        .collect::<Vec<_>>();
 
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("an unknown user key must reject the complete resolution");
     assert_eq!(failure.code(), ConfigurationFailureCode::KeyUnknown);
     let rendered = format!("{failure:?} {failure}");
-    assert!(rendered.contains("user-configuration-file"));
+    assert!(rendered.contains("user-file"));
     for sentinel in [
-        rejected_key,
+        "credentials_api_token",
         raw_value,
-        parser_excerpt,
         raw_path.to_string_lossy().as_ref(),
         fixture.root.to_string_lossy().as_ref(),
     ] {
         assert!(!rendered.contains(sentinel), "sentinel leaked: {sentinel}");
     }
+    assert_unchanged_paths(&untouched, &before);
+    drop(fixture);
+
+    let fixture = TestFixture::new();
+    let raw_path = fixture.user_config();
+    let parser_excerpt = "this is malformed";
+    fixture.write_user_config(&format!(
+        "state_dir = \"unterminated\n{parser_excerpt}: {}\n",
+        raw_path.display()
+    ));
+    let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
+        .expect_err("malformed user configuration must fail");
+    assert_eq!(failure.code(), ConfigurationFailureCode::SyntaxInvalid);
+    let rendered = format!("{failure:?} {failure}");
+    assert!(rendered.contains("user-configuration-file"));
+    for sentinel in [parser_excerpt, raw_path.to_string_lossy().as_ref()] {
+        assert!(!rendered.contains(sentinel), "sentinel leaked: {sentinel}");
+    }
+}
+
+fn assert_unchanged_paths(paths: &[PathBuf], before: &[bool]) {
+    let after = paths.iter().map(|path| path.exists()).collect::<Vec<_>>();
+    assert_eq!(after, before, "configuration failure mutated fixture paths");
 }
 
 fn assert_user_config_failure(
@@ -864,12 +915,20 @@ fn reachable_failures_render_only_closed_static_projections() {
         );
         let rendered = format!("{failure:?} {failure}");
         for value in forbidden {
-            assert!(!rendered.contains(value), "failure projection leaked {value}");
+            assert!(
+                !rendered.contains(value),
+                "failure projection leaked {value}"
+            );
         }
     }
 
     let fixture = TestFixture::new();
     fixture.write_user_config("state_dir = [");
+    let untouched = [fixture.default_state(), fixture.state_value("syntax")];
+    let before = untouched
+        .iter()
+        .map(|path| path.exists())
+        .collect::<Vec<_>>();
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("malformed user configuration must fail");
     assert_rendered(
@@ -878,11 +937,16 @@ fn reachable_failures_render_only_closed_static_projections() {
         "user-configuration-file",
         &["state_dir = [", fixture.root.to_string_lossy().as_ref()],
     );
+    assert_unchanged_paths(&untouched, &before);
     drop(fixture);
-
 
     let fixture = TestFixture::new();
     fixture.write_project_config("state_dir = \"forbidden\"\n");
+    let untouched = [fixture.default_state(), fixture.state_value("forbidden")];
+    let before = untouched
+        .iter()
+        .map(|path| path.exists())
+        .collect::<Vec<_>>();
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("project state_dir must be forbidden");
     assert_rendered(
@@ -891,10 +955,16 @@ fn reachable_failures_render_only_closed_static_projections() {
         "project-file",
         &[fixture.root.to_string_lossy().as_ref()],
     );
+    assert_unchanged_paths(&untouched, &before);
     drop(fixture);
 
     let fixture = TestFixture::new();
     fixture.write_user_config("state_dir = true\n");
+    let untouched = [fixture.default_state(), fixture.state_value("true")];
+    let before = untouched
+        .iter()
+        .map(|path| path.exists())
+        .collect::<Vec<_>>();
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("invalid state_dir must fail");
     assert_rendered(
@@ -903,10 +973,16 @@ fn reachable_failures_render_only_closed_static_projections() {
         "user-file",
         &["true", fixture.root.to_string_lossy().as_ref()],
     );
+    assert_unchanged_paths(&untouched, &before);
     drop(fixture);
 
     let fixture = TestFixture::new();
     fixture.write_user_config("state_dir = \"first\"\nstate_dir = \"second\"\n");
+    let untouched = [fixture.default_state(), fixture.state_value("first")];
+    let before = untouched
+        .iter()
+        .map(|path| path.exists())
+        .collect::<Vec<_>>();
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("duplicate state_dir must fail");
     assert_rendered(
@@ -915,16 +991,27 @@ fn reachable_failures_render_only_closed_static_projections() {
         "user-configuration-file",
         &["first", "second", fixture.root.to_string_lossy().as_ref()],
     );
+    assert_unchanged_paths(&untouched, &before);
     drop(fixture);
 
     let fixture = TestFixture::new();
     fixture.set_environment("MATINEE_UNREGISTERED", "secret-value");
+    let untouched = [fixture.default_state(), fixture.state_value("secret")];
+    let before = untouched
+        .iter()
+        .map(|path| path.exists())
+        .collect::<Vec<_>>();
     let failure = resolve_environment(EnvironmentInput::new(fixture.project_root()))
         .expect_err("unknown environment key must fail");
     assert_rendered(
         failure,
         ConfigurationFailureCode::KeyUnknown,
         "environment",
-        &["MATINEE_UNREGISTERED", "secret-value", fixture.root.to_string_lossy().as_ref()],
+        &[
+            "MATINEE_UNREGISTERED",
+            "secret-value",
+            fixture.root.to_string_lossy().as_ref(),
+        ],
     );
+    assert_unchanged_paths(&untouched, &before);
 }
