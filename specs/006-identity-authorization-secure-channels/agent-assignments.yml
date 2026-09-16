@@ -1,0 +1,189 @@
+# Agent Assignments
+# Feature: 006-identity-authorization-secure-channels
+# Generated: 2026-09-16T16:30:00Z
+# Command: /speckit.agent-assign.assign
+# Decision: unattended proxy auto-accepted the complete conservative assignment set.
+
+agents_scanned:
+  - name: "speckit-sync"
+    source: "project"
+    description: "Audits SpecKit artifacts with Serena semantic tools when available; spawn with scope: drift, conflicts, or both."
+  - name: "speckit-verify"
+    source: "project"
+    description: "Verifies SpecKit implementations with Serena semantic tools when available; spawn with mode: requirements or tasks for the gate report."
+
+assignments:
+  T001:
+    agent: "default"
+    reason: "ADR decision-bead creation is not covered by the discovered SpecKit audit or verification agents."
+  T002:
+    agent: "default"
+    reason: "Dependency-departure decision-bead creation is not covered by the discovered SpecKit audit or verification agents."
+  T003:
+    agent: "default"
+    reason: "Decision-workflow validation and acceptance is not covered by the discovered SpecKit audit or verification agents."
+  T004:
+    agent: "default"
+    reason: "Workspace manifest editing is not covered by the discovered SpecKit audit or verification agents."
+  T005:
+    agent: "default"
+    reason: "Rust crate manifest creation is not covered by the discovered SpecKit audit or verification agents."
+  T006:
+    agent: "default"
+    reason: "Cargo lockfile generation is not covered by the discovered SpecKit audit or verification agents."
+  T007:
+    agent: "default"
+    reason: "Rust module layout and public-boundary design is not covered by the discovered SpecKit audit or verification agents."
+  T008:
+    agent: "default"
+    reason: "Security identity type implementation is not covered by the discovered SpecKit audit or verification agents."
+  T009:
+    agent: "default"
+    reason: "Failure-code and redaction implementation is not covered by the discovered SpecKit audit or verification agents."
+  T010:
+    agent: "default"
+    reason: "Security event and aggregation implementation is not covered by the discovered SpecKit audit or verification agents."
+  T011:
+    agent: "default"
+    reason: "Credential-store and OS-pipe seam implementation is not covered by the discovered SpecKit audit or verification agents."
+  T012:
+    agent: "default"
+    reason: "Deterministic adapter and event-sink fake implementation is not covered by the discovered SpecKit audit or verification agents."
+  T013:
+    agent: "default"
+    reason: "Vector schema authoring is not covered by the discovered SpecKit audit or verification agents."
+  T014:
+    agent: "default"
+    reason: "Cryptographic vector creation is not covered by the discovered SpecKit audit or verification agents."
+  T015:
+    agent: "default"
+    reason: "Node WebCrypto peer fixture implementation is not covered by the discovered SpecKit audit or verification agents."
+  T016:
+    agent: "default"
+    reason: "Chrome capability fixture implementation is not covered by the discovered SpecKit audit or verification agents."
+  T017:
+    agent: "default"
+    reason: "Foundational Rust contract test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T018:
+    agent: "default"
+    reason: "Malformed corpus harness authoring is not covered by the discovered SpecKit audit or verification agents."
+  T019:
+    agent: "default"
+    reason: "Cross-story security-event contract test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T020:
+    agent: "default"
+    reason: "Required-event fail-closed gate implementation is not covered by the discovered SpecKit audit or verification agents."
+  T021:
+    agent: "default"
+    reason: "Bootstrap contract fixture authoring is not covered by the discovered SpecKit audit or verification agents."
+  T022:
+    agent: "default"
+    reason: "Bootstrap recovery test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T023:
+    agent: "default"
+    reason: "Bootstrap secret-custody test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T024:
+    agent: "default"
+    reason: "Credential lookup implementation is not covered by the discovered SpecKit audit or verification agents."
+  T025:
+    agent: "default"
+    reason: "OS-pipe envelope implementation is not covered by the discovered SpecKit audit or verification agents."
+  T026:
+    agent: "default"
+    reason: "Identity creation and bootstrap transition implementation is not covered by the discovered SpecKit audit or verification agents."
+  T027:
+    agent: "default"
+    reason: "Bootstrap retry and recovery implementation is not covered by the discovered SpecKit audit or verification agents."
+  T028:
+    agent: "default"
+    reason: "Bootstrap evidence completion is not covered by the discovered SpecKit audit or verification agents."
+  T029:
+    agent: "default"
+    reason: "Enrollment contract fixture authoring is not covered by the discovered SpecKit audit or verification agents."
+  T030:
+    agent: "default"
+    reason: "Enrollment negative and race test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T031:
+    agent: "default"
+    reason: "Enrollment custody and redaction test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T032:
+    agent: "default"
+    reason: "Enrollment creation implementation is not covered by the discovered SpecKit audit or verification agents."
+  T033:
+    agent: "default"
+    reason: "Origin and metadata validation implementation is not covered by the discovered SpecKit audit or verification agents."
+  T034:
+    agent: "default"
+    reason: "Enrollment consumption implementation is not covered by the discovered SpecKit audit or verification agents."
+  T035:
+    agent: "default"
+    reason: "Enrollment rate-limit implementation is not covered by the discovered SpecKit audit or verification agents."
+  T036:
+    agent: "default"
+    reason: "Extension custody and reconnect evidence completion is not covered by the discovered SpecKit audit or verification agents."
+  T037:
+    agent: "default"
+    reason: "Handshake contract test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T038:
+    agent: "default"
+    reason: "Frame and nonce vector test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T039:
+    agent: "default"
+    reason: "Secure-channel fault test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T040:
+    agent: "default"
+    reason: "Cryptographic handshake implementation is not covered by the discovered SpecKit audit or verification agents."
+  T041:
+    agent: "default"
+    reason: "Encrypted frame implementation is not covered by the discovered SpecKit audit or verification agents."
+  T042:
+    agent: "default"
+    reason: "Channel session boundary implementation is not covered by the discovered SpecKit audit or verification agents."
+  T043:
+    agent: "default"
+    reason: "Secure-channel vector and fault evidence completion is not covered by the discovered SpecKit audit or verification agents."
+  T044:
+    agent: "default"
+    reason: "Authorization matrix contract test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T045:
+    agent: "default"
+    reason: "Authorization privacy test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T046:
+    agent: "default"
+    reason: "Authorization ordering implementation is not covered by the discovered SpecKit audit or verification agents."
+  T047:
+    agent: "default"
+    reason: "Channel authorization integration is not covered by the discovered SpecKit audit or verification agents."
+  T048:
+    agent: "default"
+    reason: "Authorization evidence completion is not covered by the discovered SpecKit audit or verification agents."
+  T049:
+    agent: "default"
+    reason: "Rotation and revocation contract test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T050:
+    agent: "default"
+    reason: "Rotation and revocation race test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T051:
+    agent: "default"
+    reason: "Security command transition implementation is not covered by the discovered SpecKit audit or verification agents."
+  T052:
+    agent: "default"
+    reason: "Credential rotation and epoch implementation is not covered by the discovered SpecKit audit or verification agents."
+  T053:
+    agent: "default"
+    reason: "Terminal revocation and transition serialization is not covered by the discovered SpecKit audit or verification agents."
+  T054:
+    agent: "default"
+    reason: "Rotation and revocation evidence completion is not covered by the discovered SpecKit audit or verification agents."
+  T055:
+    agent: "default"
+    reason: "Cross-story event evidence aggregation is not covered by the discovered SpecKit audit or verification agents."
+  T056:
+    agent: "default"
+    reason: "Quickstart evidence test authoring is not covered by the discovered SpecKit audit or verification agents."
+  T057:
+    agent: "default"
+    reason: "Feature-tied documentation review is not covered by the discovered SpecKit audit or verification agents."
+  T058:
+    agent: "default"
+    reason: "Focused quickstart validation is not covered by the discovered SpecKit audit or verification agents."
