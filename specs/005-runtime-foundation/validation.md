@@ -530,6 +530,58 @@ $ echo $?
 4
 ```
 
+### Provenance refresh at HEAD 23aaaa5
+
+The dependency provenance was re-recorded at HEAD `23aaaa5fe8c7e704b55ddcfbae1bb514d5085437` after the `unicode-normalization` addition. The repository policy remained tracked and unchanged (`deny.toml` SHA-256 `8748ce3e84d4143cf9b3808dbb0b589bf92c463f1bca29261643d43ca0b1ddc0`).
+
+```text
+$ shasum -a 256 Cargo.lock
+c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  Cargo.lock
+$ cargo tree --locked --workspace --all-features
+matinee v0.0.2 (<repo>/crates/matinee-cli)
+matinee-runtime v0.0.2 (<repo>/crates/matinee-runtime)
+├── directories v6.0.0
+│   └── dirs-sys v0.5.0
+│       ├── libc v0.2.189
+│       └── option-ext v0.2.0
+├── libc v0.2.189
+├── serde v1.0.229
+│   ├── serde_core v1.0.229
+│   └── serde_derive v1.0.229 (proc-macro)
+│       ├── proc-macro2 v1.0.107
+│       │   └── unicode-ident v1.0.24
+│       ├── quote v1.0.47
+│       │   └── proc-macro2 v1.0.107 (*)
+│       └── syn v3.0.5
+│           ├── proc-macro2 v1.0.107 (*)
+│           ├── quote v1.0.47 (*)
+│           └── unicode-ident v1.0.24
+├── toml v1.1.6+spec-1.1.0
+│   ├── serde_core v1.0.229
+│   ├── serde_spanned v1.1.1
+│   │   └── serde_core v1.0.229
+│   ├── toml_datetime v1.1.1+spec-1.1.0
+│   │   └── serde_core v1.0.229
+│   ├── toml_parser v1.1.3+spec-1.1.0
+│   │   └── winnow v1.0.4
+│   ├── toml_writer v1.1.2+spec-1.1.0
+│   └── winnow v1.0.4
+└── unicode-normalization v0.1.25
+    └── tinyvec v1.13.2
+        └── tinyvec_macros v0.1.1
+```
+
+The locked metadata projection reported `unicode-normalization 0.1.25 MIT OR Apache-2.0`, its transitive `tinyvec 1.13.2 Zlib OR Apache-2.0 OR MIT`, and `tinyvec_macros 0.1.1 MIT OR Apache-2.0 OR Zlib`; the existing `option-ext 0.2.0 MPL-2.0` remained in the graph. The exact Rust gates both exited `0`: `cargo +1.85.0 build --locked --workspace --all-targets` finished successfully, and `cargo +1.85.0 test --workspace --all-targets --locked` reported `186 passed; 0 failed` (6 suites, 17 filtered). The post-gate lockfile checksum remained `c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3`.
+
+The repository-authoritative pinned whole-policy scan also exited `0`:
+
+```text
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny --version
+cargo-deny 0.20.2
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
 ## T042 Quickstart execution record
 
 This record captures the commands in `quickstart.md` as run on the macOS host. The CLI commands ran from this checkout with the worktrunk-generated `.cargo/config.toml` target directory; no Rust source files were changed by this epic. Exit status is the process status observed for each command.
