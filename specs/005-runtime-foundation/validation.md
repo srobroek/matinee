@@ -35,7 +35,7 @@ $ /Users/sjors/personal/dev/matinee/target/release/matinee --version
 matinee 0.0.2
 $ /Users/sjors/personal/dev/matinee/target/release/matinee doctor
 Firefox	/Applications/Firefox.app/Contents/MacOS/firefox
-Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/google-chrome
+Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 ```
 
 The released baseline was obtained from crates.io, not from a source checkout:
@@ -57,7 +57,7 @@ $ /tmp/matinee-baseline.AZyI9h/bin/matinee --version
 matinee 0.0.2
 $ /tmp/matinee-baseline.AZyI9h/bin/matinee doctor
 Firefox	/Applications/Firefox.app/Contents/MacOS/firefox
-Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/google-chrome
+Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 ```
 
 The temporary resolver runner was built with:
