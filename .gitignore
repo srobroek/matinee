@@ -1,1 +1,13 @@
 /target
+
+
+# APM dependencies
+apm_modules/
+# SpecKit status-report generated artefact (regenerated each run)
+specs/**/spec-status.md
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

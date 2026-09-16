@@ -1,0 +1,97 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/speckit-conductor/scripts/speckit-pr-title.py\""
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    },
+    {
+      "matcher": "apply_patch|Write|Edit|MultiEdit|Bash|Skill",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/speckit-conductor/scripts/speckit-tasks-guard.py\"",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    },
+    {
+      "matcher": "Skill",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/speckit-conductor/scripts/speckit-dispatcher.py\"",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    },
+    {
+      "matcher": "apply_patch|Write|Edit|MultiEdit|NotebookEdit",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/adr-as-beads/scripts/adr-write-guard.py\"",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/agentic-packages/packages/adr-as-beads"
+    },
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "statusMessage": "Checking gh issue command against beads policy...",
+          "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/beads/scripts/beads-gh-issue-guard.py\""
+        }
+      ],
+      "_apm_source": "srobroek/agentic-packages/packages/beads"
+    }
+  ],
+  "SubagentStart": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "statusMessage": "Injecting beads work contract...",
+          "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/beads/scripts/beads-subagent-reminder.py\""
+        }
+      ],
+      "_apm_source": "srobroek/agentic-packages/packages/beads"
+    }
+  ],
+  "UserPromptExpansion": [
+    {
+      "matcher": "speckit.*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/speckit-conductor/scripts/speckit-dispatcher.py\"",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/speckit-conductor/scripts/speckit-dispatcher.py\"",
+          "timeout": 10
+        }
+      ],
+      "_apm_source": "srobroek/speckit-conductor"
+    }
+  ]
+}

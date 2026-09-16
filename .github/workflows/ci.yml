@@ -8,7 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  lint:
+    name: Lint (Ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,4 +18,33 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --all-targets
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: cargo test --workspace --all-targets
+
+  dependency-provenance:
+    name: Dependency provenance (Rust 1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Install cargo-deny 0.20.2
+        run: cargo +1.88.0 install cargo-deny --version 0.20.2 --locked
+      - name: Build locked workspace dependency graph
+        run: cargo +1.85.0 build --locked --workspace --all-targets
+      - name: Test locked workspace
+        run: cargo +1.85.0 test --workspace --all-targets --locked
+      - name: Check locked advisories, bans, licenses and sources
+        run: |
+          cargo +1.88.0 deny --version
+          cargo +1.88.0 deny check

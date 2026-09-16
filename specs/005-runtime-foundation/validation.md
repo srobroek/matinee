@@ -1,0 +1,962 @@
+# Validation: Runtime Foundation
+
+## T041 Startup and environment-resolution baseline
+
+### Scope and operational definitions
+
+This section records T041's measurements for the released `matinee` 0.0.2 binary and the feature-branch binary. The CLI startup command is `matinee --version`, which is one of the documented quickstart invocations and returns deterministic output without browser discovery. The environment-resolution command is a throwaway release runner that calls the feature crate's public `resolve_environment(EnvironmentInput::new(project_root))` API and prints the resolved state path.
+
+A cold CLI sample is a fresh process with newly created temporary directory roots. The host file cache was not cleared because this shared macOS host does not permit a safe per-process cache flush. A warm CLI sample is a fresh process in one primed temporary environment. One unmeasured `--version` run per binary primed that environment before the 30 measured pairs.
+
+Cold resolver samples use a fresh process with fresh temporary home directories and project roots. Warm resolver samples use fresh processes in one primed temporary environment and project root. All timed durations are parent-process wall-clock durations. The script measured from `time.perf_counter_ns()` immediately before `subprocess.run` until it returned.
+
+The script alternated pair order:
+
+- Odd iterations: baseline followed by feature.
+- Even iterations: feature followed by baseline.
+
+The script did not run all baseline samples before feature samples.
+
+### Commands and artifacts
+
+The feature binary was built with:
+
+```text
+$ cargo build --release
+   Compiling matinee v0.0.2 (checkout/crates/matinee-cli)
+   Compiling matinee-runtime v0.0.2 (checkout/crates/matinee-runtime)
+    Finished `release` profile [optimized] target(s) in 4.57s
+```
+
+The checkout's `.cargo/config.toml` sets the shared target directory. The feature binary is `/Users/sjors/personal/dev/matinee/target/release/matinee`. Its checks were:
+
+```text
+$ /Users/sjors/personal/dev/matinee/target/release/matinee --version
+matinee 0.0.2
+$ /Users/sjors/personal/dev/matinee/target/release/matinee doctor
+Firefox	/Applications/Firefox.app/Contents/MacOS/firefox
+Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+```
+
+The released baseline was obtained from crates.io, not from a source checkout:
+
+```text
+$ cargo install matinee --version 0.0.2 --locked --root /tmp/matinee-baseline.AZyI9h
+    Updating crates.io index
+  Installing matinee v0.0.2
+    Compiling matinee v0.0.2
+    Finished `release` profile [optimized] target(s) in 16.58s
+  Installing /tmp/matinee-baseline.AZyI9h/bin/matinee
+   Installed package `matinee v0.0.2` (executable `matinee`)
+```
+
+The baseline binary is `/tmp/matinee-baseline.AZyI9h/bin/matinee`. Its checks were:
+
+```text
+$ /tmp/matinee-baseline.AZyI9h/bin/matinee --version
+matinee 0.0.2
+$ /tmp/matinee-baseline.AZyI9h/bin/matinee doctor
+Firefox	/Applications/Firefox.app/Contents/MacOS/firefox
+Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+```
+
+The temporary resolver runner was built with:
+
+```text
+$ cargo build --release --manifest-path /tmp/matinee-t041-runner/Cargo.toml
+   Compiling matinee-runtime v0.0.2 (feature checkout/crates/matinee-runtime)
+   Compiling matinee-t041-runner v0.0.0
+    Finished `release` profile [optimized] target(s) in 11.32s
+```
+
+The runner binary is `/Users/sjors/personal/dev/matinee/target/release/matinee-t041-runner`.
+The measurement command was:
+
+```text
+$ python3 /tmp/matinee_t041_measure.py > /tmp/matinee_t041_results.json
+```
+
+The script used these exact timed child command arrays:
+
+```text
+[str(binary), "--version"]
+[str(RUNNER), str(project_root)]
+```
+
+The script supplied these environment assignments to each child:
+
+```text
+HOME=$home
+TMPDIR=$home/tmp
+XDG_CONFIG_HOME=$home/config
+XDG_STATE_HOME=$home/state
+XDG_CACHE_HOME=$home/cache
+```
+
+For each child, the script set five temporary-directory variables. It removed `MATINEE_CONFIG` and `MATINEE_STATE_DIR`. It captured stdout and stderr. It required exit code 0. It measured from `time.perf_counter_ns()` immediately before `subprocess.run` until return.
+
+`RUNNER` was `/Users/sjors/personal/dev/matinee/target/release/matinee-t041-runner`. The runner came from a temporary Cargo project whose only dependency was the feature checkout's `crates/matinee-runtime` path. Every measured child returned exit code 0, emitted non-empty stdout, and emitted empty stderr.
+
+### Platform and toolchain fingerprint
+
+```text
+$ uname -a
+Darwin 842f578f3406 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041 arm64 Darwin
+$ rustc --version
+rustc 1.98.1 (48a229cea 2026-09-01)
+$ cargo --version
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+$ sysctl -n machdep.cpu.brand_string
+Apple M4 Pro
+```
+
+The measurement interpreter was Python `3.14.4`, and `platform.platform()` reported `macOS-26.6.2-arm64-arm-64bit-Mach-O`. The feature and resolver binaries were built with this Rust 1.98.1 toolchain. The measured host is macOS arm64, so this artifact evidences the macOS run only; CI and later validation sections cover other platforms.
+
+### Raw CLI startup samples
+
+All durations are milliseconds. The `order` column proves pair interleaving.
+
+#### Cold process startup
+
+| iteration | baseline 0.0.2 | feature | order |
+|---:|---:|---:|:---|
+| 1 | 9.128292 | 9.119334 | baseline → feature |
+| 2 | 8.557791 | 8.193084 | feature → baseline |
+| 3 | 9.792792 | 8.156500 | baseline → feature |
+| 4 | 11.819042 | 9.449542 | feature → baseline |
+| 5 | 10.911542 | 15.157917 | baseline → feature |
+| 6 | 7.923792 | 12.126667 | feature → baseline |
+| 7 | 8.838666 | 9.364042 | baseline → feature |
+| 8 | 10.957625 | 11.578959 | feature → baseline |
+| 9 | 10.459041 | 7.797833 | baseline → feature |
+| 10 | 12.611042 | 9.787500 | feature → baseline |
+| 11 | 11.750084 | 8.912875 | baseline → feature |
+| 12 | 9.809625 | 8.624250 | feature → baseline |
+| 13 | 9.374375 | 10.171291 | baseline → feature |
+| 14 | 13.089209 | 9.868875 | feature → baseline |
+| 15 | 12.189250 | 9.461709 | baseline → feature |
+| 16 | 9.780292 | 8.858334 | feature → baseline |
+| 17 | 11.355625 | 9.640208 | baseline → feature |
+| 18 | 13.035000 | 10.764625 | feature → baseline |
+| 19 | 14.740875 | 9.657459 | baseline → feature |
+| 20 | 7.787333 | 7.568292 | feature → baseline |
+| 21 | 9.020792 | 8.481416 | baseline → feature |
+| 22 | 9.989500 | 9.173750 | feature → baseline |
+| 23 | 8.539875 | 12.600333 | baseline → feature |
+| 24 | 10.270958 | 8.801584 | feature → baseline |
+| 25 | 13.005209 | 11.156583 | baseline → feature |
+| 26 | 10.082625 | 9.563500 | feature → baseline |
+| 27 | 8.101083 | 9.273584 | baseline → feature |
+| 28 | 11.015792 | 13.429250 | feature → baseline |
+| 29 | 9.879916 | 8.877541 | baseline → feature |
+| 30 | 10.236584 | 10.246917 | feature → baseline |
+
+#### Warm process startup
+
+| iteration | baseline 0.0.2 | feature | order |
+|---:|---:|---:|:---|
+| 1 | 10.337833 | 11.425792 | baseline → feature |
+| 2 | 8.553167 | 9.276083 | feature → baseline |
+| 3 | 9.002167 | 7.538750 | baseline → feature |
+| 4 | 14.183583 | 9.349875 | feature → baseline |
+| 5 | 10.154459 | 9.071083 | baseline → feature |
+| 6 | 11.333000 | 11.251750 | feature → baseline |
+| 7 | 11.467458 | 10.118584 | baseline → feature |
+| 8 | 11.505875 | 11.595500 | feature → baseline |
+| 9 | 24.077709 | 17.400583 | baseline → feature |
+| 10 | 12.333917 | 9.927708 | feature → baseline |
+| 11 | 14.490000 | 12.377125 | baseline → feature |
+| 12 | 13.273208 | 15.079459 | feature → baseline |
+| 13 | 15.769917 | 13.705125 | baseline → feature |
+| 14 | 12.462708 | 9.205000 | feature → baseline |
+| 15 | 8.626084 | 10.459875 | baseline → feature |
+| 16 | 11.105000 | 11.697542 | feature → baseline |
+| 17 | 11.967625 | 10.758166 | baseline → feature |
+| 18 | 14.533500 | 11.665375 | feature → baseline |
+| 19 | 11.780208 | 9.727709 | baseline → feature |
+| 20 | 14.139625 | 12.662334 | feature → baseline |
+| 21 | 10.783000 | 9.881292 | baseline → feature |
+| 22 | 10.177542 | 11.283791 | feature → baseline |
+| 23 | 10.413042 | 12.096958 | baseline → feature |
+| 24 | 9.353584 | 9.080125 | feature → baseline |
+| 25 | 11.874417 | 13.736875 | baseline → feature |
+| 26 | 11.357042 | 12.699666 | feature → baseline |
+| 27 | 14.203583 | 14.641625 | baseline → feature |
+| 28 | 14.512750 | 15.592292 | feature → baseline |
+| 29 | 28.932666 | 17.606042 | baseline → feature |
+| 30 | 13.530208 | 11.049208 | feature → baseline |
+
+### Raw environment-resolution samples
+
+All durations are milliseconds. These runs measure the feature resolver only; no released resolver baseline exists because 0.0.2 predates this runtime API.
+
+#### Cold environment resolution
+
+| iteration | feature resolver |
+|---:|---:|
+| 1 | 32.453583 |
+| 2 | 30.144375 |
+| 3 | 29.981625 |
+| 4 | 38.750416 |
+| 5 | 32.899000 |
+| 6 | 38.192375 |
+| 7 | 43.836709 |
+| 8 | 55.636833 |
+| 9 | 32.434084 |
+| 10 | 37.041125 |
+| 11 | 32.462750 |
+| 12 | 30.920417 |
+| 13 | 32.491792 |
+| 14 | 28.980000 |
+| 15 | 25.716667 |
+| 16 | 34.006416 |
+| 17 | 32.861875 |
+| 18 | 31.806416 |
+| 19 | 26.560166 |
+| 20 | 22.470667 |
+| 21 | 25.071791 |
+| 22 | 27.698750 |
+| 23 | 26.857959 |
+| 24 | 28.123917 |
+| 25 | 25.991250 |
+| 26 | 36.021375 |
+| 27 | 36.144375 |
+| 28 | 41.946042 |
+| 29 | 32.885042 |
+| 30 | 30.206250 |
+
+#### Warm environment resolution
+
+| iteration | feature resolver |
+|---:|---:|
+| 1 | 34.489250 |
+| 2 | 30.956292 |
+| 3 | 29.173083 |
+| 4 | 29.906334 |
+| 5 | 32.550333 |
+| 6 | 30.847458 |
+| 7 | 30.535875 |
+| 8 | 31.189041 |
+| 9 | 31.945833 |
+| 10 | 33.005709 |
+| 11 | 34.239666 |
+| 12 | 38.338375 |
+| 13 | 30.463833 |
+| 14 | 29.951875 |
+| 15 | 30.601417 |
+| 16 | 28.333416 |
+| 17 | 34.446250 |
+| 18 | 34.199166 |
+| 19 | 25.870417 |
+| 20 | 25.578459 |
+| 21 | 24.363750 |
+| 22 | 28.353125 |
+| 23 | 26.289875 |
+| 24 | 25.155584 |
+| 25 | 26.762667 |
+| 26 | 29.792917 |
+| 27 | 38.932209 |
+| 28 | 32.818041 |
+| 29 | 30.065709 |
+| 30 | 31.497500 |
+
+### Statistics and comparison
+
+The statistic script used the following definitions. Median is `statistics.median(values)`. p95 is the nearest-rank sample at `ceil(0.95 * n)`, with one-based rank. CV is sample standard deviation divided by arithmetic mean. The script used `statistics.stdev(values)` and `statistics.fmean(values)`.
+
+```python
+import math, statistics
+
+def summary(values):
+    ordered = sorted(values)
+    p95 = ordered[math.ceil(0.95 * len(ordered)) - 1]
+    mean = statistics.fmean(values)
+    stdev = statistics.stdev(values)
+    return statistics.median(values), p95, stdev / mean
+```
+
+| series | n | median (ms) | p95 (ms) | mean (ms) | sample SD (ms) | CV |
+|:---|---:|---:|---:|---:|---:|---:|
+| cold CLI baseline 0.0.2 | 30 | 10.159605 | 13.089209 | 10.468454 | 1.734536 | 0.165692 |
+| cold CLI feature | 30 | 9.455626 | 13.429250 | 9.862125 | 1.700638 | 0.172441 |
+| warm CLI baseline 0.0.2 | 30 | 11.827312 | 24.077709 | 12.874496 | 4.219312 | 0.327726 |
+| warm CLI feature | 30 | 11.354792 | 17.400583 | 11.732043 | 2.478499 | 0.211259 |
+| cold feature environment resolution | 30 | 32.443833 | 43.836709 | 32.686468 | 6.587572 | 0.201538 |
+| warm feature environment resolution | 30 | 30.568646 | 38.338375 | 30.688449 | 3.554306 | 0.115819 |
+
+Relative feature-versus-baseline changes use `(feature - baseline) / baseline * 100`:
+
+| CLI series | median change | p95 change | mean change | interpretation |
+|:---|---:|---:|---:|:---|
+| cold | -6.929197% | +2.597873% | -5.791964% | Median and mean are lower; p95 is higher. |
+| warm | -3.995168% | -27.731567% | -8.873767% | Median, p95, and mean are lower. |
+
+The feature CLI has lower median and mean in both conditions. Its cold p95 is 2.597873% higher than the released baseline p95. The largest baseline CV is 0.327726, from warm startup. The resolver measurements establish feature-branch cold and warm distributions but do not support a cross-branch comparison.
+
+### Threshold decision and acceptance disposition
+
+Decision owner: `spec 005 acceptance owner`.
+
+After reviewing all six CV values, including the largest baseline CV of 0.327726, the acceptance owner sets a 35% relative regression threshold for a comparable CLI series. The threshold applies to median or p95. It exceeds the largest observed baseline CV. The owner applied it only after reviewing measured variance.
+
+The cold p95 increase is 2.597873%, below 35%. Every other comparable median, p95, and mean change is a decrease. The feature resolver has no 0.0.2 counterpart. Its measurements are recorded but not used as cross-branch evidence.
+
+The measured evidence **permits acceptance of T041** under this threshold. It does not trigger publication blocking or rollback review. If the acceptance owner declines this threshold as indefensible, the plan's fallback rule applies. Under that rule, the observed cold p95 increase blocks publication and triggers rollback review until a defensible numeric threshold is approved.
+
+### Requirement and success-criteria mapping
+
+- `FR-005-001`: both binaries returned `matinee 0.0.2` for the documented `--version` invocation. The artifact records 30 interleaved cold and warm startup pairs. This section evidences the version portion of `SC-005-001`; help and doctor were smoke-checked but were not timed.
+- `FR-005-003`: the feature resolver completed 30 cold and 30 warm runs in isolated temporary project and home roots. Each run exited 0, wrote no stderr, and returned a resolved state path.
+- `FR-005-004`: the resolver runs evidence successful macOS directory resolution. They do not claim the cross-platform fixture coverage in `SC-005-003`.
+- `SC-005-007`: the feature `doctor` smoke output exposes only the documented browser checks. No later-spec command was invoked or measured.
+- Plan Stage 4: this section records the required 30 interleaved pairs and 30 cold and warm resolver runs.
+- Technical Context performance goal: this section records raw durations and the platform/toolchain fingerprint.
+- Technical Context performance goal: this section records statistics and comparison.
+- Technical Context performance goal: this section records the owner, threshold, and disposition.
+
+## T039 Rust 1.85 dependency provenance and policy
+
+### Repository-authoritative policy file
+
+`deny.toml` is tracked at the repository root, so a clean checkout carries the
+policy and the gate is enforceable without any local file:
+
+```text
+$ git ls-files -- deny.toml
+deny.toml
+$ shasum -a 256 deny.toml
+8748ce3e84d4143cf9b3808dbb0b589bf92c463f1bca29261643d43ca0b1ddc0  deny.toml
+```
+
+Clean-checkout enforceability was proven against the committed tree only, with no
+working-tree file visible to the scan:
+
+```text
+$ rm -rf /tmp/t039fix-clean && mkdir -p /tmp/t039fix-clean && git archive --format=tar HEAD | tar -x -C /tmp/t039fix-clean
+$ shasum -a 256 /tmp/t039fix-clean/deny.toml /tmp/t039fix-clean/Cargo.lock
+8748ce3e84d4143cf9b3808dbb0b589bf92c463f1bca29261643d43ca0b1ddc0  /tmp/t039fix-clean/deny.toml
+c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  /tmp/t039fix-clean/Cargo.lock
+$ cd /tmp/t039fix-clean && /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
+### Locked graph and checksum
+The repository-authoritative cargo-deny version is `cargo-deny 0.20.2`. No
+repository-wide mise tool configuration exists. Because cargo-deny 0.20.2 has
+Rust 1.88 as its minimum supported compiler, CI installs the pinned `1.88.0`
+toolchain for the installer, then runs `cargo +1.88.0 install cargo-deny
+--version 0.20.2 --locked`; the build and test gates remain explicit `+1.85.0`
+commands. Local verification used the same package and lock policy in a temporary
+root:
+
+```text
+$ rm -rf /tmp/matinee-cargo-deny-0.20.2 && cargo +1.88.0 install cargo-deny --version 0.20.2 --locked --root /tmp/matinee-cargo-deny-0.20.2
+   Installed package `cargo-deny v0.20.2` (executable `cargo-deny`)
+```
+The host `cargo-deny` shim was initially unusable and returned `mise ERROR No
+version is set for shim: cargo-deny`. The exact temporary-root installation above
+was the repository-authoritative local remedy; all scans below use that pinned
+binary rather than the unconfigured global shim.
+
+The lockfile checksum was recorded before and after the Rust 1.85 build:
+
+```text
+$ shasum -a 256 Cargo.lock
+c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  Cargo.lock
+```
+
+The complete locked workspace tree came from `cargo tree --locked --workspace
+--all-features`. Workspace member paths are absolute and therefore checkout-specific,
+so the two member lines below are recorded with the checkout root replaced by
+`<repo>`; re-verification applies the same substitution
+(`sed -e 's| (<checkout-root>/| (<repo>/|'`) before comparing. Every other line is
+verbatim tool output:
+
+```text
+matinee v0.0.2 (<repo>/crates/matinee-cli)
+
+matinee-runtime v0.0.2 (<repo>/crates/matinee-runtime)
+├── directories v6.0.0
+│   └── dirs-sys v0.5.0
+│       ├── libc v0.2.189
+│       └── option-ext v0.2.0
+├── libc v0.2.189
+├── serde v1.0.229
+│   ├── serde_core v1.0.229
+│   └── serde_derive v1.0.229 (proc-macro)
+│       ├── proc-macro2 v1.0.107
+│       │   └── unicode-ident v1.0.24
+│       ├── quote v1.0.47
+│       │   └── proc-macro2 v1.0.107 (*)
+│       └── syn v3.0.5
+│           ├── proc-macro2 v1.0.107 (*)
+│           ├── quote v1.0.47 (*)
+│           └── unicode-ident v1.0.24
+├── toml v1.1.6+spec-1.1.0
+│   ├── serde_core v1.0.229
+│   ├── serde_spanned v1.1.1
+│   │   └── serde_core v1.0.229
+│   ├── toml_datetime v1.1.1+spec-1.1.0
+│   │   └── serde_core v1.0.229
+│   ├── toml_parser v1.1.3+spec-1.1.0
+│   │   └── winnow v1.0.4
+│   ├── toml_writer v1.1.2+spec-1.1.0
+│   └── winnow v1.0.4
+└── unicode-normalization v0.1.25
+    └── tinyvec v1.13.2
+        └── tinyvec_macros v0.1.1
+```
+
+The full package/license projection below was produced by this exact command, which
+resolves the workspace and all locked packages and prints `name version license`
+with `<none>` for a null license field, sorted by package name:
+
+```text
+$ cargo metadata --format-version 1 --locked | python3 -c 'import json,sys; [print(p["name"], p["version"], p["license"] or "<none>") for p in sorted(json.load(sys.stdin)["packages"], key=lambda p: p["name"])]'
+```
+
+```text
+cfg-if 1.0.4 MIT OR Apache-2.0
+directories 6.0.0 MIT OR Apache-2.0
+dirs-sys 0.5.0 MIT OR Apache-2.0
+equivalent 1.0.2 Apache-2.0 OR MIT
+getrandom 0.2.17 MIT OR Apache-2.0
+hashbrown 0.17.1 MIT OR Apache-2.0
+indexmap 2.14.2 Apache-2.0 OR MIT
+libc 0.2.189 MIT OR Apache-2.0
+libredox 0.1.24 MIT
+matinee 0.0.2 Apache-2.0
+matinee-runtime 0.0.2 <none>
+option-ext 0.2.0 MPL-2.0
+proc-macro2 1.0.107 MIT OR Apache-2.0
+quote 1.0.47 MIT OR Apache-2.0
+redox_users 0.5.2 MIT
+serde 1.0.229 MIT OR Apache-2.0
+serde_core 1.0.229 MIT OR Apache-2.0
+serde_derive 1.0.229 MIT OR Apache-2.0
+serde_spanned 1.1.1 MIT OR Apache-2.0
+syn 3.0.5 MIT OR Apache-2.0
+thiserror 2.0.20 MIT OR Apache-2.0
+thiserror-impl 2.0.20 MIT OR Apache-2.0
+tinyvec 1.13.2 Zlib OR Apache-2.0 OR MIT
+tinyvec_macros 0.1.1 MIT OR Apache-2.0 OR Zlib
+toml 1.1.6+spec-1.1.0 MIT OR Apache-2.0
+toml_datetime 1.1.1+spec-1.1.0 MIT OR Apache-2.0
+toml_parser 1.1.3+spec-1.1.0 MIT OR Apache-2.0
+toml_writer 1.1.2+spec-1.1.0 MIT OR Apache-2.0
+unicode-ident 1.0.24 (MIT OR Apache-2.0) AND Unicode-3.0
+unicode-normalization 0.1.25 MIT OR Apache-2.0
+wasi 0.11.1+wasi-snapshot-preview1 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+windows-link 0.2.1 MIT OR Apache-2.0
+windows-sys 0.61.2 MIT OR Apache-2.0
+winnow 1.0.4 MIT
+```
+
+`matinee-runtime` is private and has no package license field; it is excluded from
+the published-license check by `private = { ignore = true }`. Its registry
+dependencies are still checked.
+
+### Rust 1.85 build and lockfile preservation
+
+The exact compatibility gate ran locally on the integrated commit:
+
+```text
+$ cargo +1.85.0 build --locked --workspace --all-targets
+   Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.95s
+$ cargo +1.85.0 test --workspace --all-targets --locked
+cargo test: 186 passed (7+7+125+28+1+18), 0 failed, 17 filtered (6 suites)
+$ shasum -a 256 Cargo.lock
+c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  Cargo.lock
+```
+
+The checksum is unchanged from the pre-build recording above, proving that the
+locked build did not modify `Cargo.lock`.
+
+### cargo-deny scans
+
+All four cargo-deny controls run. The exact local invocations used the pinned
+binary installed above:
+
+```text
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny --version
+cargo-deny 0.20.2
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
+The advisory scan reported no advisories, the license scan no denied licenses, and
+the `bans` and `sources` controls configured in `deny.toml`
+(`multiple-versions = "deny"`, `unknown-registry = "deny"`, `unknown-git = "deny"`)
+are executed rather than merely declared. CI runs the identical whole-policy check
+after installing exactly `cargo-deny 0.20.2` with `--locked`, qualified with the
+installer toolchain so it does not depend on which toolchain `rustup` leaves
+default:
+
+```text
+$ cargo +1.88.0 deny --version
+cargo-deny 0.20.2
+$ cargo +1.88.0 deny check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
+That toolchain-qualified command shape is the one in
+`.github/workflows/ci.yml`; it was verified locally with the pinned binary on
+`PATH`, producing the output above.
+
+The locked graph includes `option-ext 0.2.0` as
+`directories 6.0.0 -> dirs-sys 0.5.0 -> option-ext 0.2.0`, whose declared license
+is MPL-2.0. The policy explicitly allows MPL-2.0, rather than using a blanket
+license allow, because this is an unmodified upstream weak-copyleft crate linked
+by a permissively licensed CLI: MPL's file-level obligation is compatible with
+this larger work provided MPL notices are preserved and covered-file source remains
+available. No dependency replacement is made in T039; the recorded disposition is
+to retain `directories` and honor that MPL-2.0 notice/source obligation.
+
+The policy also explicitly allows only the other licenses observed in this locked
+graph: MIT, Apache-2.0, Zlib, Unicode-3.0, and Apache-2.0 WITH LLVM-exception.
+
+That single allow entry is load-bearing rather than decorative. Deleting only the
+`"MPL-2.0",` line from the committed policy in a copy of the clean checkout makes
+the license control fail on exactly that chain:
+
+```text
+$ cp -R /tmp/t039fix-clean /tmp/t039fix-nompl && sed -i '' '/    "MPL-2.0",/d' /tmp/t039fix-nompl/deny.toml
+$ cd /tmp/t039fix-nompl && /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check licenses
+rejected: license is not explicitly allowed
+MPL-2.0 - Mozilla Public License 2.0
+option-ext v0.2.0 <- dirs-sys v0.5.0 <- directories v6.0.0 <- matinee-runtime v0.0.2
+licenses FAILED
+$ echo $?
+4
+```
+
+### Provenance refresh at HEAD 23aaaa5
+
+The dependency provenance was re-recorded at HEAD `23aaaa5fe8c7e704b55ddcfbae1bb514d5085437` after the `unicode-normalization` addition. The repository policy remained tracked and unchanged (`deny.toml` SHA-256 `8748ce3e84d4143cf9b3808dbb0b589bf92c463f1bca29261643d43ca0b1ddc0`).
+
+```text
+$ shasum -a 256 Cargo.lock
+c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  Cargo.lock
+$ cargo tree --locked --workspace --all-features
+matinee v0.0.2 (<repo>/crates/matinee-cli)
+matinee-runtime v0.0.2 (<repo>/crates/matinee-runtime)
+├── directories v6.0.0
+│   └── dirs-sys v0.5.0
+│       ├── libc v0.2.189
+│       └── option-ext v0.2.0
+├── libc v0.2.189
+├── serde v1.0.229
+│   ├── serde_core v1.0.229
+│   └── serde_derive v1.0.229 (proc-macro)
+│       ├── proc-macro2 v1.0.107
+│       │   └── unicode-ident v1.0.24
+│       ├── quote v1.0.47
+│       │   └── proc-macro2 v1.0.107 (*)
+│       └── syn v3.0.5
+│           ├── proc-macro2 v1.0.107 (*)
+│           ├── quote v1.0.47 (*)
+│           └── unicode-ident v1.0.24
+├── toml v1.1.6+spec-1.1.0
+│   ├── serde_core v1.0.229
+│   ├── serde_spanned v1.1.1
+│   │   └── serde_core v1.0.229
+│   ├── toml_datetime v1.1.1+spec-1.1.0
+│   │   └── serde_core v1.0.229
+│   ├── toml_parser v1.1.3+spec-1.1.0
+│   │   └── winnow v1.0.4
+│   ├── toml_writer v1.1.2+spec-1.1.0
+│   └── winnow v1.0.4
+└── unicode-normalization v0.1.25
+    └── tinyvec v1.13.2
+        └── tinyvec_macros v0.1.1
+```
+
+The locked metadata projection reported `unicode-normalization 0.1.25 MIT OR Apache-2.0`, its transitive `tinyvec 1.13.2 Zlib OR Apache-2.0 OR MIT`, and `tinyvec_macros 0.1.1 MIT OR Apache-2.0 OR Zlib`; the existing `option-ext 0.2.0 MPL-2.0` remained in the graph. The exact Rust gates both exited `0`: `cargo +1.85.0 build --locked --workspace --all-targets` finished successfully, and `cargo +1.85.0 test --workspace --all-targets --locked` reported `186 passed; 0 failed` (6 suites, 17 filtered). The post-gate lockfile checksum remained `c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3`.
+
+The repository-authoritative pinned whole-policy scan also exited `0`:
+
+```text
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny --version
+cargo-deny 0.20.2
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
+## T042 Quickstart execution record
+
+This record captures the commands in `quickstart.md` as run on the macOS host. The CLI commands ran from this checkout with the worktrunk-generated `.cargo/config.toml` target directory; no Rust source files were changed by this epic. Exit status is the process status observed for each command.
+
+### Released CLI baseline
+
+#### `cargo run -p matinee -- --help`
+
+Observed exit status: `0`.
+
+Observed salient output:
+
+```text
+Matinee checks headed-browser environments for coding agents.
+
+Usage: matinee <COMMAND>
+
+Commands:
+  doctor   Check for supported browser executables
+  help     Print help
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+Requirement mapping: the released CLI surface lists only the `doctor` and `help` commands and does not expose later-spec commands. This is the help portion of `FR-005-001` and `FR-005-013`, and satisfies `SC-005-001` and `SC-005-007`.
+
+#### `cargo run -p matinee -- --version`
+
+Observed exit status: `0`.
+
+Observed salient output: `matinee 0.0.2`.
+
+Requirement mapping: the version output identifies the `matinee` package and package version as required by `FR-005-001` and `SC-005-001`.
+
+#### `cargo run -p matinee -- doctor`
+
+Observed exit status: `0`.
+
+Observed stdout:
+
+```text
+Firefox	/Applications/Firefox.app/Contents/MacOS/firefox
+Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+```
+
+Observed stderr: empty. At least one supported browser exists, so the successful status satisfies the quickstart success condition. The two rows are detection results only; no automation or control operation was invoked.
+
+Requirement mapping: Firefox and Google Chrome rows, detection-only behavior, and success when a supported browser exists satisfy `FR-005-001`, `FR-005-002`, and `SC-005-001`.
+
+#### No-browser exit-1 attempt
+
+To remove `PATH` candidates without changing installed applications, I ran:
+
+```text
+$ PATH=/nonexistent /Users/sjors/.local/share/mise/shims/cargo run -p matinee -- doctor
+```
+
+Observed exit status: `0`. Salient output remained:
+
+```text
+Firefox	/Applications/Firefox.app/Contents/MacOS/firefox
+Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+```
+
+Finding: the requested exit-1 no-browser case could not be produced on this host using the CLI's supported isolation surface. The CLI checks fixed macOS application paths in addition to `PATH`; both fixed paths exist on this host, so an empty `PATH` did not create a no-browser environment. I did not rename, delete, or otherwise mutate either installed application. The repository's injected-discovery unit test covers the no-browser branch (`Firefox\tnot found`, `Google Chrome\tnot found`, diagnostic `no supported browser found; install Firefox or Google Chrome`, exit code `1`), but that is not a CLI process exit and is not claimed as the requested observed process status. This finding leaves the quickstart's exit-1 demonstration unproven on this host.
+
+Requirement mapping: the expected exit-1 branch is the negative half of the doctor contract (`FR-005-002`/`SC-005-001`). The observed inability to isolate fixed paths is recorded as a validation limitation rather than an invented pass.
+
+#### Invalid invocation (`cargo run -p matinee -- wat`)
+
+Observed exit status: `2`.
+
+Observed stdout: empty.
+
+Observed stderr:
+
+```text
+error: unrecognized argument 'wat'
+
+Usage: matinee <COMMAND>
+```
+
+Requirement mapping: the diagnostic is written to stderr and exit status `2`, satisfying the invalid-invocation requirement in `SC-005-001` and the closed CLI failure behavior in `FR-005-001`.
+
+### Configuration policy
+
+#### `cargo test -p matinee-runtime --test configuration_contract`
+
+Observed exit status: `0`.
+
+Observed result: `28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.76s`.
+
+Requirement mapping: this validates the quickstart matrix for precedence, protected sources, duplicate and unknown keys, Windows environment-name collisions, descriptor material classes, malformed values, exact and one-over limits, pathological 1 MiB inputs, redacted closed failures, and empty temporary roots. It maps to `FR-005-005`, `SC-005-002`, and `TASK-SEC-003`.
+
+#### `cargo test -p matinee-runtime --test environment_contract`
+
+Observed exit status: `0`.
+
+Observed result (verbatim summary lines from this invocation):
+
+```text
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.03s
+```
+
+The `17 filtered out` line is the helper test's nested one-test run; it is not a separate Cargo test binary line. The `environment_contract` binary result is `18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`.
+
+Requirement mapping: this validates the macOS, Linux, and Windows fixture paths; one hundred roots; platform-equivalent paths; supported symbolic links; escape rejection; and project-file replacement during a read. It maps to `FR-005-003`, `FR-005-004`, `SC-005-003`, `SC-005-004`, `SC-005-005`, and `TASK-SEC-002`.
+
+### Architecture gate
+
+#### `cargo +1.85.0 test --workspace --all-targets`
+
+Observed exit status: `0`.
+
+Observed result: `186 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` across the six test binaries (including the 7 CLI unit tests, 7 released-CLI tests, 125 runtime unit tests, 28 configuration-contract tests, and 18 environment-contract tests; the environment helper test also reported `1 passed` in its nested one-test run). The command initially waited on the package-cache lock, then completed successfully.
+
+Requirement mapping: the Rust 1.85 workspace/all-targets compatibility gate passed, covering direct and transitive dependency compatibility and the released CLI/runtime contracts. This gate maps to the plan's CI architecture gate rather than to an FR or SC identifier.
+
+Known pre-existing finding (not attributed to this epic): the host failure `matinee-runtime` `platform::tests::host_unicode_normalization_is_total_for_valid_anchor_without_variant_probe` has previously produced `Err(PathUnavailable)` where the test expects `Ok(CanonicalDecomposed)`. This epic changes no Rust code. In this exact workspace-gate invocation, the same test was observed as `ok` and the command exited `0`; therefore this record does not claim that failure was reproduced here, but preserves it as the known host-dependent baseline finding for follow-up.
+
+#### `cargo clippy --workspace --all-targets -- -D warnings`
+
+Observed exit status: `0`.
+
+Observed output: no diagnostics; Cargo reported `Finished dev profile [unoptimized + debuginfo] target(s) in 14.43s`.
+
+Requirement mapping: no warning was allowed by the `-D warnings` architecture gate. This maps to the workspace quality gate.
+
+#### `cargo fmt --all --check`
+
+Observed exit status: `0`.
+
+Observed output: empty.
+
+Requirement mapping: all workspace Rust formatting matched rustfmt, satisfying the formatting portion of the architecture gate.
+
+### Overall disposition
+
+All quickstart commands listed in `quickstart.md` completed with exit status `0` in this invocation. The additional invalid invocation produced the required exit status `2` and stderr diagnostic. The no-browser exit-1 process scenario remains unproven on this host because fixed macOS browser paths are present; the injected unit-test branch exists but is not substituted for the requested process-level demonstration. The known host Unicode-normalization failure is recorded as pre-existing and not caused by this epic.
+
+## T043 Requirement and control traceability
+
+### Identifier-set audit
+
+The authoritative identifier grep over `specs/005-runtime-foundation/spec.md` returned every
+functional requirement `FR-005-001` through `FR-005-020` and every success criterion
+`SC-005-001` through `SC-005-007`; no identifier in either range was absent or duplicated.
+The grep over `security-review-followup.md` returned `TASK-SEC-001` through `TASK-SEC-005`.
+The conductor rerun plans in this directory add the three later security-control tasks:
+`TASK-SEC-006` (bounded lexical preflight), `TASK-SEC-007` (closed failure rendering), and
+`TASK-SEC-008` (exact lock identity and collision proof).  The complete security-control set
+for this trace is therefore exactly `TASK-SEC-001` through `TASK-SEC-008`; the last three are
+not invented aliases for the first five, but the explicitly cross-checked conductor-rerun
+additions.  The source files and grep results are the authority for this enumeration.
+
+### Evidence ledger
+
+The following exact commands and scenarios are the evidence references used below.  Commands
+already recorded in T041, T039, and T042 are cross-referenced rather than re-run; every new
+filtered command in this ledger was run in this checkout and its observed result is recorded.
+
+- **E1 — released CLI channels and surface.** T042 records
+  `cargo run -p matinee -- --help` (exit `0`; output listed only `doctor` and `help`),
+  `cargo run -p matinee -- --version` (exit `0`; `matinee 0.0.2`),
+  `cargo run -p matinee -- doctor` (exit `0`; Firefox and Google Chrome rows on stdout,
+  empty stderr), and `cargo run -p matinee -- wat` (exit `2`; empty stdout and the
+  `unrecognized argument 'wat'` diagnostic on stderr).  The T042 scenario
+  `PATH=/nonexistent /Users/sjors/.local/share/mise/shims/cargo run -p matinee -- doctor`
+  still exited `0` and printed the two fixed macOS browser paths; the requested no-browser
+  process exit-1 case is explicitly unproven because those applications are installed.
+- **E2 — prior contract suites.** T042 records
+  `cargo test -p matinee-runtime --test configuration_contract` (exit `0`; `28 passed; 0
+  failed`) and `cargo test -p matinee-runtime --test environment_contract` (exit `0`; `18
+  passed; 0 failed`, plus its helper binary's `1 passed`).  The former observed precedence,
+  protected-source, duplicate/unknown-key, malformed-value, limit, and closed-failure cases;
+  the latter observed macOS/Linux/Windows fixtures, 100-root isolation, aliases, escape
+  rejection, and file-identity replacement.
+- **E3 — classification and disclosure filters.**
+  `cargo test -p matinee-runtime --test configuration_contract reserved_keys_are_unknown_until_their_descriptor_is_registered -- --exact` returned exit
+  `0`, `1 passed; 0 failed`; the reserved names from user, project, and environment sources
+  all returned `config.key_unknown`.  The corresponding exact commands
+  `cargo test -p matinee-runtime --test configuration_contract project_file_state_dir_is_rejected_as_forbidden -- --exact` and
+  `cargo test -p matinee-runtime --test configuration_contract environment_state_dir_is_rejected_as_forbidden -- --exact` each returned exit `0`,
+  `1 passed; 0 failed`, with `config.source_forbidden`.
+- **E4 — unknown-key and closed-field rendering.** The exact command
+  `cargo test -p matinee-runtime --test configuration_contract unknown_key_failure_is_redacted_and_does_not_return_partial_state -- --exact` returned
+  exit `0`, `1 passed; 0 failed`; its rendered failure contained the redacted user-file
+  source but neither the rejected key, its value, nor the fixture root, and no partial state.
+  The exact command
+  `cargo test -p matinee-runtime --test configuration_contract reachable_failures_render_only_closed_static_projections -- --exact` also returned exit
+  `0`, `1 passed; 0 failed`; each exercised failure rendered only the fixed code, static
+  summary, redacted source, and static next action, while preserving the no-mutation checks.
+  The additional exact commands
+  `cargo test -p matinee-runtime --test configuration_contract user_file_failure_projection_redacts_path_value_and_parser_excerpt -- --exact` and
+  `cargo test -p matinee-runtime --test configuration_contract project_file_failure_origin_is_relative_and_redacted -- --exact` each returned exit
+  `0`, `1 passed; 0 failed` and observed that raw values, absolute paths, and parser excerpts
+  were absent from the rendered fields.
+- **E5 — bounded lexical preflight.**
+  `cargo test -p matinee-runtime --test configuration_contract pathological_one_mib_`
+  returned exit `0`, `5 passed; 0 failed`; assignment, dotted-depth, duplicate, Unicode
+  scalar, and structural-overflow 1 MiB scenarios all rejected before typed deserialization,
+  merge, or product-state mutation.  The unit command
+  `cargo test -p matinee-runtime resolve_environment_preflights_toml_before_typed_parsing`
+  returned exit `0`, `1 passed; 0 failed` and observed the assignment limit before typed TOML
+  parsing.
+- **E6 — path identity, containment, and mutation.** The exact commands
+  `cargo test -p matinee-runtime --test environment_contract escaped_implicit_project_file_is_rejected_before_target_read -- --exact` returned exit
+  `0`, `1 passed; 0 failed`; the linked-file counterpart
+  `cargo test -p matinee-runtime --test environment_contract linked_implicit_project_file_is_rejected_before_file_read -- --exact` did the same.
+  The unit command
+  `cargo test -p matinee-runtime resolve_environment_rejects_post_read_replacement_in_one_invocation`
+  returned exit `0`, `1 passed; 0 failed` and observed `config.file_changed` after a replacement.
+  `cargo test -p matinee-runtime --test environment_contract resolution_creates_no_derived_directories
+  -- --exact` returned exit `0`, `1 passed; 0 failed`.
+- **E7 — exact lock identity and collision checks.** The exact commands
+  `cargo test -p matinee-runtime --test environment_contract
+  one_hundred_canonical_roots_have_alias_convergent_exact_lock_identities_without_mutation
+  -- --exact` and
+  `cargo test -p matinee-runtime --test environment_contract
+  one_hundred_distinct_roots_are_pairwise_isolated_without_mutation -- --exact` each returned
+  exit `0`, `1 passed; 0 failed`.  The first observed canonical/`state/./nested/../.` alias
+  convergence, exact lock identity, pairwise distinction, and no mutation; the second
+  observed 100 pairwise-distinct state paths and lock identities with no mutation.
+- **E8 — environment-name comparison.** The exact command
+  `cargo test -p matinee-runtime --test configuration_contract
+  environment_names_that_normalize_to_one_key_are_rejected_as_duplicates -- --exact`
+  returned exit `0`, `1 passed; 0 failed`, with the differently cased environment names
+  rejected as `config.key_duplicate`.
+- **E9 — descriptor-owned material classes.** The commands
+  `cargo test -p matinee-runtime production_registry_contains_only_non_secret_descriptors`,
+  `cargo test -p matinee-runtime registered_secret_class_is_rejected_for_that_key`, and
+  `cargo test -p matinee-runtime opaque_secret_reference_is_rejected_for_that_key` each
+  returned exit `0`, `1 passed; 0 failed`.  They observed a production registry containing
+  only `non_secret` descriptors and descriptor-owned `config.secret_forbidden` for both
+  forbidden material classes.
+- **E10 — precedence and resolution no-mutation controls.** The exact command
+  `cargo test -p matinee-runtime --test configuration_contract
+  command_line_beats_the_user_file -- --exact` returned exit `0`, `1 passed; 0 failed`.
+  The unit filters `cargo test -p matinee-runtime config::tests::unknown_key_beats_invalid_value`,
+  `cargo test -p matinee-runtime config::tests::forbidden_source_beats_invalid_value`, and
+  `cargo test -p matinee-runtime config::tests::secret_class_beats_forbidden_source` each
+  returned the cargo summary `1 passed` with no failures, observing the ordered first-failure
+  classification.  The E6 no-derived-directories result is the no-mutation portion.
+- **E11 — dependency provenance.** T039 records the exact `cargo +1.85.0 build --locked
+  --workspace --all-targets` and `cargo +1.85.0 test --workspace --all-targets --locked`
+  commands, both exit `0` (`186 passed; 0 failed` for the test gate), unchanged Cargo.lock
+  checksum, locked tree, licenses, and the pinned whole-policy cargo-deny scan
+  (`advisories ok, bans ok, licenses ok, sources ok`).  The control is enforceable from a
+  clean checkout: `deny.toml` is tracked at the repository root
+  (`git ls-files -- deny.toml`) with SHA-256
+  `8748ce3e84d4143cf9b3808dbb0b589bf92c463f1bca29261643d43ca0b1ddc0`, and T039 records the
+  same scan passing against a `git archive HEAD` extraction that contains no working-tree
+  file.  A mutation that deletes the `MPL-2.0` allow from that committed policy makes the
+  license control exit `4`, so the policy is load-bearing.
+- **E12 — performance decision.** T041 records `python3 /tmp/matinee_t041_measure.py >
+  /tmp/matinee_t041_results.json`, 30 interleaved baseline/feature CLI pairs and 30 cold plus
+  30 warm resolver samples.  It observed a cold CLI p95 change of `+2.597873%`, below the
+  variance-reviewed `35%` threshold, and recorded the acceptance-owner decision permitting
+  T041; the warm median, p95, and mean changes and cold median/mean were lower.
+
+### Functional requirement mapping
+
+Each row names an evidence ledger entry whose exact command or scenario and observed outcome
+are above. "Partial" or "unproven" is intentional where the available run did not exercise
+the whole normative claim; no such row is presented as a completed proof.
+
+| Identifier | Exact evidence and observed outcome | Disposition |
+|---|---|---|
+| `FR-005-001` | E1: help, version, supported-browser doctor, and invalid-invocation commands returned the recorded 0.0.2 channels and exit classes. The no-browser process branch remains unproven in the T042 scenario. | Partial; no-browser limitation recorded |
+| `FR-005-002` | E1 help output listed only `doctor` and `help`; no later-spec command was advertised. | Observed for the shipped surface |
+| `FR-005-003` | E2 environment suite returned 18 passed; E10/E6 resolution tests returned success without derived-directory creation. | Observed |
+| `FR-005-004` | E2 environment fixture suite returned 18 passed and covered macOS, Linux, and Windows fixture path resolution without consulting the host platform. | Observed |
+| `FR-005-005` | E2 configuration suite returned 28 passed; E10 command-line-over-user test returned 1 passed and observed the top precedence winner. | Observed |
+| `FR-005-006` | E2 protected-source tests and E10 precedence tests observed user/CLI selection behavior; the registered `state_dir` descriptor accepted only the allowed sources. | Observed for registered `state_dir` |
+| `FR-005-007` | E3 project/environment `state_dir` controls each returned `config.source_forbidden`; E4 closed rendering tests observed redaction. No separate descriptors for every future auth/loopback/approval value are registered in this feature. | Partial; broader future-setting coverage unproven |
+| `FR-005-008` | E3 exact project-file and environment-source commands each returned `config.source_forbidden` with a redacted source. | Observed |
+| `FR-005-009` | E2 configuration/environment suites passed; E4 provenance commands observed relative/redacted file origins, and E7 observed canonical state roots. | Observed for exercised non-secret settings |
+| `FR-005-010` | E7 observed alias convergence, exact lock identity, pairwise-distinct lock identities and state paths for 100 distinct roots, and no filesystem mutation. | Observed |
+| `FR-005-011` | E6 escaped-project and linked-file scenarios each passed before target read; the target contents were not observed by the resolver. | Observed |
+| `FR-005-012` | E4 exercised closed syntax/source/value/duplicate/unknown projections with no raw disclosures and no mutation; E6 observed path-unavailable/change and no derived directories. | Observed for reachable exercised failures |
+| `FR-005-013` | E1 observed normal output on stdout, diagnostics on stderr, and the released exit classes including invalid invocation exit 2. | Observed |
+| `FR-005-014` | E1 observed that no later runtime mode is advertised. No later mode exists in this feature, so its conditional behavior is not exercised. | Boundary observed; conditional path unproven |
+| `FR-005-015` | E3 reserved-key test returned `config.key_unknown` for unregistered reserved names; the registered protected `state_dir` tests returned `config.source_forbidden`. E10 unit filters observed unknown-before-value and source-before-value ordering. | Observed |
+| `FR-005-016` | E6 escaped/linked scenarios passed before read, and the post-read replacement unit scenario returned `config.file_changed`. | Observed |
+| `FR-005-017` | E5 five pathological 1 MiB tests and the typed-parsing-boundary unit test all passed with preflight rejection before deserialization. | Observed |
+| `FR-005-018` | E8 differently cased environment names mapping to one key returned `config.key_duplicate`. | Observed |
+| `FR-005-019` | E4 exact user/project projection tests passed with code, static summary, redacted source, and static next action; raw key/value/path/parser text was absent. | Observed for exercised failure families |
+| `FR-005-020` | E9 production-registry, registered-secret, and opaque-reference tests each passed; material class was descriptor-owned and forbidden classes returned `config.secret_forbidden`. | Observed |
+
+### Success-criteria mapping
+
+| Identifier | Exact evidence and observed outcome | Disposition |
+|---|---|---|
+| `SC-005-001` | E1 recorded the help/version/supported-browser doctor journeys and invalid invocation; the no-browser exit-1 process scenario remained unproven because fixed browser paths exist. | Partial; limitation recorded |
+| `SC-005-002` | E2 recorded 28 passed configuration-contract tests covering layers, protected/unknown keys, material classes, precedence, limits, pathological input, collisions, redaction, and no mutation; E3-E5 add focused observed proofs. | Observed for the recorded matrix |
+| `SC-005-003` | E2 recorded 18 passed environment-contract tests with macOS, Linux, and Windows fixture paths. | Observed |
+| `SC-005-004` | E7's 100-distinct-root command passed and observed pairwise-disjoint state paths and exact pairwise-distinct lock identities with no files created. | Observed |
+| `SC-005-005` | E7's 100-root alias command passed and observed canonical/lexical alias convergence to one state and lock identity per root, plus pairwise distinction across roots. | Observed |
+| `SC-005-006` | E2 recorded the full environment suite; E4 and E6 observed closed failure fields, raw-disclosure absence, containment/replacement failures, and no mutation. | Observed for exercised failure matrix |
+| `SC-005-007` | E1 help output contained zero surfaces assigned to specs 006-016. | Observed |
+
+### Security-control mapping
+
+The follow-up file records TASK-SEC-001 through TASK-SEC-005; the conductor rerun plans
+explicitly define TASK-SEC-006 through TASK-SEC-008. Each of the eight identifiers is listed
+once here with command/scenario evidence and an observed result.
+
+| Identifier | Exact evidence and observed outcome | Disposition |
+|---|---|---|
+| `TASK-SEC-001` | E6 `escaped_implicit_project_file_is_rejected_before_target_read` and `linked_implicit_project_file_is_rejected_before_file_read` each returned 1 passed; both rejected before reading the target. | Observed |
+| `TASK-SEC-002` | E6 post-read replacement returned `config.file_changed`; E7 alias and pairwise identity tests passed, demonstrating snapshot/identity behavior. | Observed |
+| `TASK-SEC-003` | E2 full configuration suite returned 28 passed; E5 returned 5 passed for bounded 1 MiB lexical cases and one typed-parsing boundary test passed. | Observed |
+| `TASK-SEC-004` | E4 user-file and project-file projection tests each returned 1 passed; all rendered fields excluded raw absolute paths, values, keys, and parser excerpts. | Observed |
+| `TASK-SEC-005` | E8 normalized environment-name collision test returned 1 passed with `config.key_duplicate` before merge. | Observed |
+| `TASK-SEC-006` | E5 five exact filtered pathological-preflight tests returned `5 passed; 0 failed`; assignment, depth, duplicate, Unicode, and structural limits rejected before typed deserialization and merge. | Observed |
+| `TASK-SEC-007` | E4 unknown-key redaction, closed-static-projection, user-file, and project-file commands each returned 1 passed; the rendered result stayed closed to code, static summary, redacted source, and static next action with no raw disclosure or mutation. | Observed for the exercised negative families |
+| `TASK-SEC-008` | E7 exact commands for 100 alias-convergent roots and 100 distinct roots each returned 1 passed; lock identity was exact, aliases converged, pairs did not collide, and no product state was created. | Observed |
+
+### Explicit control conclusions and limits
+
+- **Classification precedence is not source-only.** E3 proves the required split: an
+  unregistered reserved key returns `config.key_unknown` even from a lower-trust source;
+  only a registered protected descriptor returns `config.source_forbidden`. E10 additionally
+  observed unknown-before-value, secret-class-before-source/value, and source-before-value
+  first-failure ordering. `config.key_unknown` exposed no key text.
+- **Preflight is bounded and precedes typed deserialization.** E5's pathological documents
+  carried assignment-shaped content and typed-parser poison; the five tests observed the
+  lexical limit/duplicate code rather than `config.syntax_invalid`, with no merge or product
+  state. The separate typed-parsing-boundary test passed for a document that reached syntax
+  parsing only after preflight.
+- **Closed-failure non-disclosure covers every rendered field exercised.** E4 asserted the
+  complete rendered projection, not only a source accessor: code, static summary, redacted
+  source, and static next action were present, while key text, raw values, absolute paths,
+  parser excerpts, and OS-error-like fixture text were absent. The disposition above does not
+  silently extend that observed set to an unexercised failure family.
+- **Lock identity is exact and collision-safe in the observed matrix.** E7 proved alias
+  convergence, pairwise non-collision across 100 distinct roots, exact identity, and no
+  filesystem mutation.
+- **Dependency provenance is clean-checkout enforceable.** E11's T039 checksum, locked
+  graph, Rust 1.85 build/test, and whole-policy cargo-deny output are observed, and
+  `deny.toml` is tracked in the repository, so a clean checkout enforces the cargo-deny
+  policy.  CI runs `cargo +1.88.0 deny check`, which executes the advisories, bans,
+  licenses, and sources controls rather than a subset.
+- **Performance threshold decision is inherited from T041, not recomputed here.** E12 cites
+  the observed interleaved samples, the variance review, the 35% threshold, the +2.597873%
+  cold-p95 result, and the acceptance-owner decision.
+
+The no-browser exit-1 process case and the broader future-setting policy cases remain plainly
+identified as unproven above. No command, scenario, or identifier is marked complete on the
+basis of a planned test, a task title, or a design-only statement.
+
+## T044 Security control confirmation
+
+This record confirms each security-control acceptance case with an executed test command. The commands ran in this checkout on macOS. Exit `0` and `1 passed; 0 failed` are observed results.
+
+| Control | Exact acceptance case | Exact command run | Observed result and mutation evidence |
+|---|---|---|---|
+| `TASK-SEC-001` | Reject an escaped implicit project file and an implicit linked project file before the resolver reads the target bytes. | `cargo test -p matinee-runtime --test environment_contract escaped_implicit_project_file_is_rejected_before_target_read -- --exact`<br>`cargo test -p matinee-runtime --test environment_contract linked_implicit_project_file_is_rejected_before_file_read -- --exact` | Both commands exited `0` with `1 passed; 0 failed`. Each test returned `config.project_escape`; malformed target contents did not become a syntax result, and the target bytes remained unchanged. |
+| `TASK-SEC-002` | Reject a project-file identity replacement during one resolution, converge platform-equivalent aliases, and keep distinct canonical roots pairwise distinct. | `cargo test -p matinee-runtime resolve_environment_rejects_post_read_replacement_in_one_invocation`<br>`cargo test -p matinee-runtime --test environment_contract one_hundred_canonical_roots_have_alias_convergent_exact_lock_identities_without_mutation -- --exact`<br>`cargo test -p matinee-runtime --test environment_contract one_hundred_distinct_roots_are_pairwise_isolated_without_mutation -- --exact` | Each command exited `0` with `1 passed; 0 failed`. The unit case returned `config.file_changed`; the alias case matched state paths and exact lock identities while preserving no-mutation assertions; the 100-root case found 100 pairwise-distinct state paths and lock identities. |
+| `TASK-SEC-003` | Accept exact file-byte, assignment, dotted-depth, and text-scalar limits, reject one unit above each limit, and reject a pathological exact-1 MiB assignment document at lexical preflight. | `cargo test -p matinee-runtime --test configuration_contract configuration_accepts_exact_file_byte_limit_and_rejects_one_over -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract configuration_accepts_exact_assignment_limit_and_rejects_one_over -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract configuration_accepts_exact_key_depth_and_rejects_one_over -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract configuration_accepts_exact_text_length_and_rejects_one_over -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract pathological_exact_one_mib_toml_hits_preflight_before_size_gate -- --exact`<br>`cargo test -p matinee-runtime config::tests::lexical_preflight_enforces_exact_assignment_limit -- --exact` | All six commands exited `0` with `1 passed; 0 failed`. Exact boundaries passed; one-over inputs returned `config.file_too_large` or `config.limit_exceeded` as applicable; lexical assignment preflight returned `config.limit_exceeded` before typed deserialization. |
+| `TASK-SEC-004` | Keep user and project provenance relative and redact raw user/project absolute paths, values, keys, and parser excerpts from failure projections. | `cargo test -p matinee-runtime --test configuration_contract user_file_provenance_is_relative_and_redacted -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract project_file_failure_origin_is_relative_and_redacted -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract user_file_failure_projection_redacts_path_value_and_parser_excerpt -- --exact` | All three commands exited `0` with `1 passed; 0 failed`. User and project origins used closed relative/file projections; negative assertions found no raw absolute path, raw value, rejected key, or parser excerpt. |
+| `TASK-SEC-005` | Normalize differently cased environment names before key mapping and reject aliases that map to one key as a duplicate before merge. | `cargo test -p matinee-runtime --test configuration_contract environment_names_that_normalize_to_one_key_are_rejected_as_duplicates -- --exact` | The command exited `0` with `1 passed; 0 failed`; the normalized aliases returned `config.key_duplicate` and no merged result. |
+| `TASK-SEC-006` | Run bounded TOML-aware preflight for assignment, dotted-depth, duplicate, Unicode-scalar, and structural-overflow cases, and reject each before typed deserialization, merge, or product-state mutation. | `cargo test -p matinee-runtime --test configuration_contract pathological_one_mib_assignment_overflow_is_rejected_before_typed_deserialization -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract pathological_one_mib_dotted_depth_overflow_is_rejected_before_typed_deserialization -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract pathological_one_mib_duplicate_is_rejected_before_typed_deserialization -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract pathological_one_mib_unicode_overflow_is_rejected_before_typed_deserialization -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract pathological_one_mib_structural_overflow_is_rejected_before_typed_deserialization -- --exact`<br>`cargo test -p matinee-runtime environment::tests::resolve_environment_preflights_toml_before_typed_parsing` | All six commands exited `0` with `1 passed; 0 failed`. The five pathological cases returned the expected lexical limit or duplicate failures before typed parsing and merge; the unit seam separately observed preflight before typed TOML parsing. |
+| `TASK-SEC-007` | Render every exercised failure through exactly four closed fields: code, static summary, redacted source, and static next action. Unknown-key, source-forbidden, malformed, invalid-value, duplicate, and preflight failures must disclose no raw key, value, path, parser excerpt, or OS text and must not mutate product state. | `cargo test -p matinee-runtime --test configuration_contract unknown_key_failure_is_redacted_and_does_not_return_partial_state -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract reachable_failures_render_only_closed_static_projections -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract user_file_failure_projection_redacts_path_value_and_parser_excerpt -- --exact`<br>`cargo test -p matinee-runtime --test configuration_contract project_file_failure_origin_is_relative_and_redacted -- --exact`<br>`cargo test -p matinee-runtime error::tests::every_failure_code_projects_only_static_safe_fields -- --exact` | All five commands exited `0` with `1 passed; 0 failed`. The rendered failures contained only the fixed code, static summary, redacted source, and static next action; negative assertions found no rejected key, raw value, absolute path, parser excerpt, or mutation. Mutation proof: reversing material-class and source checks in `crates/matinee-runtime/src/config.rs` made `cargo test -p matinee-runtime config::tests::secret_class_beats_forbidden_source_and_invalid_value` fail with `SourceForbidden` instead of `SecretForbidden`; restoring the order made it pass. Mutating `SafeSummary::KeyUnknown` in `crates/matinee-runtime/src/error.rs` to include `credentials.api_token` made the exact unknown-key test fail at `!rendered.contains(rejected_key)`; restoring the static summary made it pass. Mutating `SafeSummary::KeyDuplicate` to include `first` made the exact closed-projection test fail with `failure projection leaked first`; restoring the summary made it pass. |
+| `TASK-SEC-008` | Preserve exact lock identity, converge lexical aliases, keep 100 distinct canonical roots pairwise non-colliding, and create no product state. | `cargo test -p matinee-runtime --test environment_contract one_hundred_canonical_roots_have_alias_convergent_exact_lock_identities_without_mutation -- --exact`<br>`cargo test -p matinee-runtime --test environment_contract one_hundred_distinct_roots_are_pairwise_isolated_without_mutation -- --exact` | Both commands exited `0` with `1 passed; 0 failed`. Alias pairs had equal exact lock identity and state path; the 100 distinct roots had pairwise-distinct identities and paths, and all no-mutation assertions passed. |
+
+### Required classification and disclosure distinctions
+
+The exact command `cargo test -p matinee-runtime --test configuration_contract reserved_keys_are_unknown_until_their_descriptor_is_registered -- --exact` exited `0` with `1 passed; 0 failed`. Unregistered reserved names from user, project, and environment sources returned `config.key_unknown`.
+
+The exact commands `cargo test -p matinee-runtime --test configuration_contract project_file_state_dir_is_rejected_as_forbidden -- --exact` and `cargo test -p matinee-runtime --test configuration_contract environment_state_dir_is_rejected_as_forbidden -- --exact` each exited `0` with `1 passed; 0 failed`. The registered protected `state_dir` descriptor returned `config.source_forbidden` from each prohibited source.
+
+The unknown-key test rendered `format!("{failure:?} {failure}")` and asserted that the rejected key, raw value, and fixture root were absent. The closed-projection test performed the same complete-rendered-result check across malformed, source-forbidden, invalid-value, duplicate, and unknown failures. These assertions establish that unknown-key failures expose no key text anywhere in the rendered result.
+
+The temporary source mutations were reverted before this record was written. `git status --short` then showed only the pre-existing `.beads/interactions.jsonl` modification and untracked `.cargo/` and `deny.toml`; no Rust source or test mutation remained.

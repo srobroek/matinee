@@ -1,0 +1,126 @@
+{
+  "hooks": {
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "command": "bd codex-hook PostCompact",
+            "statusMessage": "Scheduling Beads context refresh",
+            "type": "command"
+          }
+        ],
+        "matcher": "manual|auto"
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "bd codex-hook PreCompact",
+            "statusMessage": "Checking Beads context",
+            "type": "command"
+          }
+        ],
+        "matcher": "manual|auto"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/speckit-conductor/scripts/speckit-pr-title.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "apply_patch|Edit|Write|MultiEdit|Bash|Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/speckit-conductor/scripts/speckit-tasks-guard.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "apply_patch|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/adr-as-beads/scripts/adr-write-guard.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/beads/scripts/beads-gh-issue-guard.py",
+            "statusMessage": "Checking gh issue command against beads policy...",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bd codex-hook SessionStart",
+            "statusMessage": "Loading Beads context",
+            "type": "command"
+          }
+        ],
+        "matcher": "startup|resume|clear"
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/beads/scripts/beads-subagent-reminder.py",
+            "statusMessage": "Injecting beads work contract...",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "bd codex-hook UserPromptSubmit",
+            "statusMessage": "Refreshing Beads context",
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/speckit-conductor/scripts/speckit-dispatcher.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
