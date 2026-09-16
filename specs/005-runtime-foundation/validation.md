@@ -313,3 +313,158 @@ The measured evidence **permits acceptance of T041** under this threshold. It do
 - Technical Context performance goal: this section records raw durations and the platform/toolchain fingerprint.
 - Technical Context performance goal: this section records statistics and comparison.
 - Technical Context performance goal: this section records the owner, threshold, and disposition.
+
+## T039 Rust 1.85 dependency provenance and policy
+
+### Locked graph and checksum
+The repository-authoritative cargo-deny version is `cargo-deny 0.20.2`. No
+repository-wide mise tool configuration exists. Because cargo-deny 0.20.2 has
+Rust 1.88 as its minimum supported compiler, CI installs the pinned `1.88.0`
+toolchain for the installer, then runs `cargo +1.88.0 install cargo-deny
+--version 0.20.2 --locked`; the build and test gates remain explicit `+1.85.0`
+commands. Local verification used the same package and lock policy in a temporary
+root:
+
+```text
+$ rm -rf /tmp/matinee-cargo-deny-0.20.2 && cargo +1.88.0 install cargo-deny --version 0.20.2 --locked --root /tmp/matinee-cargo-deny-0.20.2
+   Installed package `cargo-deny v0.20.2` (executable `cargo-deny`)
+```
+The host `cargo-deny` shim was initially unusable and returned `mise ERROR No
+version is set for shim: cargo-deny`. The exact temporary-root installation above
+was the repository-authoritative local remedy; all scans below use that pinned
+binary rather than the unconfigured global shim.
+
+The lockfile checksum was recorded before and after the Rust 1.85 build:
+
+```text
+$ shasum -a 256 Cargo.lock
+c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  Cargo.lock
+```
+
+The complete locked workspace tree from `cargo tree --locked --workspace
+--all-features` was:
+
+```text
+matinee v0.0.2 (/Users/sjors/.omp/wt/ta6464fb5a/m/crates/matinee-cli)
+
+matinee-runtime v0.0.2 (/Users/sjors/.omp/wt/ta6464fb5a/m/crates/matinee-runtime)
+├── directories v6.0.0
+│   └── dirs-sys v0.5.0
+│       ├── libc v0.2.189
+│       └── option-ext v0.2.0
+├── libc v0.2.189
+├── serde v1.0.229
+│   ├── serde_core v1.0.229
+│   └── serde_derive v1.0.229 (proc-macro)
+│       ├── proc-macro2 v1.0.107
+│       │   └── unicode-ident v1.0.24
+│       ├── quote v1.0.47
+│       │   └── proc-macro2 v1.0.107 (*)
+│       └── syn v3.0.5
+│           ├── proc-macro2 v1.0.107 (*)
+│           ├── quote v1.0.47 (*)
+│           └── unicode-ident v1.0.24
+├── toml v1.1.6+spec-1.1.0
+│   ├── serde_core v1.0.229
+│   ├── serde_spanned v1.1.1
+│   │   └── serde_core v1.0.229
+│   ├── toml_datetime v1.1.1+spec-1.1.0
+│   │   └── serde_core v1.0.229
+│   ├── toml_parser v1.1.3+spec-1.1.0
+│   │   └── winnow v1.0.4
+│   ├── toml_writer v1.1.2+spec-1.1.0
+│   └── winnow v1.0.4
+└── unicode-normalization v0.1.25
+    └── tinyvec v1.13.2
+        └── tinyvec_macros v0.1.1
+```
+
+The following is the full package/license projection from `cargo metadata
+--format-version 1 --locked` (the command resolves the workspace and all locked
+packages):
+
+```text
+cfg-if 1.0.4 MIT OR Apache-2.0
+directories 6.0.0 MIT OR Apache-2.0
+dirs-sys 0.5.0 MIT OR Apache-2.0
+equivalent 1.0.2 Apache-2.0 OR MIT
+getrandom 0.2.17 MIT OR Apache-2.0
+hashbrown 0.17.1 MIT OR Apache-2.0
+indexmap 2.14.2 Apache-2.0 OR MIT
+libc 0.2.189 MIT OR Apache-2.0
+libredox 0.1.24 MIT
+matinee 0.0.2 Apache-2.0
+matinee-runtime 0.0.2 <none>
+option-ext 0.2.0 MPL-2.0
+proc-macro2 1.0.107 MIT OR Apache-2.0
+quote 1.0.47 MIT OR Apache-2.0
+redox_users 0.5.2 MIT
+serde 1.0.229 MIT OR Apache-2.0
+serde_core 1.0.229 MIT OR Apache-2.0
+serde_derive 1.0.229 MIT OR Apache-2.0
+serde_spanned 1.1.1 MIT OR Apache-2.0
+syn 3.0.5 MIT OR Apache-2.0
+thiserror 2.0.20 MIT OR Apache-2.0
+thiserror-impl 2.0.20 MIT OR Apache-2.0
+tinyvec 1.13.2 Zlib OR Apache-2.0 OR MIT
+tinyvec_macros 0.1.1 MIT OR Apache-2.0 OR Zlib
+toml 1.1.6+spec-1.1.0 MIT OR Apache-2.0
+toml_datetime 1.1.1+spec-1.1.0 MIT OR Apache-2.0
+toml_parser 1.1.3+spec-1.1.0 MIT OR Apache-2.0
+toml_writer 1.1.2+spec-1.1.0 MIT OR Apache-2.0
+unicode-ident 1.0.24 (MIT OR Apache-2.0) AND Unicode-3.0
+unicode-normalization 0.1.25 MIT OR Apache-2.0
+wasi 0.11.1+wasi-snapshot-preview1 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+windows-link 0.2.1 MIT OR Apache-2.0
+windows-sys 0.61.2 MIT OR Apache-2.0
+winnow 1.0.4 MIT
+```
+
+`matinee-runtime` is private and has no package license field; it is excluded from
+the published-license check by `private = { ignore = true }`. Its registry
+dependencies are still checked.
+
+### Rust 1.85 build and lockfile preservation
+
+The exact compatibility gate ran locally:
+
+```text
+$ cargo +1.85.0 build --locked --workspace --all-targets
+   Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.85s
+$ cargo +1.85.0 test --workspace --all-targets --locked
+cargo test: 186 passed (6 suites, 17 filtered, 6.88s)
+$ shasum -a 256 Cargo.lock
+c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  Cargo.lock
+```
+
+The checksum is unchanged from the pre-build recording above, proving that the
+locked build did not modify `Cargo.lock`.
+
+### cargo-deny scans
+
+The exact local invocations used the pinned binary installed above:
+
+```text
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny --version
+cargo-deny 0.20.2
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check advisories
+advisories ok
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check licenses
+licenses ok
+```
+
+The advisory scan reported no advisories. The license scan reported no denied
+licenses. CI repeats the same checks through `cargo deny` after installing exactly
+`cargo-deny 0.20.2` with `--locked`.
+
+The locked graph includes `option-ext 0.2.0` as
+`directories 6.0.0 -> dirs-sys 0.5.0 -> option-ext 0.2.0`, whose declared license
+is MPL-2.0. The policy explicitly allows MPL-2.0, rather than using a blanket
+license allow, because this is an unmodified upstream weak-copyleft crate linked
+by a permissively licensed CLI: MPL's file-level obligation is compatible with
+this larger work provided MPL notices are preserved and covered-file source remains
+available. No dependency replacement is made in T039; the recorded disposition is
+to retain `directories` and honor that MPL-2.0 notice/source obligation.
+
+The policy also explicitly allows only the other licenses observed in this locked
+graph: MIT, Apache-2.0, Zlib, Unicode-3.0, and Apache-2.0 WITH LLVM-exception.
