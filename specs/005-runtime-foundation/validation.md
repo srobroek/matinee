@@ -468,3 +468,139 @@ to retain `directories` and honor that MPL-2.0 notice/source obligation.
 
 The policy also explicitly allows only the other licenses observed in this locked
 graph: MIT, Apache-2.0, Zlib, Unicode-3.0, and Apache-2.0 WITH LLVM-exception.
+
+## T042 Quickstart execution record
+
+This record captures the commands in `quickstart.md` as run on the macOS host. The CLI commands ran from this checkout with the worktrunk-generated `.cargo/config.toml` target directory; no Rust source files were changed by this epic. Exit status is the process status observed for each command.
+
+### Released CLI baseline
+
+#### `cargo run -p matinee -- --help`
+
+Observed exit status: `0`.
+
+Observed salient output:
+
+```text
+Matinee checks headed-browser environments for coding agents.
+
+Usage: matinee <COMMAND>
+
+Commands:
+  doctor   Check for supported browser executables
+  help     Print help
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+Requirement mapping: the released CLI surface lists only the `doctor` and `help` commands and does not expose later-spec commands. This is the help portion of `FR-005-001` and `SC-005-001`; the command also provides the documented detection-only surface for `TASK-SEC-001`.
+
+#### `cargo run -p matinee -- --version`
+
+Observed exit status: `0`.
+
+Observed salient output: `matinee 0.0.2`.
+
+Requirement mapping: the version output identifies the `matinee` package and package version as required by `FR-005-001` and `SC-005-001`.
+
+#### `cargo run -p matinee -- doctor`
+
+Observed exit status: `0`.
+
+Observed stdout:
+
+```text
+Firefox	/Applications/Firefox.app/Contents/MacOS/firefox
+Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+```
+
+Observed stderr: empty. At least one supported browser exists, so the successful status satisfies the quickstart success condition. The two rows are detection results only; no automation or control operation was invoked.
+
+Requirement mapping: Firefox and Google Chrome rows, detection-only behavior, and success when a supported browser exists satisfy `FR-005-001`, `FR-005-002`, `SC-005-001`, and `TASK-SEC-001`.
+
+#### No-browser exit-1 attempt
+
+To remove `PATH` candidates without changing installed applications, I ran:
+
+```text
+$ PATH=/nonexistent /Users/sjors/.local/share/mise/shims/cargo run -p matinee -- doctor
+```
+
+Observed exit status: `0`. Salient output remained:
+
+```text
+Firefox	/Applications/Firefox.app/Contents/MacOS/firefox
+Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+```
+
+Finding: the requested exit-1 no-browser case could not be produced on this host using the CLI's supported isolation surface. The CLI checks fixed macOS application paths in addition to `PATH`; both fixed paths exist on this host, so an empty `PATH` did not create a no-browser environment. I did not rename, delete, or otherwise mutate either installed application. The repository's injected-discovery unit test covers the no-browser branch (`Firefox\tnot found`, `Google Chrome\tnot found`, diagnostic `no supported browser found; install Firefox or Google Chrome`, exit code `1`), but that is not a CLI process exit and is not claimed as the requested observed process status. This finding leaves the quickstart's exit-1 demonstration unproven on this host.
+
+Requirement mapping: the expected exit-1 branch is the negative half of the doctor contract (`FR-005-002`/`SC-005-001`). The observed inability to isolate fixed paths is recorded as a validation limitation rather than an invented pass.
+
+#### Invalid invocation (`cargo run -p matinee -- wat`)
+
+Observed exit status: `2`.
+
+Observed stdout: empty.
+
+Observed stderr:
+
+```text
+error: unrecognized argument 'wat'
+
+Usage: matinee <COMMAND>
+```
+
+Requirement mapping: the diagnostic is written to stderr and exit status `2`, satisfying the invalid-invocation requirement in `SC-005-001` and the closed CLI failure behavior in `FR-005-001`.
+
+### Configuration policy
+
+#### `cargo test -p matinee-runtime --test configuration_contract`
+
+Observed exit status: `0`.
+
+Observed result: `28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.76s`.
+
+Requirement mapping: this validates the quickstart matrix for precedence, protected sources, duplicate and unknown keys, Windows environment-name collisions, descriptor material classes, malformed values, exact and one-over limits, pathological 1 MiB inputs, redacted closed failures, and empty temporary roots. It maps to `FR-005-005`, `SC-005-005`, and `TASK-SEC-003`.
+
+#### `cargo test -p matinee-runtime --test environment_contract`
+
+Observed exit status: `0`.
+
+Observed result: `18 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 10.40s` (the harness also ran its helper test once in a separate test binary: `1 passed; 0 failed; 17 filtered out; finished in 0.00s`).
+
+Requirement mapping: this validates the macOS, Linux, and Windows fixture paths; one hundred roots; platform-equivalent paths; supported symbolic links; escape rejection; and project-file replacement during a read. It maps to `FR-005-003`, `FR-005-004`, `SC-005-003`, and `TASK-SEC-002`.
+
+### Architecture gate
+
+#### `cargo +1.85.0 test --workspace --all-targets`
+
+Observed exit status: `0`.
+
+Observed result: `186 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` across the six test binaries (including the 7 CLI unit tests, 7 released-CLI tests, 125 runtime unit tests, 28 configuration-contract tests, and 18 environment-contract tests; the environment helper test also reported `1 passed` in its separate helper binary). The command initially waited on the package-cache lock, then completed successfully.
+
+Requirement mapping: the Rust 1.85 workspace/all-targets compatibility gate passed, covering direct and transitive dependency compatibility and the released CLI/runtime contracts. It maps to `FR-005-006`, `SC-005-004`, `SC-005-006`, and the CI architecture gate.
+
+Known pre-existing finding (not attributed to this epic): the host failure `matinee-runtime` `platform::tests::host_unicode_normalization_is_total_for_valid_anchor_without_variant_probe` has previously produced `Err(PathUnavailable)` where the test expects `Ok(CanonicalDecomposed)`. This epic changes no Rust code. In this exact workspace-gate invocation, the same test was observed as `ok` and the command exited `0`; therefore this record does not claim that failure was reproduced here, but preserves it as the known host-dependent baseline finding for follow-up.
+
+#### `cargo clippy --workspace --all-targets -- -D warnings`
+
+Observed exit status: `0`.
+
+Observed output: no diagnostics; Cargo reported `Finished dev profile [unoptimized + debuginfo] target(s) in 14.43s`.
+
+Requirement mapping: no warning was allowed by the `-D warnings` architecture gate. This maps to the workspace quality gate and `SC-005-006`.
+
+#### `cargo fmt --all --check`
+
+Observed exit status: `0`.
+
+Observed output: empty.
+
+Requirement mapping: all workspace Rust formatting matched rustfmt, satisfying the formatting portion of the architecture gate and `SC-005-006`.
+
+### Overall disposition
+
+All quickstart commands listed in `quickstart.md` completed with exit status `0` in this invocation. The additional invalid invocation produced the required exit status `2` and stderr diagnostic. The no-browser exit-1 process scenario remains unproven on this host because fixed macOS browser paths are present; the injected unit-test branch exists but is not substituted for the requested process-level demonstration. The known host Unicode-normalization failure is recorded as pre-existing and not caused by this epic.
