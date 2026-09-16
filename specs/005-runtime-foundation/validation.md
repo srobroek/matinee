@@ -316,6 +316,30 @@ The measured evidence **permits acceptance of T041** under this threshold. It do
 
 ## T039 Rust 1.85 dependency provenance and policy
 
+### Repository-authoritative policy file
+
+`deny.toml` is tracked at the repository root, so a clean checkout carries the
+policy and the gate is enforceable without any local file:
+
+```text
+$ git ls-files -- deny.toml
+deny.toml
+$ shasum -a 256 deny.toml
+8748ce3e84d4143cf9b3808dbb0b589bf92c463f1bca29261643d43ca0b1ddc0  deny.toml
+```
+
+Clean-checkout enforceability was proven against the committed tree only, with no
+working-tree file visible to the scan:
+
+```text
+$ rm -rf /tmp/t039fix-clean && mkdir -p /tmp/t039fix-clean && git archive --format=tar HEAD | tar -x -C /tmp/t039fix-clean
+$ shasum -a 256 /tmp/t039fix-clean/deny.toml /tmp/t039fix-clean/Cargo.lock
+8748ce3e84d4143cf9b3808dbb0b589bf92c463f1bca29261643d43ca0b1ddc0  /tmp/t039fix-clean/deny.toml
+c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  /tmp/t039fix-clean/Cargo.lock
+$ cd /tmp/t039fix-clean && /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
 ### Locked graph and checksum
 The repository-authoritative cargo-deny version is `cargo-deny 0.20.2`. No
 repository-wide mise tool configuration exists. Because cargo-deny 0.20.2 has
@@ -341,13 +365,17 @@ $ shasum -a 256 Cargo.lock
 c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  Cargo.lock
 ```
 
-The complete locked workspace tree from `cargo tree --locked --workspace
---all-features` was:
+The complete locked workspace tree came from `cargo tree --locked --workspace
+--all-features`. Workspace member paths are absolute and therefore checkout-specific,
+so the two member lines below are recorded with the checkout root replaced by
+`<repo>`; re-verification applies the same substitution
+(`sed -e 's| (<checkout-root>/| (<repo>/|'`) before comparing. Every other line is
+verbatim tool output:
 
 ```text
-matinee v0.0.2 (/Users/sjors/.omp/wt/ta6464fb5a/m/crates/matinee-cli)
+matinee v0.0.2 (<repo>/crates/matinee-cli)
 
-matinee-runtime v0.0.2 (/Users/sjors/.omp/wt/ta6464fb5a/m/crates/matinee-runtime)
+matinee-runtime v0.0.2 (<repo>/crates/matinee-runtime)
 ├── directories v6.0.0
 │   └── dirs-sys v0.5.0
 │       ├── libc v0.2.189
@@ -379,9 +407,13 @@ matinee-runtime v0.0.2 (/Users/sjors/.omp/wt/ta6464fb5a/m/crates/matinee-runtime
         └── tinyvec_macros v0.1.1
 ```
 
-The following is the full package/license projection from `cargo metadata
---format-version 1 --locked` (the command resolves the workspace and all locked
-packages):
+The full package/license projection below was produced by this exact command, which
+resolves the workspace and all locked packages and prints `name version license`
+with `<none>` for a null license field, sorted by package name:
+
+```text
+$ cargo metadata --format-version 1 --locked | python3 -c 'import json,sys; [print(p["name"], p["version"], p["license"] or "<none>") for p in sorted(json.load(sys.stdin)["packages"], key=lambda p: p["name"])]'
+```
 
 ```text
 cfg-if 1.0.4 MIT OR Apache-2.0
@@ -426,13 +458,13 @@ dependencies are still checked.
 
 ### Rust 1.85 build and lockfile preservation
 
-The exact compatibility gate ran locally:
+The exact compatibility gate ran locally on the integrated commit:
 
 ```text
 $ cargo +1.85.0 build --locked --workspace --all-targets
-   Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.85s
+   Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.95s
 $ cargo +1.85.0 test --workspace --all-targets --locked
-cargo test: 186 passed (6 suites, 17 filtered, 6.88s)
+cargo test: 186 passed (7+7+125+28+1+18), 0 failed, 17 filtered (6 suites)
 $ shasum -a 256 Cargo.lock
 c5215ca714377798f22290c39d7087051634ade7633f961a044d5fce164fedd3  Cargo.lock
 ```
@@ -442,20 +474,34 @@ locked build did not modify `Cargo.lock`.
 
 ### cargo-deny scans
 
-The exact local invocations used the pinned binary installed above:
+All four cargo-deny controls run. The exact local invocations used the pinned
+binary installed above:
 
 ```text
 $ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny --version
 cargo-deny 0.20.2
-$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check advisories
-advisories ok
-$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check licenses
-licenses ok
+$ /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check
+advisories ok, bans ok, licenses ok, sources ok
 ```
 
-The advisory scan reported no advisories. The license scan reported no denied
-licenses. CI repeats the same checks through `cargo deny` after installing exactly
-`cargo-deny 0.20.2` with `--locked`.
+The advisory scan reported no advisories, the license scan no denied licenses, and
+the `bans` and `sources` controls configured in `deny.toml`
+(`multiple-versions = "deny"`, `unknown-registry = "deny"`, `unknown-git = "deny"`)
+are executed rather than merely declared. CI runs the identical whole-policy check
+after installing exactly `cargo-deny 0.20.2` with `--locked`, qualified with the
+installer toolchain so it does not depend on which toolchain `rustup` leaves
+default:
+
+```text
+$ cargo +1.88.0 deny --version
+cargo-deny 0.20.2
+$ cargo +1.88.0 deny check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
+That toolchain-qualified command shape is the one in
+`.github/workflows/ci.yml`; it was verified locally with the pinned binary on
+`PATH`, producing the output above.
 
 The locked graph includes `option-ext 0.2.0` as
 `directories 6.0.0 -> dirs-sys 0.5.0 -> option-ext 0.2.0`, whose declared license
@@ -468,6 +514,21 @@ to retain `directories` and honor that MPL-2.0 notice/source obligation.
 
 The policy also explicitly allows only the other licenses observed in this locked
 graph: MIT, Apache-2.0, Zlib, Unicode-3.0, and Apache-2.0 WITH LLVM-exception.
+
+That single allow entry is load-bearing rather than decorative. Deleting only the
+`"MPL-2.0",` line from the committed policy in a copy of the clean checkout makes
+the license control fail on exactly that chain:
+
+```text
+$ cp -R /tmp/t039fix-clean /tmp/t039fix-nompl && sed -i '' '/    "MPL-2.0",/d' /tmp/t039fix-nompl/deny.toml
+$ cd /tmp/t039fix-nompl && /tmp/matinee-cargo-deny-0.20.2/bin/cargo-deny check licenses
+rejected: license is not explicitly allowed
+MPL-2.0 - Mozilla Public License 2.0
+option-ext v0.2.0 <- dirs-sys v0.5.0 <- directories v6.0.0 <- matinee-runtime v0.0.2
+licenses FAILED
+$ echo $?
+4
+```
 
 ## T042 Quickstart execution record
 
@@ -718,9 +779,14 @@ filtered command in this ledger was run in this checkout and its observed result
 - **E11 — dependency provenance.** T039 records the exact `cargo +1.85.0 build --locked
   --workspace --all-targets` and `cargo +1.85.0 test --workspace --all-targets --locked`
   commands, both exit `0` (`186 passed; 0 failed` for the test gate), unchanged Cargo.lock
-  checksum, locked tree, licenses, and pinned cargo-deny advisory/license scans (`advisories
-  ok`, `licenses ok`).  The dependency control is evidenced by those observed results but is
-  not yet enforceable from a clean checkout: `deny.toml` is not tracked in the repository.
+  checksum, locked tree, licenses, and the pinned whole-policy cargo-deny scan
+  (`advisories ok, bans ok, licenses ok, sources ok`).  The control is enforceable from a
+  clean checkout: `deny.toml` is tracked at the repository root
+  (`git ls-files -- deny.toml`) with SHA-256
+  `8748ce3e84d4143cf9b3808dbb0b589bf92c463f1bca29261643d43ca0b1ddc0`, and T039 records the
+  same scan passing against a `git archive HEAD` extraction that contains no working-tree
+  file.  A mutation that deletes the `MPL-2.0` allow from that committed policy makes the
+  license control exit `4`, so the policy is load-bearing.
 - **E12 — performance decision.** T041 records `python3 /tmp/matinee_t041_measure.py >
   /tmp/matinee_t041_results.json`, 30 interleaved baseline/feature CLI pairs and 30 cold plus
   30 warm resolver samples.  It observed a cold CLI p95 change of `+2.597873%`, below the
@@ -805,10 +871,11 @@ once here with command/scenario evidence and an observed result.
 - **Lock identity is exact and collision-safe in the observed matrix.** E7 proved alias
   convergence, pairwise non-collision across 100 distinct roots, exact identity, and no
   filesystem mutation.
-- **Dependency provenance is evidenced but not clean-checkout enforceable yet.** E11's T039
-  checksum, locked graph, Rust 1.85 build/test, license, and advisory outputs are observed;
-  `deny.toml` is not yet tracked in the repository, so a clean checkout cannot currently
-  enforce the cargo-deny policy.
+- **Dependency provenance is clean-checkout enforceable.** E11's T039 checksum, locked
+  graph, Rust 1.85 build/test, and whole-policy cargo-deny output are observed, and
+  `deny.toml` is tracked in the repository, so a clean checkout enforces the cargo-deny
+  policy.  CI runs `cargo +1.88.0 deny check`, which executes the advisories, bans,
+  licenses, and sources controls rather than a subset.
 - **Performance threshold decision is inherited from T041, not recomputed here.** E12 cites
   the observed interleaved samples, the variance review, the 35% threshold, the +2.597873%
   cold-p95 result, and the acceptance-owner decision.

@@ -44,8 +44,7 @@ jobs:
         run: cargo +1.85.0 build --locked --workspace --all-targets
       - name: Test locked workspace
         run: cargo +1.85.0 test --workspace --all-targets --locked
-      - name: Check locked advisories and licenses
+      - name: Check locked advisories, bans, licenses and sources
         run: |
-          cargo deny --version
-          cargo deny check advisories
-          cargo deny check licenses
+          cargo +1.88.0 deny --version
+          cargo +1.88.0 deny check
