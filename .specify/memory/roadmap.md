@@ -1,19 +1,23 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.0.0 -> 1.1.0
-Bump rationale: MINOR -- added twelve implementation specifications and two
-cross-cutting delivery constraints
+Version change: 1.1.0 -> 1.2.0
+Bump rationale: MINOR -- materially corrected spec 005 scope and outcome to match
+the released CLI plus shared private runtime seams, and assigned daemon lifecycle and
+clock ownership to later specifications.
 
 Changes this revision:
-  - Reclassified spec 001 as the normative umbrella architecture specification
-  - Added planned implementation specs 005-016
-  - Added constraints C-09 and C-10 for module ownership and journey acceptance
+  - Amended spec 005 status to implemented.
+  - Superseded spec 005's stale all-runtime-modes outcome.
+  - Superseded `process modes` and `clocks` in spec 005 scope (in).
+  - Assigned daemon lifecycle ownership to spec 007 and clock-seam ownership to spec
+    009, preserving the existing roadmap's later-spec ownership.
 
-Specs affected: 001, 005-016
+Specs affected: 005
 Open questions added/resolved: none
 
-Notes: Specs 002-004 remain deferred without modification.
+Notes: Spec 005 remains implemented, not verified. Roadmap verification remains gated
+on merge of PR #5.
 -->
 
 # Matinee -- Spec Roadmap
@@ -116,18 +120,20 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
   semantics, idempotency, and approval expiry are verified.
 - **Outcome:** _to be defined_
 - **Scope (in):** _to be defined_
-- **Scope (out):** A general-purpose non-browser workflow engine.
-- **Depends on:** 001
-- **Governed by:** C-05, C-06, C-07
+### 005 -- Runtime Foundation  [status: implemented]
 
-### 005 -- Runtime Foundation  [status: planned]
-
-- **Description:** Establish the executable layout and internal seams shared by the
-  CLI, daemon, MCP adapter, and platform-specific implementations.
-- **Outcome:** Contributors can build and exercise each runtime mode through stable
-  internal interfaces without creating a second ownership model.
-- **Scope (in):** Cargo workspace shape, process modes, platform directories,
-  configuration loading, shared identifiers, clocks, and deterministic test seams.
+- **Description:** Preserve the released CLI while establishing the private runtime
+  seams shared by the CLI and later product specifications.
+- **Outcome:** The released CLI remains available, and contributors can exercise the
+  shared private runtime seams for configuration, platform directories, state-root
+  identity, diagnostics, and deterministic tests without creating a second ownership
+  model.
+- **Superseded outcome (1.1.0):** ~~Contributors can build and exercise each runtime
+  mode through stable internal interfaces without creating a second ownership model.~~
+- **Scope (in):** Cargo workspace shape, released CLI behavior, platform directories,
+  configuration loading, shared identifiers, diagnostics, and deterministic test seams.
+- **Superseded scope (1.1.0):** ~~process modes~~ and ~~clocks~~. Daemon lifecycle
+  ownership belongs to spec 007. The clock seam belongs to spec 009.
 - **Scope (out):** Network identity, browser control, and product workflows.
 - **Depends on:** 001
 - **Governed by:** C-01, C-02, C-09
@@ -280,10 +286,9 @@ None. Deferred entries require a new product decision before their status change
 - Journey 1, install, pair, and connect, gates specs 005-009 and 016.
 - Journey 2, control a visible authenticated tab, gates specs 009-012 and 016.
 - Journey 3, handle human attention, gates specs 010, 012, 013, and 016.
-- Journey 4, recover interrupted work, gates specs 007, 010, 011, 013, 014,
-  and 016.
+- Journey 4, recover interrupted work, gates specs 007, 010, 011, 013, 014, and 016.
 - Journey 5, cancel and diagnose work, gates specs 014-016.
 
 ---
 
-**Version**: 1.1.0 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-11
+**Version**: 1.2.0 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-16

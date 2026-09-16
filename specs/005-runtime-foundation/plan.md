@@ -4,6 +4,8 @@
 
 **Input**: Feature specification from `specs/005-runtime-foundation/spec.md`
 
+**Traceability**: Beads epic `matinee-mol-hyr` is the authoritative T001-T044 task graph. `agent-assignments.yml` maps those task IDs to their Beads items and assigned agents. No `tasks.md` is present because this feature uses the existing Beads graph rather than inventing a parallel task workflow.
+
 ## Summary
 
 Preserve Matinee 0.0.2 CLI behavior while introducing one private runtime library that

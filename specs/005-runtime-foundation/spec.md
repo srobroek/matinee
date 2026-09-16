@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-11
 
-**Status**: Ready for planning
+**Status**: Implemented
 
 **Input**: Preserve Matinee's released CLI behavior while defining safe, deterministic
 resolution of local configuration and runtime directories. Do not expose unfinished

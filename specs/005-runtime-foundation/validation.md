@@ -608,7 +608,7 @@ Options:
   -V, --version  Print version
 ```
 
-Requirement mapping: the released CLI surface lists only the `doctor` and `help` commands and does not expose later-spec commands. This is the help portion of `FR-005-001` and `FR-005-002`, and satisfies `SC-005-001` and `SC-005-007`.
+Requirement mapping: the released CLI surface lists only the `doctor` and `help` commands and does not expose later-spec commands. This is the help portion of `FR-005-001` and `FR-005-013`, and satisfies `SC-005-001` and `SC-005-007`.
 
 #### `cargo run -p matinee -- --version`
 
