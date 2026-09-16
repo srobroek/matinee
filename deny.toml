@@ -1,0 +1,27 @@
+# Repository policy is validated with cargo-deny 0.20.2 (installed by CI with the
+# exact version and --locked; the same command is recorded in validation.md).
+
+[advisories]
+version = 2
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+    "Apache-2.0 WITH LLVM-exception",
+]
+# The private runtime package has no published license metadata and is not itself
+# distributed as a registry dependency. Its registry dependencies remain checked.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
