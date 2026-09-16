@@ -1,23 +1,19 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.1.0 -> 1.2.0
-Bump rationale: MINOR -- materially corrected spec 005 scope and outcome to match
-the released CLI plus shared private runtime seams, and assigned daemon lifecycle and
-clock ownership to later specifications.
+Version change: 1.2.0 -> 1.2.1
+Bump rationale: PATCH -- verified spec 005 after PR #5 merged.
 
 Changes this revision:
-  - Amended spec 005 status to implemented.
-  - Superseded spec 005's stale all-runtime-modes outcome.
-  - Superseded `process modes` and `clocks` in spec 005 scope (in).
-  - Assigned daemon lifecycle ownership to spec 007 and clock-seam ownership to spec
-    009, preserving the existing roadmap's later-spec ownership.
+  - Amended spec 005 status from implemented to verified after PR #5 merged.
+  - Recorded merge commit 36997783a5bc93f0ea8bc89d3045fc73e432dd6e as verification evidence.
+  - Updated roadmap metadata and retained all existing scope, outcome, and entry history.
 
 Specs affected: 005
 Open questions added/resolved: none
 
-Notes: Spec 005 remains implemented, not verified. Roadmap verification remains gated
-on merge of PR #5.
+Notes: Spec 005 is verified after PR #5 merged as squash commit
+36997783a5bc93f0ea8bc89d3045fc73e432dd6e; all ten checks passed.
 -->
 
 # Matinee -- Spec Roadmap
@@ -120,7 +116,7 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
   semantics, idempotency, and approval expiry are verified.
 - **Outcome:** _to be defined_
 - **Scope (in):** _to be defined_
-### 005 -- Runtime Foundation  [status: implemented]
+### 005 -- Runtime Foundation  [status: verified]
 
 - **Description:** Preserve the released CLI while establishing the private runtime
   seams shared by the CLI and later product specifications.
@@ -291,4 +287,4 @@ None. Deferred entries require a new product decision before their status change
 
 ---
 
-**Version**: 1.2.0 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-16
+**Version**: 1.2.1 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-16
