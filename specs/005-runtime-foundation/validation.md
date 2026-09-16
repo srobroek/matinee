@@ -495,7 +495,7 @@ Options:
   -V, --version  Print version
 ```
 
-Requirement mapping: the released CLI surface lists only the `doctor` and `help` commands and does not expose later-spec commands. This is the help portion of `FR-005-001` and `SC-005-001`; the command also provides the documented detection-only surface for `TASK-SEC-001`.
+Requirement mapping: the released CLI surface lists only the `doctor` and `help` commands and does not expose later-spec commands. This is the help portion of `FR-005-001` and `FR-005-002`, and satisfies `SC-005-001` and `SC-005-007`.
 
 #### `cargo run -p matinee -- --version`
 
@@ -518,7 +518,7 @@ Google Chrome	/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 
 Observed stderr: empty. At least one supported browser exists, so the successful status satisfies the quickstart success condition. The two rows are detection results only; no automation or control operation was invoked.
 
-Requirement mapping: Firefox and Google Chrome rows, detection-only behavior, and success when a supported browser exists satisfy `FR-005-001`, `FR-005-002`, `SC-005-001`, and `TASK-SEC-001`.
+Requirement mapping: Firefox and Google Chrome rows, detection-only behavior, and success when a supported browser exists satisfy `FR-005-001`, `FR-005-002`, and `SC-005-001`.
 
 #### No-browser exit-1 attempt
 
@@ -563,15 +563,22 @@ Observed exit status: `0`.
 
 Observed result: `28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.76s`.
 
-Requirement mapping: this validates the quickstart matrix for precedence, protected sources, duplicate and unknown keys, Windows environment-name collisions, descriptor material classes, malformed values, exact and one-over limits, pathological 1 MiB inputs, redacted closed failures, and empty temporary roots. It maps to `FR-005-005`, `SC-005-005`, and `TASK-SEC-003`.
+Requirement mapping: this validates the quickstart matrix for precedence, protected sources, duplicate and unknown keys, Windows environment-name collisions, descriptor material classes, malformed values, exact and one-over limits, pathological 1 MiB inputs, redacted closed failures, and empty temporary roots. It maps to `FR-005-005`, `SC-005-002`, and `TASK-SEC-003`.
 
 #### `cargo test -p matinee-runtime --test environment_contract`
 
 Observed exit status: `0`.
 
-Observed result: `18 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 10.40s` (the harness also ran its helper test once in a separate test binary: `1 passed; 0 failed; 17 filtered out; finished in 0.00s`).
+Observed result (verbatim summary lines from this invocation):
 
-Requirement mapping: this validates the macOS, Linux, and Windows fixture paths; one hundred roots; platform-equivalent paths; supported symbolic links; escape rejection; and project-file replacement during a read. It maps to `FR-005-003`, `FR-005-004`, `SC-005-003`, and `TASK-SEC-002`.
+```text
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.03s
+```
+
+The `17 filtered out` line is the helper test's nested one-test run; it is not a separate Cargo test binary line. The `environment_contract` binary result is `18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`.
+
+Requirement mapping: this validates the macOS, Linux, and Windows fixture paths; one hundred roots; platform-equivalent paths; supported symbolic links; escape rejection; and project-file replacement during a read. It maps to `FR-005-003`, `FR-005-004`, `SC-005-003`, `SC-005-004`, `SC-005-005`, and `TASK-SEC-002`.
 
 ### Architecture gate
 
@@ -579,9 +586,9 @@ Requirement mapping: this validates the macOS, Linux, and Windows fixture paths;
 
 Observed exit status: `0`.
 
-Observed result: `186 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` across the six test binaries (including the 7 CLI unit tests, 7 released-CLI tests, 125 runtime unit tests, 28 configuration-contract tests, and 18 environment-contract tests; the environment helper test also reported `1 passed` in its separate helper binary). The command initially waited on the package-cache lock, then completed successfully.
+Observed result: `186 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` across the six test binaries (including the 7 CLI unit tests, 7 released-CLI tests, 125 runtime unit tests, 28 configuration-contract tests, and 18 environment-contract tests; the environment helper test also reported `1 passed` in its nested one-test run). The command initially waited on the package-cache lock, then completed successfully.
 
-Requirement mapping: the Rust 1.85 workspace/all-targets compatibility gate passed, covering direct and transitive dependency compatibility and the released CLI/runtime contracts. It maps to `FR-005-006`, `SC-005-004`, `SC-005-006`, and the CI architecture gate.
+Requirement mapping: the Rust 1.85 workspace/all-targets compatibility gate passed, covering direct and transitive dependency compatibility and the released CLI/runtime contracts. This gate maps to the plan's CI architecture gate rather than to an FR or SC identifier.
 
 Known pre-existing finding (not attributed to this epic): the host failure `matinee-runtime` `platform::tests::host_unicode_normalization_is_total_for_valid_anchor_without_variant_probe` has previously produced `Err(PathUnavailable)` where the test expects `Ok(CanonicalDecomposed)`. This epic changes no Rust code. In this exact workspace-gate invocation, the same test was observed as `ok` and the command exited `0`; therefore this record does not claim that failure was reproduced here, but preserves it as the known host-dependent baseline finding for follow-up.
 
@@ -591,7 +598,7 @@ Observed exit status: `0`.
 
 Observed output: no diagnostics; Cargo reported `Finished dev profile [unoptimized + debuginfo] target(s) in 14.43s`.
 
-Requirement mapping: no warning was allowed by the `-D warnings` architecture gate. This maps to the workspace quality gate and `SC-005-006`.
+Requirement mapping: no warning was allowed by the `-D warnings` architecture gate. This maps to the workspace quality gate.
 
 #### `cargo fmt --all --check`
 
@@ -599,7 +606,7 @@ Observed exit status: `0`.
 
 Observed output: empty.
 
-Requirement mapping: all workspace Rust formatting matched rustfmt, satisfying the formatting portion of the architecture gate and `SC-005-006`.
+Requirement mapping: all workspace Rust formatting matched rustfmt, satisfying the formatting portion of the architecture gate.
 
 ### Overall disposition
 
