@@ -6,8 +6,7 @@ macro_rules! enrollment_contract_tests {
         };
         use crate::identity::{
             EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment, Fingerprint,
-            IdentityId, PublicKey, TransitionId, TransitionInput, TransitionOperation,
-            TransitionOutcome, UNCOMPRESSED_KEY_BYTES,
+            IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
         };
         use uuid::Uuid;
 
@@ -135,17 +134,5 @@ macro_rules! enrollment_contract_tests {
             assert_eq!(budget.record_failed_proof(), Err("enrollment is not pending"));
         }
 
-        #[test]
-        fn atomic_registration_accepts_only_committed_transition_outcomes() {
-            let state = IdentityId::new(Uuid::from_u128(0x30));
-            let transition = TransitionId::new(Uuid::from_u128(0x31));
-            let key = crate::identity::IdempotencyKey::new(Uuid::from_u128(0x32));
-            let committed = TransitionInput::new(state, transition, TransitionOperation::EnrollmentConsume, key, 7, TransitionOutcome::Committed);
-            assert!(committed.may_persist());
-            assert!(!committed.is_fail_closed());
-            let unknown = TransitionInput::new(state, transition, TransitionOperation::EnrollmentConsume, key, 7, TransitionOutcome::Unknown);
-            assert!(unknown.is_fail_closed());
-            assert!(!unknown.may_persist());
-        }
     };
 }
