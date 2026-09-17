@@ -392,6 +392,11 @@ mod bootstrap_contract {
     bootstrap_contract_tests!();
 }
 #[cfg(test)]
+mod malformed_corpus_contract {
+    include!("../tests/malformed_corpus.rs");
+    malformed_corpus_tests!();
+}
+#[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
