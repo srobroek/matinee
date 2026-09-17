@@ -1,0 +1,12 @@
+[package]
+name = "matinee-security"
+version = "0.0.2"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+ring = "0.17"
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v7", "serde"] }
