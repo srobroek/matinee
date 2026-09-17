@@ -15,6 +15,7 @@ mod enrollment;
 mod events;
 mod failures;
 mod identity;
+mod transition;
 
 #[cfg(test)]
 #[path = "../tests/support/fakes.rs"]

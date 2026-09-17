@@ -17,7 +17,21 @@ impl CredentialBinding {
     pub(crate) const fn new(value: [u8; 32]) -> Self {
         Self(value)
     }
+
+    /// Derive a stable selector from the state-directory and daemon identities.
+    /// The selector is non-secret and cannot be substituted with another principal.
+    pub(crate) fn for_identities(state_directory: uuid::Uuid, daemon: uuid::Uuid) -> Self {
+        let mut value = [0u8; 32];
+        let state = state_directory.as_bytes();
+        let daemon = daemon.as_bytes();
+        for i in 0..16 {
+            value[i] = state[i];
+            value[16 + i] = daemon[i];
+        }
+        Self(value)
+    }
 }
+
 
 impl fmt::Debug for CredentialBinding {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
