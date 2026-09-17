@@ -69,10 +69,7 @@ pub(crate) enum CredentialStoreError {
 /// they may return only an opaque [`CredentialHandle`].  No clock, persistence,
 /// origin, or cryptographic-library trait is defined here.
 pub(crate) trait CredentialStore {
-    fn lookup(
-        &self,
-        binding: CredentialBinding,
-    ) -> Result<CredentialHandle, CredentialStoreError>;
+    fn lookup(&self, binding: CredentialBinding) -> Result<CredentialHandle, CredentialStoreError>;
 }
 
 #[cfg(test)]
@@ -84,7 +81,13 @@ mod tests {
         let handle = CredentialHandle::from_slot(42);
         assert_eq!(handle.slot(), 42);
         assert_eq!(format!("{handle:?}"), "CredentialHandle(REDACTED)");
-        assert_eq!(format!("{:?}", CredentialBinding::new([7; 32])), "CredentialBinding(REDACTED)");
-        assert_ne!(CredentialStoreError::Missing, CredentialStoreError::Unavailable);
+        assert_eq!(
+            format!("{:?}", CredentialBinding::new([7; 32])),
+            "CredentialBinding(REDACTED)"
+        );
+        assert_ne!(
+            CredentialStoreError::Missing,
+            CredentialStoreError::Unavailable
+        );
     }
 }

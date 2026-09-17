@@ -160,6 +160,7 @@ pub(crate) enum SafeNextAction {
     UseFixedContractPeer,
     DiscardAndReconnect,
     PairExpectedExtension,
+    UseConfiguredEndpoint,
     DiscardAndEstablishFreshChannel,
     WaitForRetryWindow,
     RestoreCredentialService,
@@ -179,6 +180,7 @@ impl SafeNextAction {
             Self::UseFixedContractPeer => "use-fixed-contract-peer",
             Self::DiscardAndReconnect => "discard-and-reconnect",
             Self::PairExpectedExtension => "pair-expected-extension",
+            Self::UseConfiguredEndpoint => "use-configured-endpoint",
             Self::DiscardAndEstablishFreshChannel => "discard-and-establish-fresh-channel",
             Self::WaitForRetryWindow => "wait-for-retry-window",
             Self::RestoreCredentialService => "restore-credential-service",
@@ -285,6 +287,51 @@ mod tests {
         FailureCode::EventSinkUnavailable,
         FailureCode::CryptographicFailure,
     ];
+
+    const ALL_ACTIONS: [SafeNextAction; 15] = [
+        SafeNextAction::VerifyCredentialAndReconnect,
+        SafeNextAction::RequestAdministratorGrant,
+        SafeNextAction::DoNotInferObjectExistence,
+        SafeNextAction::UseFixedContractPeer,
+        SafeNextAction::DiscardAndReconnect,
+        SafeNextAction::PairExpectedExtension,
+        SafeNextAction::UseConfiguredEndpoint,
+        SafeNextAction::DiscardAndEstablishFreshChannel,
+        SafeNextAction::WaitForRetryWindow,
+        SafeNextAction::RestoreCredentialService,
+        SafeNextAction::StopAndAdministratorRepair,
+        SafeNextAction::ReduceToDeclaredBound,
+        SafeNextAction::ReconnectCurrentEpoch,
+        SafeNextAction::InspectTransitionStatus,
+        SafeNextAction::RepairEventSink,
+    ];
+
+    #[test]
+    fn every_safe_next_action_is_named_uniquely_and_reachable() {
+        for (index, action) in ALL_ACTIONS.iter().enumerate() {
+            let value = action.as_str();
+            assert!(!value.is_empty() && value.len() <= 40);
+            assert!(
+                ALL_ACTIONS[..index]
+                    .iter()
+                    .all(|prior| prior.as_str() != value)
+            );
+            assert!(
+                ALL_CODES
+                    .iter()
+                    .any(|code| code.safe_next_action() == *action),
+                "no failure code maps to {value}"
+            );
+        }
+        assert_eq!(
+            FailureCode::EndpointRejected.safe_next_action(),
+            SafeNextAction::UseConfiguredEndpoint
+        );
+        assert_eq!(
+            FailureCode::EndpointRejected.boundary(),
+            FailureBoundary::Endpoint
+        );
+    }
 
     #[test]
     fn codes_are_stable_unique_and_bounded() {

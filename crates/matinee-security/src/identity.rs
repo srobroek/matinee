@@ -3,7 +3,11 @@
 //! This module deliberately contains identifiers and references only. Private key
 //! bytes, enrollment secrets, and derived key material have no representation here.
 
-use serde::{Deserialize, Serialize};
+use core::fmt;
+
+use serde::de::{self, Visitor};
+use serde::ser;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -69,17 +73,85 @@ impl Fingerprint {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PublicKey([u8; 65]);
+/// Bytes in an uncompressed SEC1 P-256 point.
+pub const UNCOMPRESSED_KEY_BYTES: usize = 65;
+const UNCOMPRESSED_KEY_HEX: usize = UNCOMPRESSED_KEY_BYTES * 2;
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// A public key. This is the only key representation in this module: no private,
+/// one-time, or derived key byte has one here.
+///
+/// `serde` derives no array impl at this length, so the serialized form is the exact
+/// lowercase-hex encoding of the 65 bytes. Deserialization accepts only that one
+/// shape: a wrong length, a non-hex or uppercase character, or a missing `0x04`
+/// prefix is rejected instead of being padded, truncated, or reinterpreted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicKey([u8; UNCOMPRESSED_KEY_BYTES]);
 impl PublicKey {
-    pub fn from_uncompressed(bytes: [u8; 65]) -> Result<Self, &'static str> {
+    pub fn from_uncompressed(bytes: [u8; UNCOMPRESSED_KEY_BYTES]) -> Result<Self, &'static str> {
         if bytes[0] != 0x04 {
             return Err("public key must be uncompressed P-256");
         }
         Ok(Self(bytes))
     }
-    pub fn as_bytes(&self) -> &[u8; 65] {
+    pub fn as_bytes(&self) -> &[u8; UNCOMPRESSED_KEY_BYTES] {
         &self.0
+    }
+    /// The exact serialized representation: lowercase-hex ASCII of the fixed 65 bytes.
+    pub fn uncompressed_hex(&self) -> [u8; UNCOMPRESSED_KEY_HEX] {
+        let mut hex = [0u8; UNCOMPRESSED_KEY_HEX];
+        for (byte, digits) in self.0.iter().zip(hex.chunks_exact_mut(2)) {
+            digits[0] = HEX_DIGITS[usize::from(byte >> 4)];
+            digits[1] = HEX_DIGITS[usize::from(byte & 0x0f)];
+        }
+        hex
+    }
+    fn from_uncompressed_hex(text: &str) -> Result<Self, &'static str> {
+        let hex = text.as_bytes();
+        if hex.len() != UNCOMPRESSED_KEY_HEX {
+            return Err("public key must be 130 lowercase hexadecimal characters");
+        }
+        let mut bytes = [0u8; UNCOMPRESSED_KEY_BYTES];
+        for (digits, byte) in hex.chunks_exact(2).zip(bytes.iter_mut()) {
+            let high = hex_digit(digits[0]).ok_or("public key is not lowercase hexadecimal")?;
+            let low = hex_digit(digits[1]).ok_or("public key is not lowercase hexadecimal")?;
+            *byte = (high << 4) | low;
+        }
+        Self::from_uncompressed(bytes)
+    }
+}
+
+const fn hex_digit(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit - b'0'),
+        b'a'..=b'f' => Some(digit - b'a' + 10),
+        _ => None,
+    }
+}
+
+impl Serialize for PublicKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let hex = self.uncompressed_hex();
+        let text = core::str::from_utf8(&hex).map_err(ser::Error::custom)?;
+        serializer.serialize_str(text)
+    }
+}
+
+impl<'de> Deserialize<'de> for PublicKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct UncompressedHex;
+        impl<'v> Visitor<'v> for UncompressedHex {
+            type Value = PublicKey;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(
+                    "130 lowercase hexadecimal characters encoding an uncompressed P-256 public key",
+                )
+            }
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<PublicKey, E> {
+                PublicKey::from_uncompressed_hex(value).map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_str(UncompressedHex)
     }
 }
 
@@ -577,7 +649,7 @@ impl Connection {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TransitionOutcome {
     Committed,
     AlreadyCommitted,
@@ -633,7 +705,7 @@ impl TransitionInput {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ExpiryStatus {
     Valid,
     Expired,
@@ -759,5 +831,199 @@ impl RevocationTransition {
     }
     pub fn outcome(&self) -> TransitionOutcome {
         self.outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::de::value::{Error as ValueError, StrDeserializer};
+
+    fn public_key_bytes() -> [u8; UNCOMPRESSED_KEY_BYTES] {
+        let mut bytes = [0u8; UNCOMPRESSED_KEY_BYTES];
+        bytes[0] = 0x04;
+        for (index, byte) in bytes.iter_mut().enumerate().skip(1) {
+            *byte = index as u8;
+        }
+        bytes
+    }
+
+    fn public_key() -> PublicKey {
+        PublicKey::from_uncompressed(public_key_bytes()).expect("uncompressed prefix")
+    }
+
+    fn deserialize_key(text: &str) -> Result<PublicKey, ValueError> {
+        PublicKey::deserialize(StrDeserializer::<ValueError>::new(text))
+    }
+
+    fn daemon() -> DaemonIdentity {
+        let id = IdentityId::new(Uuid::from_u128(1));
+        let credential = CredentialReference::new("apple-keychain", "matinee/daemon", id, id)
+            .expect("bounded credential reference");
+        DaemonIdentity::new(
+            id,
+            public_key(),
+            Fingerprint::new("a".repeat(64)).expect("64 lowercase hex digits"),
+            "127.0.0.1:7777",
+            1,
+            1,
+            credential,
+        )
+        .expect("valid daemon binding")
+    }
+
+    fn assert_serde<T: Serialize + serde::de::DeserializeOwned>() {}
+
+    #[test]
+    fn every_typed_identity_is_serde_compatible() {
+        assert_serde::<PublicKey>();
+        assert_serde::<Fingerprint>();
+        assert_serde::<IdentityId>();
+        assert_serde::<ConnectionId>();
+        assert_serde::<TransitionId>();
+        assert_serde::<IdempotencyKey>();
+        assert_serde::<CredentialReference>();
+        assert_serde::<DaemonIdentity>();
+        assert_serde::<Principal>();
+        assert_serde::<Capability>();
+        assert_serde::<ExtensionGrant>();
+        assert_serde::<ExtensionEnrollment>();
+        assert_serde::<Connection>();
+        assert_serde::<TransitionInput>();
+        assert_serde::<ExpiryResult>();
+        assert_serde::<RotationTransition>();
+        assert_serde::<RevocationTransition>();
+    }
+
+    #[test]
+    fn public_key_serialized_form_is_exactly_the_public_point() {
+        let key = public_key();
+        let hex = key.uncompressed_hex();
+        let text = core::str::from_utf8(&hex).expect("hex is ascii");
+        assert_eq!(text.len(), UNCOMPRESSED_KEY_BYTES * 2);
+        assert!(text.starts_with("04"));
+        assert_eq!(&text[2..6], "0102");
+        assert_eq!(deserialize_key(text).expect("round trip"), key);
+    }
+
+    #[test]
+    fn wrong_length_or_malformed_public_key_is_rejected() {
+        let key = public_key();
+        let hex = key.uncompressed_hex();
+        let canonical = core::str::from_utf8(&hex).expect("hex is ascii").to_owned();
+
+        for rejected in [
+            String::new(),
+            canonical[..canonical.len() - 1].to_owned(),
+            canonical[..canonical.len() - 2].to_owned(),
+            format!("{canonical}00"),
+            canonical.to_ascii_uppercase(),
+            format!("zz{}", &canonical[2..]),
+            format!("02{}", &canonical[2..]),
+        ] {
+            assert!(
+                deserialize_key(&rejected).is_err(),
+                "accepted a malformed key of {} characters",
+                rejected.len()
+            );
+        }
+
+        let mut compressed = public_key_bytes();
+        compressed[0] = 0x02;
+        assert!(PublicKey::from_uncompressed(compressed).is_err());
+    }
+
+    #[test]
+    fn fingerprint_rejects_wrong_length_and_uppercase() {
+        assert!(Fingerprint::new("a".repeat(63)).is_err());
+        assert!(Fingerprint::new("a".repeat(65)).is_err());
+        assert!(Fingerprint::new("A".repeat(64)).is_err());
+        assert!(Fingerprint::new("g".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn public_material_accessors_borrow_instead_of_copying() {
+        let daemon = daemon();
+        let borrowed = &daemon;
+        assert!(core::ptr::eq(
+            borrowed.public_key().as_bytes().as_ptr(),
+            daemon.public_key().as_bytes().as_ptr()
+        ));
+        assert!(core::ptr::eq(
+            borrowed.fingerprint().as_str().as_ptr(),
+            daemon.fingerprint().as_str().as_ptr()
+        ));
+        assert!(core::ptr::eq(
+            borrowed.endpoint().as_ptr(),
+            daemon.endpoint().as_ptr()
+        ));
+    }
+
+    #[test]
+    fn outcome_and_status_accessors_read_through_a_shared_reference() {
+        let expiry = ExpiryResult::valid(1_000).expect("bounded deadline");
+        let shared = &expiry;
+        assert_eq!(shared.status(), ExpiryStatus::Valid);
+        assert!(shared.is_valid());
+
+        let id = IdentityId::new(Uuid::from_u128(2));
+        let transition = TransitionInput::new(
+            id,
+            TransitionId::new(Uuid::from_u128(3)),
+            TransitionOperation::Rotation,
+            IdempotencyKey::new(Uuid::from_u128(4)),
+            7,
+            TransitionOutcome::Unknown,
+        );
+        let shared = &transition;
+        assert_eq!(shared.outcome(), TransitionOutcome::Unknown);
+        assert!(shared.is_fail_closed());
+        assert!(!shared.may_persist());
+
+        let rotation = RotationTransition::new(
+            IdempotencyKey::new(Uuid::from_u128(5)),
+            id,
+            Fingerprint::new("a".repeat(64)).expect("64 lowercase hex digits"),
+            Fingerprint::new("b".repeat(64)).expect("64 lowercase hex digits"),
+            7,
+            8,
+            1_000,
+            TransitionOutcome::Committed,
+        )
+        .expect("valid rotation boundary");
+        let shared = &rotation;
+        assert_eq!(shared.outcome(), TransitionOutcome::Committed);
+
+        let revocation = RevocationTransition::new(
+            IdempotencyKey::new(Uuid::from_u128(6)),
+            id,
+            "administrator",
+            8,
+            1,
+            2,
+            TransitionOutcome::AlreadyCommitted,
+        )
+        .expect("bounded revocation reason");
+        let shared = &revocation;
+        assert_eq!(shared.outcome(), TransitionOutcome::AlreadyCommitted);
+    }
+
+    #[test]
+    fn rotation_requires_a_new_epoch_and_a_new_fingerprint() {
+        let id = IdentityId::new(Uuid::from_u128(7));
+        let same = Fingerprint::new("c".repeat(64)).expect("64 lowercase hex digits");
+        assert!(
+            RotationTransition::new(
+                IdempotencyKey::new(Uuid::from_u128(8)),
+                id,
+                same.clone(),
+                same,
+                7,
+                7,
+                1_000,
+                TransitionOutcome::Committed,
+            )
+            .is_err()
+        );
     }
 }

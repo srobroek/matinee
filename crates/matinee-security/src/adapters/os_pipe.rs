@@ -67,7 +67,10 @@ mod tests {
     fn handle_is_opaque_and_empty_handle_is_not_present() {
         assert!(!InheritedPipe::from_handle(0).is_present());
         assert!(InheritedPipe::from_handle(9).is_present());
-        assert_eq!(format!("{:?}", InheritedPipe::from_handle(9)), "InheritedPipe(REDACTED)");
+        assert_eq!(
+            format!("{:?}", InheritedPipe::from_handle(9)),
+            "InheritedPipe(REDACTED)"
+        );
     }
 
     #[test]
