@@ -10,6 +10,7 @@
 // policy, enrollment, and transition application are declared with the work that
 // defines them.
 mod adapters;
+mod authorization;
 mod enrollment;
 mod events;
 mod failures;
@@ -120,6 +121,19 @@ pub struct AuthorizedInput {
 }
 
 impl AuthorizedInput {
+    /// Mint an authorized input after the caller has checked the payload bound.
+    pub(crate) fn from_prevalidated(context: &SessionInput, payload: Vec<u8>) -> Self {
+        debug_assert!(payload.len() <= context.kind().max_bytes());
+        Self {
+            connection: context.connection(),
+            principal: context.principal(),
+            epoch: context.epoch(),
+            granted: context.requested().clone(),
+            kind: context.kind(),
+            payload,
+        }
+    }
+
     /// Mint an authorized input for a context whose checks have already run.
     pub(crate) fn authorized(
         context: &SessionInput,
@@ -128,14 +142,7 @@ impl AuthorizedInput {
         if payload.len() > context.kind().max_bytes() {
             return Err(SecurityFailure::new(FailureCode::ResourceLimit));
         }
-        Ok(Self {
-            connection: context.connection(),
-            principal: context.principal(),
-            epoch: context.epoch(),
-            granted: context.requested().clone(),
-            kind: context.kind(),
-            payload,
-        })
+        Ok(Self::from_prevalidated(context, payload))
     }
 
     /// The authorized payload, borrowed. The session owns the only copy.
@@ -375,6 +382,16 @@ mod foundation_contract {
     foundation_contract_tests!();
 }
 #[cfg(test)]
+mod events_contract {
+    include!("../tests/events_contract.rs");
+    events_contract_tests!();
+}
+#[cfg(test)]
+mod bootstrap_contract {
+    include!("../tests/bootstrap_contract.rs");
+    bootstrap_contract_tests!();
+}
+#[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
@@ -608,11 +625,9 @@ mod tests {
         let commands = commands();
         for (index, command) in commands.iter().enumerate() {
             assert_eq!(command.idempotency(), key(10 + index as u128));
-            assert!(
-                commands[..index]
-                    .iter()
-                    .all(|prior| prior.idempotency() != command.idempotency())
-            );
+            assert!(commands[..index]
+                .iter()
+                .all(|prior| prior.idempotency() != command.idempotency()));
         }
     }
 }

@@ -1012,18 +1012,16 @@ mod tests {
     fn rotation_requires_a_new_epoch_and_a_new_fingerprint() {
         let id = IdentityId::new(Uuid::from_u128(7));
         let same = Fingerprint::new("c".repeat(64)).expect("64 lowercase hex digits");
-        assert!(
-            RotationTransition::new(
-                IdempotencyKey::new(Uuid::from_u128(8)),
-                id,
-                same.clone(),
-                same,
-                7,
-                7,
-                1_000,
-                TransitionOutcome::Committed,
-            )
-            .is_err()
-        );
+        assert!(RotationTransition::new(
+            IdempotencyKey::new(Uuid::from_u128(8)),
+            id,
+            same.clone(),
+            same,
+            7,
+            7,
+            1_000,
+            TransitionOutcome::Committed,
+        )
+        .is_err());
     }
 }

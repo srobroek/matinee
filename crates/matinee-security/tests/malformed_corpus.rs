@@ -50,6 +50,48 @@ macro_rules! malformed_corpus_tests {
                 .map_err(|_| SecurityFailure::new(FailureCode::MalformedInput))
         }
 
+        fn projected_event(failure: SecurityFailure) -> SecurityEvent {
+            let code = match failure.code() {
+                FailureCode::MalformedInput => SecurityCode::MalformedInput,
+                FailureCode::ResourceLimit => SecurityCode::ResourceLimit,
+                other => panic!("unexpected malformed corpus code: {other:?}"),
+            };
+            SecurityEvent::new(
+                Uuid::nil(),
+                EventBoundary::Channel,
+                code,
+                EventOutcome::Rejected,
+                SafeNextAction::Discard,
+                None,
+                None,
+                EndpointClass::Unknown,
+                EventTime(0),
+                Uuid::nil(),
+                vec![],
+            )
+            .expect("bounded rejected event")
+        }
+
+        fn reject_before_dispatch(
+            frame: &[u8],
+            dispatch_count: &mut usize,
+        ) -> Result<(), SecurityFailure> {
+            let payload = bounded_declared_payload(frame)?;
+            *dispatch_count += 1;
+            let _ = payload.len();
+            Ok(())
+        }
+
+        fn forbidden(value: &str) -> bool {
+            [
+                "private", "secret", "credential", "password", "cookie", "token",
+                "authorization", "header", "pkcs8", "payload", "https://", "http://",
+                "url", "object_id", "identifier", "artifact_id", "stream_id",
+            ]
+            .iter()
+            .any(|word| value.to_ascii_lowercase().contains(word))
+        }
+
         fn connection(epoch: u64) -> Connection {
             let mut connection = Connection::new(
                 ConnectionId::new(Uuid::from_u128(1)),
@@ -114,6 +156,84 @@ macro_rules! malformed_corpus_tests {
                 session.binds(&context).unwrap_err().code(),
                 FailureCode::AuthenticationFailed
             );
+        }
+
+        #[test]
+        fn malformed_corpus_streaming_has_zero_frame_allocations_and_dispatches() {
+            let mut dispatch_count = 0usize;
+            let mut malformed = 0usize;
+            let mut resource_limited = 0usize;
+            for case in malformed_corpus_cases() {
+                let failure = reject_before_dispatch(&case.bytes, &mut dispatch_count)
+                    .expect_err("every deterministic case is rejected");
+                match failure.code() {
+                    FailureCode::MalformedInput => {
+                        malformed += 1;
+                        assert_eq!(failure.boundary().as_str(), "malformed");
+                        assert_eq!(failure.safe_next_action().as_str(), "discard-and-reconnect");
+                    }
+                    FailureCode::ResourceLimit => {
+                        resource_limited += 1;
+                        assert_eq!(failure.boundary().as_str(), "resource-limit");
+                        assert_eq!(failure.safe_next_action().as_str(), "reduce-to-declared-bound");
+                    }
+                    code => panic!("unexpected failure code: {code:?}"),
+                }
+                assert!(failure.principal_id().is_none());
+                assert!(failure.connection_id().is_none());
+                let event = projected_event(failure);
+                assert_eq!(event.boundary, EventBoundary::Channel);
+                assert_eq!(event.outcome, EventOutcome::Rejected);
+                assert_eq!(event.next_action, SafeNextAction::Discard);
+                assert!(event.principal_id.is_none());
+                assert!(event.connection_id.is_none());
+                assert!(event.metadata().is_empty());
+                assert!(event.encoded_len() <= 2_048);
+                assert!(!forbidden(&format!("{failure} {event:?}")));
+            }
+            assert_eq!(malformed + resource_limited, MALFORMED_CASE_COUNT);
+            assert_eq!(malformed, MALFORMED_CASE_COUNT / 5);
+            assert_eq!(resource_limited, MALFORMED_CASE_COUNT - malformed);
+            assert_eq!(dispatch_count, 0, "rejected frames never dispatch");
+        }
+
+        #[test]
+        fn exact_and_one_over_payload_bounds_reject_without_mutating_session() {
+            for kind in [
+                PayloadKind::Command,
+                PayloadKind::Response,
+                PayloadKind::Event,
+                PayloadKind::StreamChunk,
+            ] {
+                let context = context(7, kind);
+                assert!(AuthorizedInput::authorized(&context, vec![]).is_ok());
+                assert!(AuthorizedOutput::filtered(kind, vec![]).is_ok());
+                assert!(AuthorizedInput::authorized(&context, vec![0; kind.max_bytes()]).is_ok());
+                assert!(AuthorizedOutput::filtered(kind, vec![0; kind.max_bytes()]).is_ok());
+                let input = AuthorizedInput::authorized(&context, vec![0; kind.max_bytes() + 1])
+                    .expect_err("one-over input bound");
+                let output = AuthorizedOutput::filtered(kind, vec![0; kind.max_bytes() + 1])
+                    .expect_err("one-over output bound");
+                for failure in [input, output] {
+                    assert_eq!(failure.code(), FailureCode::ResourceLimit);
+                    assert_eq!(failure.boundary().as_str(), "resource-limit");
+                    assert_eq!(failure.safe_next_action().as_str(), "reduce-to-declared-bound");
+                    assert!(failure.principal_id().is_none());
+                    assert!(failure.connection_id().is_none());
+                }
+
+                let mut session = ChannelSession::establish(connection(7), 1, "127.0.0.1:7777")
+                    .expect("bound session");
+                assert_eq!(session.next_receive_counter().unwrap(), 0);
+                let failure = AuthorizedInput::authorized(&context, vec![0; kind.max_bytes() + 1])
+                    .expect_err("rejection before channel mutation");
+                let event = projected_event(failure);
+                assert_eq!(event.code, SecurityCode::ResourceLimit);
+                assert!(session.is_open());
+                assert_eq!(session.next_receive_counter().unwrap(), 1);
+                session.close();
+                assert!(!session.is_open());
+            }
         }
 
         #[test]

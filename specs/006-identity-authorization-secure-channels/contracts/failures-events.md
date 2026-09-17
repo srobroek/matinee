@@ -22,6 +22,7 @@ An unknown object, a cross-owner object, and an unauthorized object all use the 
 | Code | Safe next action |
 |---|---|
 | `authentication.failed` | Verify the selected credential reference and reconnect without resending a failed proof. |
+| `authorization.accepted` | Continue with the authorized operation. |
 | `authorization.denied` | Request the required grant from the owning administrator. Do not infer object existence. |
 | `compatibility.unsupported` | Use a peer that supports the fixed `matinee.secure-channel.v1` contract. |
 | `malformed.input` | Discard the bytes and reconnect or upgrade the peer. Do not retry the same bytes. |
@@ -47,6 +48,7 @@ protected state.
 The security module emits one typed redacted fact for each of these outcomes:
 
 - An accepted enrollment
+- An accepted authorization decision
 - A rejected proof
 - A rejected Origin
 - An authentication failure
@@ -102,6 +104,11 @@ If the sink is unavailable for an event that must justify a security transition,
 module returns `event_sink.unavailable` and performs no protected mutation. Health-only
 liveness may remain bounded and must expose no identity or state. The sink may aggregate
 repeated facts about failures. It must never aggregate away a required transition outcome.
+
+For an accepted authorization decision, the module emits the tuple
+`authorization` + `authorization.accepted` + `accepted` + `continue`. The module requires
+event availability. It mints `AuthorizedInput` only after that requirement succeeds. If the sink is unavailable,
+the module returns `event_sink.unavailable` and mints no input.
 
 Spec 015 owns five downstream concerns:
 

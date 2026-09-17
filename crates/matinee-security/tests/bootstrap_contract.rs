@@ -37,10 +37,10 @@ macro_rules! bootstrap_contract_tests {
             let outcomes = [
                 (OsPipeError::Missing, OsPipeError::Missing),
                 (OsPipeError::Mismatch, OsPipeError::Mismatch),
-                (OsPipeError::Duplicate, OsPipeError::Unavailable),
+                (OsPipeError::Duplicate, OsPipeError::Duplicate),
                 (OsPipeError::Unavailable, OsPipeError::Unavailable),
-                (OsPipeError::Malformed, OsPipeError::Unavailable),
-                (OsPipeError::Oversized, OsPipeError::Unavailable),
+                (OsPipeError::Malformed, OsPipeError::Malformed),
+                (OsPipeError::Oversized, OsPipeError::Oversized),
             ];
             for (requested, expected) in outcomes {
                 assert_eq!(FakeOsPipe::error(requested).acquire(), Err(expected));
@@ -67,12 +67,16 @@ macro_rules! bootstrap_contract_tests {
             let bootstrap = TransitionId::new(Uuid::from_u128(3));
             let idempotency = IdempotencyKey::new(Uuid::from_u128(4));
             assert_ne!(state, daemon);
+            assert_ne!(state.get(), bootstrap.get());
+            assert_ne!(state.get(), idempotency.get());
             assert_ne!(daemon.get(), bootstrap.get());
             assert_ne!(bootstrap.get(), idempotency.get());
 
             let credential =
                 CredentialReference::new("apple-native", "native-admin", daemon, state)
                     .expect("bounded credential locator");
+            assert_eq!(credential.provider(), "apple-native");
+            assert_eq!(credential.key_locator(), "native-admin");
             assert_eq!(credential.daemon(), daemon);
             assert_eq!(credential.state_directory(), state);
             assert!(CredentialReference::new("", "native-admin", daemon, state).is_err());

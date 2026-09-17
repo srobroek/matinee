@@ -29,6 +29,7 @@ pub(crate) enum EventBoundary {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum SecurityCode {
     EnrollmentAccepted,
+    AuthorizationAccepted,
     ProofRejected,
     OriginRejected,
     AuthenticationFailed,
@@ -37,6 +38,8 @@ pub(crate) enum SecurityCode {
     Revocation,
     ReplayDetected,
     Downgrade,
+    CounterRejected,
+    CryptographicFailure,
     MalformedInput,
     ResourceLimit,
     RateLimited,
@@ -60,6 +63,7 @@ pub(crate) enum SafeNextAction {
     RePair,
     Discard,
     Wait,
+    Continue,
     FailClosed,
 }
 
@@ -196,12 +200,14 @@ fn contains_secret(s: &str) -> bool {
         "cookie",
         "token",
         "authorization",
+        "header",
         "pkcs8",
         "payload",
         "https://",
         "http://",
         "url",
         "object_id",
+        "identifier",
         "artifact_id",
         "stream_id",
     ]
@@ -275,7 +281,7 @@ struct AggregationKey {
 }
 
 #[derive(Clone, Debug, Default)]
-struct AggregationState {
+pub(crate) struct AggregationState {
     buckets: HashMap<AggregationKey, u8>,
 }
 
@@ -297,6 +303,22 @@ impl AggregationState {
         }
         self.buckets.insert(key, 1);
         SecurityEventSinkResult::Aggregated
+    }
+}
+
+#[cfg(test)]
+impl AggregationState {
+    pub(crate) fn bucket_count(&self) -> usize { self.buckets.len() }
+
+    pub(crate) fn count_for(&self, event: &SecurityEvent) -> Option<u8> {
+        let key = AggregationKey {
+            boundary: event.boundary,
+            code: event.code,
+            principal_id: event.principal_id,
+            connection_id: event.connection_id,
+            endpoint: event.endpoint,
+        };
+        self.buckets.get(&key).copied()
     }
 }
 impl SecurityEventSink for AggregationState {

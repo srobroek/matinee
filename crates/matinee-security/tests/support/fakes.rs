@@ -77,7 +77,10 @@ enum PipeOutcome {
     Present(u64),
     Missing,
     Mismatch,
+    Duplicate,
     Unavailable,
+    Malformed,
+    Oversized,
 }
 pub(crate) struct FakeOsPipe {
     outcome: PipeOutcome,
@@ -92,8 +95,10 @@ impl FakeOsPipe {
         let outcome = match error {
             os_pipe::OsPipeError::Missing => PipeOutcome::Missing,
             os_pipe::OsPipeError::Mismatch => PipeOutcome::Mismatch,
+            os_pipe::OsPipeError::Duplicate => PipeOutcome::Duplicate,
             os_pipe::OsPipeError::Unavailable => PipeOutcome::Unavailable,
-            _ => PipeOutcome::Unavailable,
+            os_pipe::OsPipeError::Malformed => PipeOutcome::Malformed,
+            os_pipe::OsPipeError::Oversized => PipeOutcome::Oversized,
         };
         Self { outcome }
     }
@@ -104,7 +109,10 @@ impl os_pipe::OsPipe for FakeOsPipe {
             PipeOutcome::Present(handle) => Ok(os_pipe::InheritedPipe::from_handle(handle)),
             PipeOutcome::Missing => Err(os_pipe::OsPipeError::Missing),
             PipeOutcome::Mismatch => Err(os_pipe::OsPipeError::Mismatch),
+            PipeOutcome::Duplicate => Err(os_pipe::OsPipeError::Duplicate),
             PipeOutcome::Unavailable => Err(os_pipe::OsPipeError::Unavailable),
+            PipeOutcome::Malformed => Err(os_pipe::OsPipeError::Malformed),
+            PipeOutcome::Oversized => Err(os_pipe::OsPipeError::Oversized),
         }
     }
 }
@@ -169,12 +177,10 @@ mod tests {
     #[test]
     fn fakes_cover_valid_and_closed_paths() {
         let binding = credential_store::CredentialBinding::new([1; 32]);
-        assert!(
-            FakeCredentialStore::new()
-                .registered(binding, 7)
-                .lookup(binding)
-                .is_ok()
-        );
+        assert!(FakeCredentialStore::new()
+            .registered(binding, 7)
+            .lookup(binding)
+            .is_ok());
         assert_eq!(
             FakeCredentialStore::new()
                 .with_error(binding, credential_store::CredentialStoreError::Mismatch)
