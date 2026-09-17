@@ -10,6 +10,7 @@
 // policy, enrollment, and transition application are declared with the work that
 // defines them.
 mod adapters;
+mod enrollment;
 mod events;
 mod failures;
 mod identity;
