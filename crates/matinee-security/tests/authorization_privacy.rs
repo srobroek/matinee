@@ -42,11 +42,41 @@ macro_rules! authorization_privacy_tests {
             fn new() -> Self {
                 Self {
                     objects: vec![
-                        PrivateObject { id: 10, owner: 7, class: ObjectClass::Object, secret: "object-secret".into(), mutated: false },
-                        PrivateObject { id: 11, owner: 7, class: ObjectClass::Event, secret: "event-token".into(), mutated: false },
-                        PrivateObject { id: 12, owner: 7, class: ObjectClass::Status, secret: "status-cookie".into(), mutated: false },
-                        PrivateObject { id: 13, owner: 7, class: ObjectClass::Artifact, secret: "artifact-payload".into(), mutated: false },
-                        PrivateObject { id: 14, owner: 7, class: ObjectClass::Stream, secret: "stream-private".into(), mutated: false },
+                        PrivateObject {
+                            id: 10,
+                            owner: 7,
+                            class: ObjectClass::Object,
+                            secret: "object-secret".into(),
+                            mutated: false,
+                        },
+                        PrivateObject {
+                            id: 11,
+                            owner: 7,
+                            class: ObjectClass::Event,
+                            secret: "event-token".into(),
+                            mutated: false,
+                        },
+                        PrivateObject {
+                            id: 12,
+                            owner: 7,
+                            class: ObjectClass::Status,
+                            secret: "status-cookie".into(),
+                            mutated: false,
+                        },
+                        PrivateObject {
+                            id: 13,
+                            owner: 7,
+                            class: ObjectClass::Artifact,
+                            secret: "artifact-payload".into(),
+                            mutated: false,
+                        },
+                        PrivateObject {
+                            id: 14,
+                            owner: 7,
+                            class: ObjectClass::Stream,
+                            secret: "stream-private".into(),
+                            mutated: false,
+                        },
                     ],
                     trace: Vec::new(),
                 }
@@ -85,9 +115,24 @@ macro_rules! authorization_privacy_tests {
         #[test]
         fn unknown_cross_owner_and_denied_reads_are_indistinguishable_not_found() {
             let mut store = PrivacyStore::new();
-            let unknown = store.read(ReadRequest { principal: 7, object: 999, class: ObjectClass::Object, authorized: true });
-            let cross_owner = store.read(ReadRequest { principal: 8, object: 10, class: ObjectClass::Object, authorized: true });
-            let denied = store.read(ReadRequest { principal: 7, object: 10, class: ObjectClass::Object, authorized: false });
+            let unknown = store.read(ReadRequest {
+                principal: 7,
+                object: 999,
+                class: ObjectClass::Object,
+                authorized: true,
+            });
+            let cross_owner = store.read(ReadRequest {
+                principal: 8,
+                object: 10,
+                class: ObjectClass::Object,
+                authorized: true,
+            });
+            let denied = store.read(ReadRequest {
+                principal: 7,
+                object: 10,
+                class: ObjectClass::Object,
+                authorized: false,
+            });
             assert_eq!(unknown, PrivacyResponse::NotFound("object.not_found"));
             assert_eq!(unknown, cross_owner);
             assert_eq!(unknown, denied);
@@ -95,9 +140,20 @@ macro_rules! authorization_privacy_tests {
 
         #[test]
         fn every_filtered_object_class_authorizes_before_lookup_and_serialization() {
-            for (object, class) in [(10, ObjectClass::Object), (11, ObjectClass::Event), (12, ObjectClass::Status), (13, ObjectClass::Artifact), (14, ObjectClass::Stream)] {
+            for (object, class) in [
+                (10, ObjectClass::Object),
+                (11, ObjectClass::Event),
+                (12, ObjectClass::Status),
+                (13, ObjectClass::Artifact),
+                (14, ObjectClass::Stream),
+            ] {
                 let mut store = PrivacyStore::new();
-                let response = store.read(ReadRequest { principal: 7, object, class, authorized: true });
+                let response = store.read(ReadRequest {
+                    principal: 7,
+                    object,
+                    class,
+                    authorized: true,
+                });
                 assert!(matches!(response, PrivacyResponse::Authorized(_)));
                 assert_eq!(store.trace, ["authorize", "lookup", "filter", "serialize"]);
                 assert!(!store.objects.iter().any(|candidate| candidate.mutated));
@@ -114,7 +170,12 @@ macro_rules! authorization_privacy_tests {
         #[test]
         fn denied_reads_filter_before_lookup_serialization_or_mutation() {
             let mut store = PrivacyStore::new();
-            let response = store.unauthorized_mutation_probe(ReadRequest { principal: 8, object: 10, class: ObjectClass::Object, authorized: false });
+            let response = store.unauthorized_mutation_probe(ReadRequest {
+                principal: 8,
+                object: 10,
+                class: ObjectClass::Object,
+                authorized: false,
+            });
             assert_eq!(response, PrivacyResponse::NotFound("object.not_found"));
             assert_eq!(store.trace, ["authorize", "mutation-blocked"]);
             assert!(!store.objects.iter().any(|candidate| candidate.mutated));
@@ -128,7 +189,10 @@ macro_rules! authorization_privacy_tests {
                 Some(uuid::Uuid::from_u128(2)),
             );
             let display = failure.to_string();
-            assert_eq!(failure.redacted().1, crate::failures::FailureCode::AuthorizationDenied);
+            assert_eq!(
+                failure.redacted().1,
+                crate::failures::FailureCode::AuthorizationDenied
+            );
             assert!(!display.contains("object-secret"));
             assert!(!display.contains("event-token"));
             assert!(!display.contains("artifact-payload"));
@@ -143,22 +207,48 @@ macro_rules! authorization_privacy_tests {
                 crate::events::EndpointClass::Loopback,
                 crate::events::EventTime(1),
                 uuid::Uuid::from_u128(4),
-                vec![crate::events::MetadataEntry { key: "reason".into(), value: "filtered".into() }],
-            ).expect("safe authorization event");
-            assert!(event.metadata().iter().all(|entry| !entry.value.contains("secret")));
-            assert!(matches!(crate::events::SecurityEvent::new(
-                uuid::Uuid::from_u128(5), crate::events::EventBoundary::Authorization,
-                crate::events::SecurityCode::AuthorizationDenied, crate::events::EventOutcome::Rejected,
-                crate::events::SafeNextAction::FailClosed, None, None,
-                crate::events::EndpointClass::Loopback, crate::events::EventTime(1), uuid::Uuid::from_u128(4),
-                vec![crate::events::MetadataEntry { key: "reason".into(), value: "artifact-payload".into() }],
-            ), Err(crate::events::EventBuildError::Redacted)));
+                vec![crate::events::MetadataEntry {
+                    key: "reason".into(),
+                    value: "filtered".into(),
+                }],
+            )
+            .expect("safe authorization event");
+            assert!(
+                event
+                    .metadata()
+                    .iter()
+                    .all(|entry| !entry.value.contains("secret"))
+            );
+            assert!(matches!(
+                crate::events::SecurityEvent::new(
+                    uuid::Uuid::from_u128(5),
+                    crate::events::EventBoundary::Authorization,
+                    crate::events::SecurityCode::AuthorizationDenied,
+                    crate::events::EventOutcome::Rejected,
+                    crate::events::SafeNextAction::FailClosed,
+                    None,
+                    None,
+                    crate::events::EndpointClass::Loopback,
+                    crate::events::EventTime(1),
+                    uuid::Uuid::from_u128(4),
+                    vec![crate::events::MetadataEntry {
+                        key: "reason".into(),
+                        value: "artifact-payload".into()
+                    }],
+                ),
+                Err(crate::events::EventBuildError::Redacted)
+            ));
         }
 
         #[test]
         fn named_lookup_before_authorization_mutation_fails_the_contract() {
             let mut store = PrivacyStore::new();
-            let response = store.read(ReadRequest { principal: 8, object: 10, class: ObjectClass::Object, authorized: false });
+            let response = store.read(ReadRequest {
+                principal: 8,
+                object: 10,
+                class: ObjectClass::Object,
+                authorized: false,
+            });
             assert_eq!(response, PrivacyResponse::NotFound("object.not_found"));
             assert_ne!(store.trace.first().copied(), Some("lookup"));
             assert!(!store.objects.iter().any(|candidate| candidate.mutated));

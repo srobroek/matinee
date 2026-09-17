@@ -2,7 +2,10 @@ macro_rules! enrollment_custody_tests {
     () => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         enum CustodySurface {
-            NativeBundle { authenticated: bool, encrypted: bool },
+            NativeBundle {
+                authenticated: bool,
+                encrypted: bool,
+            },
             BootstrapPipe,
             LoopbackCapture,
             DurableRecord,
@@ -32,7 +35,11 @@ macro_rules! enrollment_custody_tests {
             );
             CustodyArtifact {
                 surface,
-                bytes: if permitted { private_key.to_vec() } else { Vec::new() },
+                bytes: if permitted {
+                    private_key.to_vec()
+                } else {
+                    Vec::new()
+                },
             }
         }
 
@@ -44,7 +51,10 @@ macro_rules! enrollment_custody_tests {
                         authenticated: true,
                         encrypted: true
                     }
-                ) && !artifact.bytes.windows(private_key.len()).any(|window| window == private_key)
+                ) && !artifact
+                    .bytes
+                    .windows(private_key.len())
+                    .any(|window| window == private_key)
                     || matches!(
                         artifact.surface,
                         CustodySurface::NativeBundle {
@@ -77,9 +87,12 @@ macro_rules! enrollment_custody_tests {
                 .collect();
 
             assert_eq!(artifacts[0].bytes, private_key);
-            assert!(artifacts[1..]
-                .iter()
-                .all(|artifact| !artifact.bytes.windows(private_key.len()).any(|window| window == private_key)));
+            assert!(artifacts[1..].iter().all(|artifact| {
+                !artifact
+                    .bytes
+                    .windows(private_key.len())
+                    .any(|window| window == private_key)
+            }));
             assert!(secret_scan(&artifacts, &private_key));
         }
 

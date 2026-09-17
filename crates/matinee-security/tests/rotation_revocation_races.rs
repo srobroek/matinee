@@ -124,7 +124,10 @@ macro_rules! rotation_revocation_races_tests {
             let mut state = RotationRaceState::default();
             let before = format!("{state:?}");
             let outcome = crate::identity::TransitionOutcome::Unknown;
-            assert!(matches!(outcome, crate::identity::TransitionOutcome::Unknown));
+            assert!(matches!(
+                outcome,
+                crate::identity::TransitionOutcome::Unknown
+            ));
             assert_eq!(before, format!("{state:?}"));
             assert_eq!(state.epoch, 0);
             assert!(state.consumed_enrollments.is_empty());
@@ -161,8 +164,14 @@ macro_rules! rotation_revocation_races_tests {
             assert!(rendered.contains("stale_epoch"));
             assert!(!rendered.contains("private"));
             assert!(!rendered.contains("secret"));
-            assert_eq!(failure.redacted().1, crate::failures::FailureCode::StaleEpoch);
-            assert_eq!(failure.safe_next_action(), crate::failures::SafeNextAction::ReconnectCurrentEpoch);
+            assert_eq!(
+                failure.redacted().1,
+                crate::failures::FailureCode::StaleEpoch
+            );
+            assert_eq!(
+                failure.safe_next_action(),
+                crate::failures::SafeNextAction::ReconnectCurrentEpoch
+            );
         }
     };
 }

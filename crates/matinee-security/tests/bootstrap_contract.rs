@@ -2,9 +2,9 @@ macro_rules! bootstrap_contract_tests {
     () => {
         use crate::adapters::os_pipe::{OsPipe, OsPipeError};
         use crate::identity::{
-            CredentialReference, DaemonIdentity, DaemonLifecycle, Fingerprint, IdentityId,
-            PublicKey, TransitionId, TransitionInput, TransitionOperation, TransitionOutcome,
-            IdempotencyKey,
+            CredentialReference, DaemonIdentity, DaemonLifecycle, Fingerprint, IdempotencyKey,
+            IdentityId, PublicKey, TransitionId, TransitionInput, TransitionOperation,
+            TransitionOutcome,
         };
         use crate::test_support_fakes::FakeOsPipe;
         use uuid::Uuid;
@@ -22,7 +22,9 @@ macro_rules! bootstrap_contract_tests {
         #[test]
         fn inherited_unix_and_windows_pipe_envelopes_are_opaque_and_closed() {
             let unix = FakeOsPipe::present(9).acquire().expect("inherited unix fd");
-            let windows = FakeOsPipe::present(u64::MAX).acquire().expect("inherited windows handle");
+            let windows = FakeOsPipe::present(u64::MAX)
+                .acquire()
+                .expect("inherited windows handle");
             assert!(unix.is_present());
             assert!(windows.is_present());
             let unix_debug = format!("{unix:?}");
@@ -68,12 +70,15 @@ macro_rules! bootstrap_contract_tests {
             assert_ne!(daemon.get(), bootstrap.get());
             assert_ne!(bootstrap.get(), idempotency.get());
 
-            let credential = CredentialReference::new("apple-native", "native-admin", daemon, state)
-                .expect("bounded credential locator");
+            let credential =
+                CredentialReference::new("apple-native", "native-admin", daemon, state)
+                    .expect("bounded credential locator");
             assert_eq!(credential.daemon(), daemon);
             assert_eq!(credential.state_directory(), state);
             assert!(CredentialReference::new("", "native-admin", daemon, state).is_err());
-            assert!(CredentialReference::new("apple-native", "x".repeat(257), daemon, state).is_err());
+            assert!(
+                CredentialReference::new("apple-native", "x".repeat(257), daemon, state).is_err()
+            );
         }
 
         #[test]
@@ -89,8 +94,9 @@ macro_rules! bootstrap_contract_tests {
             assert!(PublicKey::from_uncompressed([0; 65]).is_err());
 
             let fingerprint = Fingerprint::new("a".repeat(64)).expect("lowercase fingerprint");
-            let credential = CredentialReference::new("apple-native", "native-admin", daemon, state)
-                .expect("credential binding");
+            let credential =
+                CredentialReference::new("apple-native", "native-admin", daemon, state)
+                    .expect("credential binding");
             let mut record = DaemonIdentity::new(
                 daemon,
                 key.clone(),

@@ -40,7 +40,10 @@ macro_rules! events_contract_tests {
             ];
             let mut sink = FakeEventSink::accepted();
             for code in codes {
-                assert_eq!(events::emit_required(Some(&mut sink), event(code)), Ok(events::SecurityEventSinkResult::Accepted));
+                assert_eq!(
+                    events::emit_required(Some(&mut sink), event(code)),
+                    Ok(events::SecurityEventSinkResult::Accepted)
+                );
             }
             assert_eq!(sink.received().len(), 13);
         }
@@ -48,41 +51,109 @@ macro_rules! events_contract_tests {
         #[test]
         fn event_and_metadata_bounds_accept_edges_and_reject_overflows() {
             let metadata = (0..8)
-                .map(|i| events::MetadataEntry { key: format!("k{i}"), value: "v".repeat(60) })
+                .map(|i| events::MetadataEntry {
+                    key: format!("k{i}"),
+                    value: "v".repeat(60),
+                })
                 .collect();
             let bounded = events::SecurityEvent::new(
-                Uuid::nil(), events::EventBoundary::Bootstrap,
-                events::SecurityCode::EnrollmentAccepted, events::EventOutcome::Accepted,
-                events::SafeNextAction::Retry, Some(Uuid::from_u128(3)), Some(Uuid::from_u128(4)),
-                events::EndpointClass::Native, events::EventTime(0), Uuid::nil(), metadata,
-            ).expect("eight metadata entries at the aggregate bound");
+                Uuid::nil(),
+                events::EventBoundary::Bootstrap,
+                events::SecurityCode::EnrollmentAccepted,
+                events::EventOutcome::Accepted,
+                events::SafeNextAction::Retry,
+                Some(Uuid::from_u128(3)),
+                Some(Uuid::from_u128(4)),
+                events::EndpointClass::Native,
+                events::EventTime(0),
+                Uuid::nil(),
+                metadata,
+            )
+            .expect("eight metadata entries at the aggregate bound");
             assert!(bounded.encoded_len() <= 2_048);
             assert_eq!(bounded.metadata().len(), 8);
 
-            let too_many = (0..9).map(|i| events::MetadataEntry { key: format!("k{i}"), value: "v".into() }).collect();
-            assert_eq!(events::SecurityEvent::new(
-                Uuid::nil(), events::EventBoundary::Bootstrap, events::SecurityCode::EnrollmentAccepted,
-                events::EventOutcome::Accepted, events::SafeNextAction::Retry, None, None,
-                events::EndpointClass::Native, events::EventTime(0), Uuid::nil(), too_many,
-            ), Err(events::EventBuildError::TooManyMetadata));
-            assert_eq!(events::SecurityEvent::new(
-                Uuid::nil(), events::EventBoundary::Bootstrap, events::SecurityCode::EnrollmentAccepted,
-                events::EventOutcome::Accepted, events::SafeNextAction::Retry, None, None,
-                events::EndpointClass::Native, events::EventTime(0), Uuid::nil(),
-                vec![events::MetadataEntry { key: "k".into(), value: "v".repeat(129) }],
-            ), Err(events::EventBuildError::MetadataValueTooLong));
+            let too_many = (0..9)
+                .map(|i| events::MetadataEntry {
+                    key: format!("k{i}"),
+                    value: "v".into(),
+                })
+                .collect();
+            assert_eq!(
+                events::SecurityEvent::new(
+                    Uuid::nil(),
+                    events::EventBoundary::Bootstrap,
+                    events::SecurityCode::EnrollmentAccepted,
+                    events::EventOutcome::Accepted,
+                    events::SafeNextAction::Retry,
+                    None,
+                    None,
+                    events::EndpointClass::Native,
+                    events::EventTime(0),
+                    Uuid::nil(),
+                    too_many,
+                ),
+                Err(events::EventBuildError::TooManyMetadata)
+            );
+            assert_eq!(
+                events::SecurityEvent::new(
+                    Uuid::nil(),
+                    events::EventBoundary::Bootstrap,
+                    events::SecurityCode::EnrollmentAccepted,
+                    events::EventOutcome::Accepted,
+                    events::SafeNextAction::Retry,
+                    None,
+                    None,
+                    events::EndpointClass::Native,
+                    events::EventTime(0),
+                    Uuid::nil(),
+                    vec![events::MetadataEntry {
+                        key: "k".into(),
+                        value: "v".repeat(129)
+                    }],
+                ),
+                Err(events::EventBuildError::MetadataValueTooLong)
+            );
         }
 
         #[test]
         fn event_redaction_rejects_secrets_and_protected_identifiers() {
-            for word in ["private_key", "secret", "credential", "password", "cookie", "token", "authorization", "pkcs8", "payload", "https://host", "object_id", "artifact_id", "stream_id"] {
+            for word in [
+                "private_key",
+                "secret",
+                "credential",
+                "password",
+                "cookie",
+                "token",
+                "authorization",
+                "pkcs8",
+                "payload",
+                "https://host",
+                "object_id",
+                "artifact_id",
+                "stream_id",
+            ] {
                 let result = events::SecurityEvent::new(
-                    Uuid::nil(), events::EventBoundary::Input, events::SecurityCode::MalformedInput,
-                    events::EventOutcome::Rejected, events::SafeNextAction::FailClosed, None, None,
-                    events::EndpointClass::Unknown, events::EventTime(0), Uuid::nil(),
-                    vec![events::MetadataEntry { key: word.into(), value: "x".into() }],
+                    Uuid::nil(),
+                    events::EventBoundary::Input,
+                    events::SecurityCode::MalformedInput,
+                    events::EventOutcome::Rejected,
+                    events::SafeNextAction::FailClosed,
+                    None,
+                    None,
+                    events::EndpointClass::Unknown,
+                    events::EventTime(0),
+                    Uuid::nil(),
+                    vec![events::MetadataEntry {
+                        key: word.into(),
+                        value: "x".into(),
+                    }],
                 );
-                assert_eq!(result, Err(events::EventBuildError::Redacted), "redaction keyword: {word}");
+                assert_eq!(
+                    result,
+                    Err(events::EventBuildError::Redacted),
+                    "redaction keyword: {word}"
+                );
             }
         }
 
@@ -122,7 +193,10 @@ macro_rules! events_contract_tests {
             assert_eq!(protected_state, 0);
             assert_eq!(sink.received().len(), 1);
 
-            let result = events::emit_required::<FakeEventSink>(None, event(events::SecurityCode::AuthenticationFailed));
+            let result = events::emit_required::<FakeEventSink>(
+                None,
+                event(events::SecurityCode::AuthenticationFailed),
+            );
             assert_eq!(result, Err(events::RequiredEventError::Unavailable));
             protected_state = protected_state.saturating_add(0);
             assert_eq!(protected_state, 0);

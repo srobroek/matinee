@@ -1,9 +1,8 @@
 macro_rules! enrollment_contract_tests {
     () => {
         use crate::identity::{
-            EnrollmentLifecycle, ExpiryResult, ExpiryStatus, Fingerprint, IdentityId,
-            TransitionId, TransitionInput, TransitionOperation, TransitionOutcome,
-            ExtensionEnrollment,
+            EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment, Fingerprint,
+            IdentityId, TransitionId, TransitionInput, TransitionOperation, TransitionOutcome,
         };
         use uuid::Uuid;
 
@@ -27,7 +26,10 @@ macro_rules! enrollment_contract_tests {
             assert_eq!(secret.as_slice(), &[0x5a; 32]);
             let mut mutation = secret;
             mutation[31] ^= 1;
-            assert_ne!(secret, mutation, "a one-byte mutation must change the proof secret");
+            assert_ne!(
+                secret, mutation,
+                "a one-byte mutation must change the proof secret"
+            );
         }
 
         #[test]
@@ -59,7 +61,9 @@ macro_rules! enrollment_contract_tests {
             let enrollment = enrollment_fixture(ExpiryResult::valid(600_000).unwrap());
             let debug = format!("{enrollment:?}");
             assert!(debug.contains("chrome-extension://abcdefghijklmnop"));
-            assert!(debug.contains("store=stable;update=https://updates.example.test/ext.xml;install=webstore"));
+            assert!(debug.contains(
+                "store=stable;update=https://updates.example.test/ext.xml;install=webstore"
+            ));
             assert!(debug.contains("127.0.0.1:7777"));
             assert!(debug.contains(&"a".repeat(64)));
         }
@@ -70,7 +74,9 @@ macro_rules! enrollment_contract_tests {
             assert_eq!(enrollment.consume(), Ok(()));
             assert_eq!(enrollment.lifecycle(), EnrollmentLifecycle::Consumed);
             assert_eq!(
-                enrollment.consume().expect_err("a consumed enrollment is one-use"),
+                enrollment
+                    .consume()
+                    .expect_err("a consumed enrollment is one-use"),
                 "enrollment is not pending"
             );
             assert_eq!(
@@ -106,7 +112,10 @@ macro_rules! enrollment_contract_tests {
                 TransitionOutcome::Unknown,
             );
             assert!(unknown.is_fail_closed());
-            assert!(!unknown.may_persist(), "unknown result must not register a principal");
+            assert!(
+                !unknown.may_persist(),
+                "unknown result must not register a principal"
+            );
         }
 
         #[test]
@@ -117,14 +126,20 @@ macro_rules! enrollment_contract_tests {
             assert!(!debug.contains(secret));
             assert_eq!(enrollment.failed_proofs(), 0);
             for _ in 0..4 {
-                enrollment.record_failed_proof().expect("pending proof budget");
+                enrollment
+                    .record_failed_proof()
+                    .expect("pending proof budget");
             }
             assert_eq!(enrollment.failed_proofs(), 4);
-            enrollment.record_failed_proof().expect("fifth proof closes enrollment");
+            enrollment
+                .record_failed_proof()
+                .expect("fifth proof closes enrollment");
             assert_eq!(enrollment.failed_proofs(), 5);
             assert_eq!(enrollment.lifecycle(), EnrollmentLifecycle::Closed);
             assert_eq!(
-                enrollment.record_failed_proof().expect_err("closed enrollment is immutable"),
+                enrollment
+                    .record_failed_proof()
+                    .expect_err("closed enrollment is immutable"),
                 "enrollment is not pending"
             );
         }

@@ -2,7 +2,7 @@ macro_rules! authorization_contract_tests {
     () => {
         use crate::identity::{
             Capability, CapabilityAction, CredentialReference, ExtensionGrant, Fingerprint,
-            IdentityId, Principal, PrincipalKind, PublicKey, GrantLifecycle,
+            GrantLifecycle, IdentityId, Principal, PrincipalKind, PublicKey,
         };
         use crate::{AuthorizedInput, ConnectionId, PayloadKind, SessionInput};
         use uuid::Uuid;
@@ -70,11 +70,20 @@ macro_rules! authorization_contract_tests {
             assert_eq!(admin.kind(), PrincipalKind::NativeAdmin);
             assert_eq!(mcp.kind(), PrincipalKind::McpClient);
             assert_eq!(extension_principal.kind(), PrincipalKind::BrowserExtension);
-            assert_eq!(admin.ceiling()[0].action(), &CapabilityAction::ManagePrincipals);
+            assert_eq!(
+                admin.ceiling()[0].action(),
+                &CapabilityAction::ManagePrincipals
+            );
             assert_eq!(mcp.ceiling()[0].action(), &CapabilityAction::Read);
-            assert_eq!(extension_principal.ceiling()[0].action(), &CapabilityAction::Execute);
+            assert_eq!(
+                extension_principal.ceiling()[0].action(),
+                &CapabilityAction::Execute
+            );
             admin.activate().unwrap();
-            assert_eq!(admin.lifecycle(), crate::identity::PrincipalLifecycle::Active);
+            assert_eq!(
+                admin.lifecycle(),
+                crate::identity::PrincipalLifecycle::Active
+            );
         }
 
         #[test]
@@ -103,14 +112,18 @@ macro_rules! authorization_contract_tests {
                 Err("rotation is not valid")
             );
             assert_eq!(principal.epoch(), 0);
-            assert_eq!(principal.lifecycle(), crate::identity::PrincipalLifecycle::Rotating);
+            assert_eq!(
+                principal.lifecycle(),
+                crate::identity::PrincipalLifecycle::Rotating
+            );
         }
 
         #[test]
         fn authorization_grant_requires_matching_extension_owner_epoch_and_active_lifecycle() {
             let (daemon, owner, extension) = ids();
             let capability = capability(CapabilityAction::Read, "browser/session");
-            let mut grant = ExtensionGrant::new(extension, owner, vec![capability.clone()], 7).unwrap();
+            let mut grant =
+                ExtensionGrant::new(extension, owner, vec![capability.clone()], 7).unwrap();
             assert_eq!(grant.extension(), extension);
             assert_eq!(grant.owner(), owner);
             assert_eq!(grant.epoch(), 7);
@@ -164,7 +177,11 @@ macro_rules! authorization_contract_tests {
 
         #[test]
         fn authorization_admin_only_actions_have_explicit_non_admin_ceiling_controls() {
-            let non_admin = [CapabilityAction::ManagePrincipals, CapabilityAction::Rotate, CapabilityAction::Revoke];
+            let non_admin = [
+                CapabilityAction::ManagePrincipals,
+                CapabilityAction::Rotate,
+                CapabilityAction::Revoke,
+            ];
             let mcp = capability(CapabilityAction::Read, "owned");
             let extension = capability(CapabilityAction::Execute, "browser");
             assert!(non_admin.iter().all(|action| action != mcp.action()));

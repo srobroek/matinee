@@ -3,7 +3,7 @@ macro_rules! rotation_revocation_tests {
         use crate::events::{self, SecurityEventSink};
         use crate::identity::{
             Capability, CapabilityAction, Connection, ConnectionId, ConnectionLifecycle,
-            CredentialReference, Fingerprint, GrantLifecycle, IdentityId, IdempotencyKey,
+            CredentialReference, Fingerprint, GrantLifecycle, IdempotencyKey, IdentityId,
             Principal, PrincipalKind, PrincipalLifecycle, PublicKey, RevocationTransition,
             RotationTransition, TransitionId, TransitionInput, TransitionOperation,
             TransitionOutcome,
@@ -78,7 +78,13 @@ macro_rules! rotation_revocation_tests {
                 .unwrap();
             steps.push(RotationStep::EpochAdvanced);
 
-            assert_eq!(steps, [RotationStep::ReplacementRegistered, RotationStep::EpochAdvanced]);
+            assert_eq!(
+                steps,
+                [
+                    RotationStep::ReplacementRegistered,
+                    RotationStep::EpochAdvanced
+                ]
+            );
             assert_eq!(principal.epoch(), 1);
             assert_eq!(principal.lifecycle(), PrincipalLifecycle::Active);
             assert_eq!(principal.fingerprint(), &fingerprint('b'));
@@ -106,7 +112,8 @@ macro_rules! rotation_revocation_tests {
             assert_ne!(principal.fingerprint(), &fingerprint('a'));
 
             let capability = Capability::new(CapabilityAction::Read, "status").unwrap();
-            let mut grant = crate::identity::ExtensionGrant::new(ids(2), ids(1), vec![capability], 0).unwrap();
+            let mut grant =
+                crate::identity::ExtensionGrant::new(ids(2), ids(1), vec![capability], 0).unwrap();
             assert_eq!(grant.lifecycle(), GrantLifecycle::Active);
             grant.revoke();
             assert_eq!(grant.lifecycle(), GrantLifecycle::Revoked);
@@ -152,8 +159,17 @@ macro_rules! rotation_revocation_tests {
                     outcome,
                 );
                 assert_eq!(input.outcome(), outcome);
-                assert_eq!(input.may_persist(), matches!(outcome, TransitionOutcome::Committed | TransitionOutcome::AlreadyCommitted));
-                assert_eq!(input.is_fail_closed(), outcome == TransitionOutcome::Unknown);
+                assert_eq!(
+                    input.may_persist(),
+                    matches!(
+                        outcome,
+                        TransitionOutcome::Committed | TransitionOutcome::AlreadyCommitted
+                    )
+                );
+                assert_eq!(
+                    input.is_fail_closed(),
+                    outcome == TransitionOutcome::Unknown
+                );
             }
         }
         #[test]
@@ -170,23 +186,44 @@ macro_rules! rotation_revocation_tests {
             )
             .unwrap();
             assert_eq!(rotation.outcome(), TransitionOutcome::Committed);
-            assert!(RotationTransition::new(
-                IdempotencyKey::new(Uuid::from_u128(15)), ids(2), fingerprint('a'),
-                fingerprint('a'), 4, 5, 5, TransitionOutcome::Committed
-            ).is_err());
+            assert!(
+                RotationTransition::new(
+                    IdempotencyKey::new(Uuid::from_u128(15)),
+                    ids(2),
+                    fingerprint('a'),
+                    fingerprint('a'),
+                    4,
+                    5,
+                    5,
+                    TransitionOutcome::Committed
+                )
+                .is_err()
+            );
 
             let revocation = RevocationTransition::new(
-                IdempotencyKey::new(Uuid::from_u128(16)), ids(2), "administrator", 5, 2, 1,
+                IdempotencyKey::new(Uuid::from_u128(16)),
+                ids(2),
+                "administrator",
+                5,
+                2,
+                1,
                 TransitionOutcome::AlreadyCommitted,
             )
             .unwrap();
             assert_eq!(revocation.outcome(), TransitionOutcome::AlreadyCommitted);
-            assert!(RevocationTransition::new(
-                IdempotencyKey::new(Uuid::from_u128(16)), ids(2), "", 5, 2, 1,
-                TransitionOutcome::Unknown
-            ).is_err());
+            assert!(
+                RevocationTransition::new(
+                    IdempotencyKey::new(Uuid::from_u128(16)),
+                    ids(2),
+                    "",
+                    5,
+                    2,
+                    1,
+                    TransitionOutcome::Unknown
+                )
+                .is_err()
+            );
         }
-
 
         fn rotation_event() -> events::SecurityEvent {
             events::SecurityEvent::new(
@@ -207,9 +244,15 @@ macro_rules! rotation_revocation_tests {
 
         #[test]
         fn rotation_fails_closed_when_required_event_sink_is_missing_or_unavailable() {
-            assert_eq!(events::emit_required::<FakeEventSink>(None, rotation_event()), Err(events::RequiredEventError::Unavailable));
+            assert_eq!(
+                events::emit_required::<FakeEventSink>(None, rotation_event()),
+                Err(events::RequiredEventError::Unavailable)
+            );
             let mut sink = FakeEventSink::unavailable();
-            assert_eq!(events::emit_required(Some(&mut sink), rotation_event()), Err(events::RequiredEventError::Unavailable));
+            assert_eq!(
+                events::emit_required(Some(&mut sink), rotation_event()),
+                Err(events::RequiredEventError::Unavailable)
+            );
             assert_eq!(sink.received().len(), 1);
         }
 
@@ -226,18 +269,33 @@ macro_rules! rotation_revocation_tests {
                 events::EndpointClass::Extension,
                 events::EventTime(2),
                 Uuid::from_u128(99),
-                vec![events::MetadataEntry { key: "reason_class".into(), value: "administrator".into() }],
+                vec![events::MetadataEntry {
+                    key: "reason_class".into(),
+                    value: "administrator".into(),
+                }],
             )
             .unwrap();
             assert!(event.encoded_len() <= 2_048);
             assert!(!format!("{event:?}").contains("key-new"));
-            assert!(events::SecurityEvent::new(
-                Uuid::from_u128(14), events::EventBoundary::Revocation,
-                events::SecurityCode::Revocation, events::EventOutcome::Committed,
-                events::SafeNextAction::Reconnect, None, None, events::EndpointClass::Extension,
-                events::EventTime(2), Uuid::from_u128(99),
-                vec![events::MetadataEntry { key: "credential".into(), value: "secret".into() }]
-            ).is_err());
+            assert!(
+                events::SecurityEvent::new(
+                    Uuid::from_u128(14),
+                    events::EventBoundary::Revocation,
+                    events::SecurityCode::Revocation,
+                    events::EventOutcome::Committed,
+                    events::SafeNextAction::Reconnect,
+                    None,
+                    None,
+                    events::EndpointClass::Extension,
+                    events::EventTime(2),
+                    Uuid::from_u128(99),
+                    vec![events::MetadataEntry {
+                        key: "credential".into(),
+                        value: "secret".into()
+                    }]
+                )
+                .is_err()
+            );
         }
     };
 }
