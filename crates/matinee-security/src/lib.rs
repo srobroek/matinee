@@ -392,6 +392,19 @@ mod bootstrap_contract {
     bootstrap_contract_tests!();
 }
 #[cfg(test)]
+mod enrollment_contract {
+    include!("../tests/enrollment_contract.rs");
+    enrollment_contract_tests!();
+    mod failures {
+        include!("../tests/enrollment_failures.rs");
+        enrollment_failure_tests!();
+    }
+    mod custody {
+        include!("../tests/enrollment_custody.rs");
+        enrollment_custody_tests!();
+    }
+}
+#[cfg(test)]
 mod malformed_corpus_contract {
     include!("../tests/malformed_corpus.rs");
     malformed_corpus_tests!();
