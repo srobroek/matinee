@@ -60,16 +60,18 @@ impl Fingerprint {
     pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
         let value = value.into();
         if value.len() != 64
-            || !value
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
-            return Err("fingerprint must be 64 lowercase hexadecimal bytes");
-        }
+            || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        { return Err("fingerprint must be 64 lowercase hexadecimal bytes"); }
         Ok(Self(value))
     }
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn as_str(&self) -> &str { &self.0 }
+
+    /// Lowercase SHA-256 over exactly the 65 SEC1 public-key bytes.
+    pub fn from_public_key(key: &PublicKey) -> Self {
+        let digest = ring::digest::digest(&ring::digest::SHA256, key.as_bytes());
+        let mut text = String::with_capacity(64);
+        for byte in digest.as_ref() { use core::fmt::Write; write!(&mut text, "{byte:02x}").unwrap(); }
+        Self(text)
     }
 }
 
