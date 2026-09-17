@@ -181,10 +181,30 @@ mod tests {
                 .lookup(binding),
             Err(credential_store::CredentialStoreError::Mismatch)
         );
+        assert_eq!(
+            FakeCredentialStore::new()
+                .with_error(binding, credential_store::CredentialStoreError::Duplicate)
+                .lookup(binding),
+            Err(credential_store::CredentialStoreError::Duplicate)
+        );
+        assert_eq!(
+            FakeCredentialStore::new()
+                .with_error(binding, credential_store::CredentialStoreError::Unavailable)
+                .lookup(binding),
+            Err(credential_store::CredentialStoreError::Unavailable)
+        );
         assert!(FakeOsPipe::present(3).acquire().unwrap().is_present());
         assert_eq!(
             FakeOsPipe::error(os_pipe::OsPipeError::Missing).acquire(),
             Err(os_pipe::OsPipeError::Missing)
+        );
+        assert_eq!(
+            FakeOsPipe::error(os_pipe::OsPipeError::Mismatch).acquire(),
+            Err(os_pipe::OsPipeError::Mismatch)
+        );
+        assert_eq!(
+            FakeOsPipe::error(os_pipe::OsPipeError::Unavailable).acquire(),
+            Err(os_pipe::OsPipeError::Unavailable)
         );
         let mut sink = FakeEventSink::accepted();
         assert_eq!(
