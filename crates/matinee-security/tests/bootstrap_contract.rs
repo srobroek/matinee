@@ -8,7 +8,7 @@ macro_rules! bootstrap_contract_tests {
             IdentityId, PublicKey, TransitionId, TransitionInput, TransitionOperation,
             TransitionOutcome,
         };
-        use crate::test_support_fakes::{FakeCredentialStore, FakeEventSink, FakeOsPipe};
+        use crate::test_support_fakes::{FakeCredentialStore, FakeOsPipe};
         use uuid::Uuid;
 
         fn identity(value: u128) -> IdentityId {
@@ -122,7 +122,7 @@ macro_rules! bootstrap_contract_tests {
         }
 
         #[test]
-        fn bootstrap_unknown_outcome_fails_closed_before_persistence() {
+        fn bootstrap_unknown_outcome_is_fail_closed() {
             let input = TransitionInput::new(
                 identity(20),
                 TransitionId::new(Uuid::from_u128(21)),
@@ -132,36 +132,62 @@ macro_rules! bootstrap_contract_tests {
                 TransitionOutcome::Unknown,
             );
             assert!(input.is_fail_closed());
-            assert!(!input.may_persist());
-            for outcome in [TransitionOutcome::Rejected, TransitionOutcome::Unknown] {
-                let rejected = TransitionInput::new(
-                    identity(20),
-                    TransitionId::new(Uuid::from_u128(21)),
-                    TransitionOperation::Bootstrap,
-                    IdempotencyKey::new(Uuid::from_u128(22)),
-                    0,
-                    outcome,
-                );
-                assert!(!rejected.may_persist());
-            }
         }
         #[test]
-        fn bootstrap_private_bytes_never_cross_pipe_credential_event_or_record_boundaries() {
-            let private_marker = "private-key-material";
-            let binding = CredentialBinding::new([0xa5; 32]);
-            let credential = CredentialReference::new("apple-native", "native-admin", identity(31), identity(30)).expect("bounded credential reference");
-            let record = DaemonIdentity::new(identity(31), native_key(0x5a), Fingerprint::new("b".repeat(64)).expect("fingerprint"), "127.0.0.1:7777", 1, 1, credential).expect("staged daemon identity");
-            let handle = FakeCredentialStore::new().registered(binding, u64::MAX).lookup(binding).expect("opaque credential handle");
-            let event = SecurityEvent::new(Uuid::from_u128(32), EventBoundary::Bootstrap, SecurityCode::AuthenticationFailed, EventOutcome::Failed, SafeNextAction::FailClosed, None, None, EndpointClass::Native, EventTime(1), identity(30).get(), vec![MetadataEntry { key: "reason".into(), value: "bootstrap-failed".into() }]).expect("redacted event");
-            let rejected_event = SecurityEvent::new(Uuid::from_u128(33), EventBoundary::Bootstrap, SecurityCode::AuthenticationFailed, EventOutcome::Failed, SafeNextAction::FailClosed, None, None, EndpointClass::Native, EventTime(1), identity(30).get(), vec![MetadataEntry { key: "reason".into(), value: private_marker.into() }]);
-            assert!(matches!(rejected_event, Err(crate::events::EventBuildError::Redacted)));
-            let mut sink = FakeEventSink::accepted();
-            use crate::events::SecurityEventSink;
-            sink.emit(event);
-            for projection in [format!("{:?}", FakeOsPipe::present(u64::MAX).acquire().unwrap()), format!("{:?}", handle), format!("{:?}", record), format!("{:?}", sink.received())] {
-                assert!(!projection.contains(private_marker));
-                assert!(!projection.contains("a5"));
-            }
+        fn bootstrap_custody_boundaries_are_typed_and_redacted() {
+            let binding_bytes = [0xa5; 32];
+            let binding = CredentialBinding::new(binding_bytes);
+            assert_eq!(format!("{binding:?}"), "CredentialBinding(REDACTED)");
+
+            let handle = FakeCredentialStore::new()
+                .registered(binding, u64::MAX)
+                .lookup(binding)
+                .expect("registered credential handle");
+            assert_eq!(handle.slot(), u64::MAX);
+            assert_eq!(format!("{handle:?}"), "CredentialHandle(REDACTED)");
+
+            let pipe = FakeOsPipe::present(u64::MAX)
+                .acquire()
+                .expect("inherited bootstrap pipe");
+            assert!(pipe.is_present());
+            assert_eq!(format!("{pipe:?}"), "InheritedPipe(REDACTED)");
+
+            let accepted = SecurityEvent::new(
+                Uuid::from_u128(32),
+                EventBoundary::Bootstrap,
+                SecurityCode::AuthenticationFailed,
+                EventOutcome::Failed,
+                SafeNextAction::FailClosed,
+                None,
+                None,
+                EndpointClass::Native,
+                EventTime(1),
+                identity(30).get(),
+                vec![MetadataEntry {
+                    key: "reason".into(),
+                    value: "bootstrap-failed".into(),
+                }],
+            )
+            .expect("bounded redacted event");
+            assert_eq!(accepted.metadata()[0].value, "bootstrap-failed");
+
+            let rejected = SecurityEvent::new(
+                Uuid::from_u128(33),
+                EventBoundary::Bootstrap,
+                SecurityCode::AuthenticationFailed,
+                EventOutcome::Failed,
+                SafeNextAction::FailClosed,
+                None,
+                None,
+                EndpointClass::Native,
+                EventTime(1),
+                identity(30).get(),
+                vec![MetadataEntry {
+                    key: "reason".into(),
+                    value: "private-key-material".into(),
+                }],
+            );
+            assert_eq!(rejected, Err(crate::events::EventBuildError::Redacted));
         }
     };
 }

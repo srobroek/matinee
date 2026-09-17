@@ -404,7 +404,6 @@ mod enrollment_contract {
         enrollment_custody_tests!();
     }
 }
-#[cfg(test)]
 mod malformed_corpus_contract {
     include!("../tests/malformed_corpus.rs");
     malformed_corpus_tests!();
