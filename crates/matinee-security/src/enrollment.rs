@@ -1,8 +1,9 @@
-//! Closed, bounded enrollment creation.
+//! Closed, bounded enrollment creation and binding validation.
 //!
-//! This module owns only the creation contract. Origin policy and consumption are
-//! downstream concerns; this boundary stores their expected values without accepting
-//! unbounded or uncertain input.
+//! This module owns the creation contract and the private checks that bind a
+//! pairing attempt to its expected browser origin, loopback endpoint, and
+//! installation metadata. All checks fail closed before proof work or state
+//! mutation.
 
 use core::fmt;
 
@@ -68,6 +69,9 @@ pub(crate) enum EnrollmentCreateError {
     EmptyOrOversizedOrigin,
     EmptyOrOversizedMetadata,
     EmptyOrOversizedEndpoint,
+    InvalidOrigin,
+    InvalidEndpoint,
+    InvalidInstallMetadata,
     InvalidExpiry,
     KeyGenerationFailed,
     InvalidPublicKey,
@@ -80,6 +84,9 @@ impl fmt::Display for EnrollmentCreateError {
             Self::EmptyOrOversizedOrigin => "invalid enrollment origin",
             Self::EmptyOrOversizedMetadata => "invalid enrollment metadata",
             Self::EmptyOrOversizedEndpoint => "invalid enrollment endpoint",
+            Self::InvalidOrigin => "invalid enrollment origin",
+            Self::InvalidEndpoint => "invalid enrollment endpoint",
+            Self::InvalidInstallMetadata => "invalid enrollment install metadata",
             Self::InvalidExpiry => "invalid enrollment expiry",
             Self::KeyGenerationFailed => "enrollment key generation failed",
             Self::InvalidPublicKey => "invalid enrollment public key",
@@ -223,6 +230,80 @@ impl EnrollmentBundle {
     }
 }
 
+/// The values supplied by the browser during `/v1/pair`. This remains private;
+/// callers receive only the typed validation result and never a policy bypass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EnrollmentBinding<'a> {
+    pub(crate) origin: &'a str,
+    pub(crate) endpoint: &'a str,
+    pub(crate) store_metadata: &'a str,
+    pub(crate) update_metadata: &'a str,
+    pub(crate) install_metadata: &'a str,
+    pub(crate) development_allowance: DevelopmentIdentityAllowance,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DevelopmentIdentityAllowance {
+    None,
+    Explicit { warning_acknowledged: bool },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EnrollmentBindingError {
+    Origin,
+    Endpoint,
+    Metadata,
+    DevelopmentAllowance,
+}
+
+fn validate_origin(origin: &str) -> bool {
+    let Some(id) = origin.strip_prefix("chrome-extension://") else { return false };
+    (id.len() == 16 || id.len() == 32) && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
+}
+
+fn validate_endpoint(endpoint: &str) -> bool {
+    let Some((host, port)) = endpoint.rsplit_once(':') else { return false };
+    let valid_host = host == "127.0.0.1" || host == "[::1]" || host == "::1";
+    valid_host && port.parse::<u16>().is_ok_and(|port| port != 0)
+}
+
+fn validate_metadata(value: &str, update: bool) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte >= 0x20 && byte != 0x7f)
+        && (!update || value.starts_with("https://"))
+}
+
+pub(crate) fn validate_enrollment_binding(
+    expected: &EnrollmentCreation,
+    attempt: &EnrollmentBinding<'_>,
+) -> Result<(), EnrollmentBindingError> {
+    if !validate_origin(expected.origin.as_str()) || attempt.origin != expected.origin {
+        return Err(EnrollmentBindingError::Origin);
+    }
+    if !validate_endpoint(expected.daemon_endpoint.as_str()) || attempt.endpoint != expected.daemon_endpoint {
+        return Err(EnrollmentBindingError::Endpoint);
+    }
+    let metadata_matches = attempt.store_metadata == expected.store_metadata
+        && attempt.update_metadata == expected.update_metadata
+        && attempt.install_metadata == expected.install_metadata
+        && validate_metadata(attempt.store_metadata, false)
+        && validate_metadata(attempt.update_metadata, true)
+        && validate_metadata(attempt.install_metadata, false);
+    if !metadata_matches {
+        return Err(EnrollmentBindingError::Metadata);
+    }
+    let development_id = expected.origin.ends_with("-dev") || expected.install_metadata == "development";
+    if development_id
+        && !matches!(
+            attempt.development_allowance,
+            DevelopmentIdentityAllowance::Explicit { warning_acknowledged: true }
+        )
+    {
+        return Err(EnrollmentBindingError::DevelopmentAllowance);
+    }
+    Ok(())
+}
+
 pub(crate) fn create_enrollment(
     input: EnrollmentCreation,
 ) -> Result<EnrollmentBundle, EnrollmentCreateError> {
@@ -235,6 +316,9 @@ fn validate_creation(input: &EnrollmentCreation) -> Result<(), EnrollmentCreateE
         MAX_ORIGIN_BYTES,
         EnrollmentCreateError::EmptyOrOversizedOrigin,
     )?;
+    if !validate_origin(&input.origin) {
+        return Err(EnrollmentCreateError::InvalidOrigin);
+    }
     for value in [
         &input.store_metadata,
         &input.update_metadata,
@@ -246,11 +330,20 @@ fn validate_creation(input: &EnrollmentCreation) -> Result<(), EnrollmentCreateE
             EnrollmentCreateError::EmptyOrOversizedMetadata,
         )?;
     }
+    if !validate_metadata(&input.store_metadata, false)
+        || !validate_metadata(&input.update_metadata, true)
+        || !validate_metadata(&input.install_metadata, false)
+    {
+        return Err(EnrollmentCreateError::InvalidInstallMetadata);
+    }
     bounded(
         &input.daemon_endpoint,
         MAX_ENDPOINT_BYTES,
         EnrollmentCreateError::EmptyOrOversizedEndpoint,
     )?;
+    if !validate_endpoint(&input.daemon_endpoint) {
+        return Err(EnrollmentCreateError::InvalidEndpoint);
+    }
     if !input.expiry.is_security_valid() || input.expiry.deadline_ms() > MAX_EXPIRY_MS {
         return Err(EnrollmentCreateError::InvalidExpiry);
     }
@@ -322,5 +415,42 @@ mod tests {
             create_enrollment(oversized),
             Err(EnrollmentCreateError::InvalidExpiry)
         ));
+    }
+
+    fn binding() -> EnrollmentBinding<'static> {
+        EnrollmentBinding {
+            origin: "chrome-extension://abcdefghijklmnop",
+            endpoint: "127.0.0.1:7777",
+            store_metadata: "stable",
+            update_metadata: "https://updates.example.test/ext.xml",
+            install_metadata: "webstore",
+            development_allowance: DevelopmentIdentityAllowance::None,
+        }
+    }
+
+    #[test]
+    fn binding_rejects_origin_endpoint_and_metadata_mutations() {
+        let expected = input();
+        assert_eq!(validate_enrollment_binding(&expected, &binding()), Ok(()));
+        let mut wrong = binding();
+        wrong.origin = "chrome-extension://abcdefghijklmnox";
+        assert_eq!(validate_enrollment_binding(&expected, &wrong), Err(EnrollmentBindingError::Origin));
+        let mut wrong = binding();
+        wrong.endpoint = "localhost:7777";
+        assert_eq!(validate_enrollment_binding(&expected, &wrong), Err(EnrollmentBindingError::Endpoint));
+        let mut wrong = binding();
+        wrong.update_metadata = "http://updates.example.test/ext.xml";
+        assert_eq!(validate_enrollment_binding(&expected, &wrong), Err(EnrollmentBindingError::Metadata));
+    }
+
+    #[test]
+    fn development_install_requires_explicit_acknowledged_allowance() {
+        let mut expected = input();
+        expected.install_metadata = "development".into();
+        let mut attempt = binding();
+        attempt.install_metadata = "development";
+        assert_eq!(validate_enrollment_binding(&expected, &attempt), Err(EnrollmentBindingError::DevelopmentAllowance));
+        attempt.development_allowance = DevelopmentIdentityAllowance::Explicit { warning_acknowledged: true };
+        assert_eq!(validate_enrollment_binding(&expected, &attempt), Ok(()));
     }
 }
