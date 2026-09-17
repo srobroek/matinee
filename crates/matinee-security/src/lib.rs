@@ -14,6 +14,10 @@ mod events;
 mod failures;
 mod identity;
 
+#[cfg(test)]
+#[path = "../tests/support/fakes.rs"]
+mod test_support_fakes;
+
 use core::fmt;
 
 use crate::failures::{FailureCode, SecurityFailure};
