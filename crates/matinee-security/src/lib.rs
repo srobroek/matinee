@@ -369,6 +369,11 @@ impl SecurityCommand {
 }
 
 #[cfg(test)]
+mod foundation_contract {
+    include!("../tests/foundation_contract.rs");
+    foundation_contract_tests!();
+}
+#[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
