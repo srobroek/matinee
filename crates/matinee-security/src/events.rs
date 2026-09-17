@@ -244,6 +244,27 @@ pub(crate) trait SecurityEventSink {
     fn emit(&mut self, event: SecurityEvent) -> SecurityEventSinkResult;
 }
 
+/// Adapts a crate-local callback to the event-sink seam without exposing event
+/// delivery outside this crate. The callback receives only bounded, redacted data.
+pub(crate) struct CallbackSecurityEventSink<F> {
+    callback: F,
+}
+
+impl<F> CallbackSecurityEventSink<F> {
+    pub(crate) fn new(callback: F) -> Self {
+        Self { callback }
+    }
+}
+
+impl<F> SecurityEventSink for CallbackSecurityEventSink<F>
+where
+    F: FnMut(SecurityEvent) -> SecurityEventSinkResult,
+{
+    fn emit(&mut self, event: SecurityEvent) -> SecurityEventSinkResult {
+        (self.callback)(event)
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct AggregationKey {
     boundary: EventBoundary,
@@ -276,6 +297,11 @@ impl AggregationState {
         }
         self.buckets.insert(key, 1);
         SecurityEventSinkResult::Aggregated
+    }
+}
+impl SecurityEventSink for AggregationState {
+    fn emit(&mut self, event: SecurityEvent) -> SecurityEventSinkResult {
+        self.record(&event)
     }
 }
 
@@ -347,5 +373,39 @@ mod tests {
             let _ = state.record(&e);
         }
         assert!(state.buckets.len() <= MAX_BUCKETS);
+    }
+    #[test]
+    fn callback_sink_forwards_bounded_event_and_preserves_result() {
+        let mut seen = Vec::new();
+        let mut sink = CallbackSecurityEventSink::new(|event| {
+            seen.push(event);
+            SecurityEventSinkResult::Accepted
+        });
+        assert_eq!(
+            emit_required(Some(&mut sink), event(vec![])),
+            Ok(SecurityEventSinkResult::Accepted)
+        );
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].encoded_len() <= MAX_EVENT_BYTES);
+    }
+
+    #[test]
+    fn aggregation_sink_returns_unavailable_without_mutating_full_state() {
+        let mut sink = AggregationState::default();
+        for i in 0..MAX_BUCKETS {
+            let mut current = event(vec![]);
+            current.event_id = Uuid::from_u128((i + 1) as u128);
+            current.principal_id = Some(Uuid::from_u128((i + 1) as u128));
+            assert_eq!(sink.emit(current), SecurityEventSinkResult::Aggregated);
+        }
+        let before = sink.buckets.clone();
+        let mut overflow = event(vec![]);
+        overflow.event_id = Uuid::from_u128(10_000);
+        overflow.principal_id = Some(Uuid::from_u128(10_000));
+        assert_eq!(
+            emit_required(Some(&mut sink), overflow),
+            Err(RequiredEventError::Unavailable)
+        );
+        assert_eq!(sink.buckets, before);
     }
 }
