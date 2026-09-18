@@ -356,6 +356,30 @@ impl Principal {
             credential,
         })
     }
+
+    /// The capability ceiling FR-006 assigns the native administrator.
+    ///
+    /// `authorization` gates the four administrative actions on
+    /// [`PrincipalKind::NativeAdmin`], so this is the widest ceiling any principal is
+    /// allowed to hold: every action, at the `global` scope the ceiling check treats as
+    /// covering. It is built here rather than at each call site so the one ceiling
+    /// bootstrap commits cannot drift from the kind that authorizes it.
+    pub fn native_admin_ceiling() -> Vec<Capability> {
+        [
+            CapabilityAction::Read,
+            CapabilityAction::Write,
+            CapabilityAction::Execute,
+            CapabilityAction::Administer,
+            CapabilityAction::ManagePrincipals,
+            CapabilityAction::Rotate,
+            CapabilityAction::Revoke,
+        ]
+        .into_iter()
+        .map(|action| {
+            Capability::new(action, "global").expect("`global` is a bounded, non-empty scope")
+        })
+        .collect()
+    }
     pub fn id(&self) -> IdentityId {
         self.id
     }

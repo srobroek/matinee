@@ -29,9 +29,9 @@ use crate::events::{
 };
 use crate::failures::{FailureCode, SecurityFailure};
 use crate::identity::{
-    Capability, CapabilityAction, ConnectionId, CredentialReference, EnrollmentLifecycle,
-    ExpiryStatus, ExtensionGrant, Fingerprint, GrantLifecycle, IdempotencyKey, IdentityId,
-    Principal, PrincipalKind, PrincipalLifecycle, PublicKey, RevocationTransition,
+    Capability, CapabilityAction, ConnectionId, CredentialReference, DaemonIdentity,
+    EnrollmentLifecycle, ExpiryStatus, ExtensionGrant, Fingerprint, GrantLifecycle, IdempotencyKey,
+    IdentityId, Principal, PrincipalKind, PrincipalLifecycle, PublicKey, RevocationTransition,
     RotationTransition, TransitionId, TransitionInput, TransitionOperation, TransitionOutcome,
 };
 use crate::{
@@ -57,6 +57,12 @@ pub(crate) enum BootstrapError {
     Crash(CrashPoint),
     InvalidKey,
     EndpointRejected,
+    /// FR-002 wants the daemon identity and the principal identity to be independent.
+    /// One keypair presented as both is refused before any state is touched.
+    KeyNotIndependent,
+    /// The daemon identity or the native administrator this envelope describes is not a
+    /// well-formed registration. Refused before the nonce is consumed.
+    IdentityBinding,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +75,33 @@ pub(crate) struct BootstrapRecord {
     pub(crate) event_time: EventTime,
 }
 
+/// What the daemon knows about itself when it bootstraps.
+///
+/// The public half of the keypair the daemon signs handshake transcripts with, plus the
+/// contract range it supports. `channel` takes the same shape: the host owns the signer
+/// and this boundary sees only the public key that registrations are verified against, so
+/// no daemon private byte has a representation on this path.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DaemonSelf<'a> {
+    pub(crate) public_key: &'a PublicKey,
+    pub(crate) contract_min: u16,
+    pub(crate) contract_max: u16,
+}
+
+/// The one unit a bootstrap stages and promotes.
+///
+/// FR-002 wants one daemon identity and one native administrator, and FR-004 wants that
+/// pair to be crash-safe before and after the principal commit. Holding all three facts in
+/// one value makes that atomic by construction rather than by ordering: there is a single
+/// `Option` to stage, a single `take` to promote, and therefore no reachable state in which
+/// a record exists without its registrations or a registration outlives its record.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BootstrapCommit {
+    pub(crate) record: BootstrapRecord,
+    pub(crate) daemon: DaemonIdentity,
+    pub(crate) admin: Principal,
+}
+
 /// In-memory implementation of the bootstrap persistence contract.
 ///
 /// `staged` is durable-intent state and `active` is the committed state. The
@@ -76,20 +109,37 @@ pub(crate) struct BootstrapRecord {
 /// recovery can complete a crash after staging without creating a second record.
 #[derive(Default)]
 pub(crate) struct BootstrapState {
-    active: Option<BootstrapRecord>,
-    staged: Option<BootstrapRecord>,
+    active: Option<BootstrapCommit>,
+    staged: Option<BootstrapCommit>,
     ledger: NonceLedger,
 }
 
 impl BootstrapState {
     pub(crate) fn active(&self) -> Option<&BootstrapRecord> {
-        self.active.as_ref()
+        self.active.as_ref().map(|commit| &commit.record)
     }
     pub(crate) fn staged(&self) -> Option<&BootstrapRecord> {
-        self.staged.as_ref()
+        self.staged.as_ref().map(|commit| &commit.record)
     }
 
-    /// Recover the sole staged record. If active state already exists, an
+    /// The committed daemon identity, as FR-002 requires bootstrap to create exactly one.
+    pub(crate) fn active_daemon(&self) -> Option<&DaemonIdentity> {
+        self.active.as_ref().map(|commit| &commit.daemon)
+    }
+
+    /// The committed native administrator. `None` before the promotion, so a crash before
+    /// commit leaves no principal to observe.
+    pub(crate) fn active_admin(&self) -> Option<&Principal> {
+        self.active.as_ref().map(|commit| &commit.admin)
+    }
+
+    /// The staged, not yet committed native administrator. Registration reads the active
+    /// side only; this exists so a test can prove the staged side is not a registration.
+    pub(crate) fn staged_admin(&self) -> Option<&Principal> {
+        self.staged.as_ref().map(|commit| &commit.admin)
+    }
+
+    /// Recover the sole staged commit. If active state already exists, an
     /// uncommitted duplicate is discarded rather than replacing active identity.
     pub(crate) fn recover(&mut self) {
         if self.active.is_none() {
@@ -105,6 +155,7 @@ impl BootstrapState {
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],
+        daemon: DaemonSelf<'_>,
         sink: Option<&mut S>,
         event_time: EventTime,
         endpoint_bytes: &[u8],
@@ -113,6 +164,7 @@ impl BootstrapState {
         self.bootstrap_encoded_inner(
             pipe,
             encoded_envelope,
+            daemon,
             &credential,
             sink,
             None,
@@ -126,12 +178,20 @@ impl BootstrapState {
         &mut self,
         handle: u64,
         encoded_envelope: &[u8],
+        daemon: DaemonSelf<'_>,
         sink: Option<&mut S>,
         event_time: EventTime,
         endpoint_bytes: &[u8],
     ) -> Result<TransitionOutcome, BootstrapError> {
         let pipe = PlatformOsPipe::new(handle);
-        self.bootstrap_encoded(&pipe, encoded_envelope, sink, event_time, endpoint_bytes)
+        self.bootstrap_encoded(
+            &pipe,
+            encoded_envelope,
+            daemon,
+            sink,
+            event_time,
+            endpoint_bytes,
+        )
     }
 
     #[cfg(test)]
@@ -143,6 +203,7 @@ impl BootstrapState {
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],
+        daemon: DaemonSelf<'_>,
         credential: &C,
         sink: Option<&mut S>,
         event_time: EventTime,
@@ -151,6 +212,7 @@ impl BootstrapState {
         self.bootstrap_encoded_inner(
             pipe,
             encoded_envelope,
+            daemon,
             credential,
             sink,
             None,
@@ -168,6 +230,7 @@ impl BootstrapState {
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],
+        daemon: DaemonSelf<'_>,
         credential: &C,
         sink: Option<&mut S>,
         crash: Option<CrashPoint>,
@@ -177,6 +240,7 @@ impl BootstrapState {
         self.bootstrap_encoded_inner(
             pipe,
             encoded_envelope,
+            daemon,
             credential,
             sink,
             crash,
@@ -193,6 +257,7 @@ impl BootstrapState {
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],
+        daemon: DaemonSelf<'_>,
         credential: &C,
         sink: Option<&mut S>,
         crash: Option<CrashPoint>,
@@ -205,7 +270,9 @@ impl BootstrapState {
                 BootstrapEnvelope::parse(encoded_envelope).map_err(BootstrapError::Envelope)?;
             let endpoint = BootstrapEnvelope::parse_endpoint(endpoint_bytes)
                 .map_err(BootstrapError::Envelope)?;
-            self.apply(&envelope, credential, sink, crash, event_time, endpoint)
+            self.apply(
+                &envelope, daemon, credential, sink, crash, event_time, endpoint,
+            )
         })();
         if result.is_err() {
             inherited.close_on_error();
@@ -220,6 +287,7 @@ impl BootstrapState {
     fn apply<C: CredentialStore + ?Sized, S: SecurityEventSink + ?Sized>(
         &mut self,
         envelope: &BootstrapEnvelope,
+        daemon: DaemonSelf<'_>,
         credential: &C,
         mut sink: Option<&mut S>,
         crash: Option<CrashPoint>,
@@ -230,26 +298,49 @@ impl BootstrapState {
             .map_err(|_| BootstrapError::InvalidKey)?;
         let fingerprint = Fingerprint::from_public_key(&public_key);
 
+        // FR-002: the daemon identity and the principal identity are independent, so one
+        // keypair cannot stand in for both. Checked before the idempotency comparison, so a
+        // retry cannot launder a collapsed pair into an `AlreadyCommitted`.
+        if daemon.public_key == &public_key {
+            return Err(BootstrapError::KeyNotIndependent);
+        }
+        let daemon_fingerprint = Fingerprint::from_public_key(daemon.public_key);
+
         if let Some(active) = &self.active {
-            if active.bootstrap == envelope.bootstrap
-                && active.state == IdentityId::new(envelope.state_directory)
-                && active.daemon == IdentityId::new(envelope.daemon)
-                && active.fingerprint == fingerprint
+            if active.record.bootstrap == envelope.bootstrap
+                && active.record.state == IdentityId::new(envelope.state_directory)
+                && active.record.daemon == IdentityId::new(envelope.daemon)
+                && active.record.fingerprint == fingerprint
+                && active.daemon.fingerprint() == &daemon_fingerprint
             {
                 return Ok(TransitionOutcome::AlreadyCommitted);
             }
             return Err(BootstrapError::IdentityMismatch);
         }
         if let Some(staged) = &self.staged {
-            if staged.bootstrap == envelope.bootstrap
-                && staged.state == IdentityId::new(envelope.state_directory)
-                && staged.daemon == IdentityId::new(envelope.daemon)
-                && staged.fingerprint == fingerprint
+            if staged.record.bootstrap == envelope.bootstrap
+                && staged.record.state == IdentityId::new(envelope.state_directory)
+                && staged.record.daemon == IdentityId::new(envelope.daemon)
+                && staged.record.fingerprint == fingerprint
+                && staged.daemon.fingerprint() == &daemon_fingerprint
             {
                 return Ok(TransitionOutcome::AlreadyCommitted);
             }
             return Err(BootstrapError::IdentityMismatch);
         }
+
+        // Both registrations are built before the nonce is consumed and before the first
+        // event is required, so a binding the registry would refuse cannot leave a spent
+        // nonce, an emitted event, or a half-populated commit behind.
+        let state_id = IdentityId::new(envelope.state_directory);
+        let daemon_id = IdentityId::new(envelope.daemon);
+        let admin_id = derive_native_admin_id(envelope, &public_key);
+        if admin_id == daemon_id || admin_id == state_id {
+            return Err(BootstrapError::IdentityBinding);
+        }
+        let daemon_identity =
+            build_daemon_identity(daemon_id, state_id, daemon, daemon_fingerprint, endpoint)?;
+        let admin = build_native_admin(admin_id, daemon_id, state_id, public_key, &fingerprint)?;
 
         let endpoint_class = classify_endpoint(endpoint);
         if endpoint_class == EndpointClass::Loopback {
@@ -327,14 +418,20 @@ impl BootstrapState {
         }
 
         let record = BootstrapRecord {
-            state: IdentityId::new(envelope.state_directory),
-            daemon: IdentityId::new(envelope.daemon),
+            state: state_id,
+            daemon: daemon_id,
             bootstrap: envelope.bootstrap,
             fingerprint,
             endpoint: endpoint.to_owned(),
             event_time,
         };
-        self.staged = Some(record);
+        // One value, one promotion: the record, the daemon identity, and the native
+        // administrator become durable together or not at all.
+        self.staged = Some(BootstrapCommit {
+            record,
+            daemon: daemon_identity,
+            admin,
+        });
         if matches!(crash, Some(CrashPoint::AfterStage)) {
             return Err(BootstrapError::Crash(CrashPoint::AfterStage));
         }
@@ -344,6 +441,102 @@ impl BootstrapState {
         }
         Ok(TransitionOutcome::Committed)
     }
+}
+
+/// Domain separator for the native administrator's identifier.
+const NATIVE_ADMIN_DOMAIN: &[u8] = b"matinee-security-native-admin-v1";
+/// The provider name both bootstrap credential locators are recorded under.
+const BOOTSTRAP_CREDENTIAL_PROVIDER: &str = "platform-credential-store";
+
+/// The native administrator's identifier, derived rather than supplied.
+///
+/// SC-002 requires a retry to converge on the same principal, so the identifier has to be
+/// a function of the envelope alone: a fresh random one would register a second
+/// administrator on every retry. It is a domain-separated digest over the state directory,
+/// the daemon, the bootstrap identity, and the administrator's public key, so no two
+/// distinct bootstraps share one, and the envelope cannot name the identifier directly.
+fn derive_native_admin_id(envelope: &BootstrapEnvelope, public_key: &PublicKey) -> IdentityId {
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    context.update(NATIVE_ADMIN_DOMAIN);
+    context.update(envelope.state_directory.as_bytes());
+    context.update(envelope.daemon.as_bytes());
+    context.update(envelope.bootstrap.as_bytes());
+    context.update(public_key.as_bytes());
+    let digest = context.finish();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest.as_ref()[..16]);
+    IdentityId::new(uuid::Uuid::from_bytes(bytes))
+}
+
+/// The one daemon identity FR-002 requires bootstrap to establish.
+///
+/// The locator is derived from the identity it belongs to rather than accepted from a
+/// caller, so no bootstrap can register the daemon's public key against another identity's
+/// credential slot.
+fn build_daemon_identity(
+    daemon_id: IdentityId,
+    state_id: IdentityId,
+    daemon: DaemonSelf<'_>,
+    fingerprint: Fingerprint,
+    endpoint: &str,
+) -> Result<DaemonIdentity, BootstrapError> {
+    let credential = CredentialReference::new(
+        BOOTSTRAP_CREDENTIAL_PROVIDER,
+        format!("matinee/daemon/{}", daemon_id.get()),
+        daemon_id,
+        state_id,
+    )
+    .map_err(|_| BootstrapError::IdentityBinding)?;
+    let mut identity = DaemonIdentity::new(
+        daemon_id,
+        daemon.public_key.clone(),
+        fingerprint,
+        endpoint,
+        daemon.contract_min,
+        daemon.contract_max,
+        credential,
+    )
+    .map_err(|_| BootstrapError::IdentityBinding)?;
+    identity
+        .activate()
+        .map_err(|_| BootstrapError::IdentityBinding)?;
+    Ok(identity)
+}
+
+/// The one native administrator FR-002 and FR-006 require bootstrap to commit.
+///
+/// The administrator is registered active: every later handshake, grant, and decision
+/// reads the registry, and a principal left pending would authenticate nowhere. Its
+/// private key is the one the platform store already holds under this binding; only the
+/// public half and the non-secret locator are recorded here, per FR-003.
+fn build_native_admin(
+    admin_id: IdentityId,
+    daemon_id: IdentityId,
+    state_id: IdentityId,
+    public_key: PublicKey,
+    fingerprint: &Fingerprint,
+) -> Result<Principal, BootstrapError> {
+    let credential = CredentialReference::new(
+        BOOTSTRAP_CREDENTIAL_PROVIDER,
+        format!("matinee/native-admin/{}", admin_id.get()),
+        daemon_id,
+        state_id,
+    )
+    .map_err(|_| BootstrapError::IdentityBinding)?;
+    let mut admin = Principal::new(
+        admin_id,
+        PrincipalKind::NativeAdmin,
+        public_key,
+        fingerprint.clone(),
+        daemon_id,
+        Principal::native_admin_ceiling(),
+        credential,
+    )
+    .map_err(|_| BootstrapError::IdentityBinding)?;
+    admin
+        .activate()
+        .map_err(|_| BootstrapError::IdentityBinding)?;
+    Ok(admin)
 }
 
 fn classify_endpoint(endpoint: &str) -> EndpointClass {
@@ -420,11 +613,13 @@ pub(crate) enum DecisionState {
     Invalidated,
 }
 
-/// The inherited pipe, envelope, and endpoint one bootstrap command applies.
+/// The inherited pipe, envelope, endpoint, and daemon self-description one bootstrap
+/// command applies.
 pub(crate) struct BootstrapMaterial<'a> {
     pipe: &'a dyn OsPipe,
     envelope: &'a [u8],
     endpoint: &'a [u8],
+    daemon: DaemonSelf<'a>,
     #[cfg(test)]
     credential: Option<&'a dyn CredentialStore>,
 }
@@ -432,11 +627,17 @@ pub(crate) struct BootstrapMaterial<'a> {
 impl<'a> BootstrapMaterial<'a> {
     /// Production construction. Custody is not selectable here, so no caller can route
     /// a bootstrap commit past the platform credential store.
-    pub(crate) fn platform(pipe: &'a dyn OsPipe, envelope: &'a [u8], endpoint: &'a [u8]) -> Self {
+    pub(crate) fn platform(
+        pipe: &'a dyn OsPipe,
+        envelope: &'a [u8],
+        endpoint: &'a [u8],
+        daemon: DaemonSelf<'a>,
+    ) -> Self {
         Self {
             pipe,
             envelope,
             endpoint,
+            daemon,
             #[cfg(test)]
             credential: None,
         }
@@ -447,12 +648,14 @@ impl<'a> BootstrapMaterial<'a> {
         pipe: &'a dyn OsPipe,
         envelope: &'a [u8],
         endpoint: &'a [u8],
+        daemon: DaemonSelf<'a>,
         credential: &'a dyn CredentialStore,
     ) -> Self {
         Self {
             pipe,
             envelope,
             endpoint,
+            daemon,
             credential: Some(credential),
         }
     }
@@ -999,6 +1202,26 @@ impl SecurityTransitions {
     /// The registered snapshot of one principal, as every decision reads it.
     pub(crate) fn registered_principal(&self, principal: IdentityId) -> Option<Principal> {
         self.state.lock().ok()?.principals.get(&principal).cloned()
+    }
+
+    /// The one daemon identity a committed bootstrap established, as FR-002 requires.
+    pub(crate) fn bootstrapped_daemon(&self) -> Option<DaemonIdentity> {
+        self.state.lock().ok()?.bootstrap.active_daemon().cloned()
+    }
+
+    /// The one native administrator a committed bootstrap registered. `None` until the
+    /// staged-to-active promotion, so a crash before the commit exposes no principal.
+    pub(crate) fn bootstrapped_admin(&self) -> Option<Principal> {
+        self.state.lock().ok()?.bootstrap.active_admin().cloned()
+    }
+
+    /// How many principals the registry holds. A count, never an identifier, so a caller
+    /// cannot enumerate registrations through it.
+    pub(crate) fn registered_principal_count(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.principals.len())
+            .unwrap_or_default()
     }
 
     /// Register one extension grant. A grant from a retired epoch is refused, so a
@@ -1568,6 +1791,12 @@ impl TransitionState {
         let outcome = self
             .run_bootstrap(material, sink, time)
             .map_err(bootstrap_rejection)?;
+        // The commit that just promoted carries the native administrator. Publishing it
+        // into the registry every handshake reads happens under the same lock and in the
+        // same call, so no transition can observe a committed bootstrap whose principal is
+        // absent. Keyed by identity, so a retry that returned `AlreadyCommitted`
+        // re-publishes the identical registration instead of a second one.
+        self.publish_bootstrapped_admin();
         self.applied.insert(
             command.idempotency(),
             AppliedTransition {
@@ -1576,6 +1805,18 @@ impl TransitionState {
             },
         );
         Ok(outcome)
+    }
+
+    /// Publish the committed native administrator into the principal registry.
+    ///
+    /// Idempotent by identity: the derived administrator identifier is a function of the
+    /// envelope, so a retry writes the same entry. Nothing is published while the commit is
+    /// only staged, which is what keeps a crash before the promotion free of any principal.
+    fn publish_bootstrapped_admin(&mut self) {
+        let Some(admin) = self.bootstrap.active_admin().cloned() else {
+            return;
+        };
+        self.principals.entry(admin.id()).or_insert(admin);
     }
 
     /// Production custody: the platform credential store is the only one reachable here.
@@ -1589,6 +1830,7 @@ impl TransitionState {
         self.bootstrap.bootstrap_encoded(
             material.pipe,
             material.envelope,
+            material.daemon,
             sink,
             time,
             material.endpoint,
@@ -1606,6 +1848,7 @@ impl TransitionState {
             Some(store) => self.bootstrap.bootstrap_encoded_with_store_for_test(
                 material.pipe,
                 material.envelope,
+                material.daemon,
                 store,
                 sink,
                 time,
@@ -1614,6 +1857,7 @@ impl TransitionState {
             None => self.bootstrap.bootstrap_encoded(
                 material.pipe,
                 material.envelope,
+                material.daemon,
                 sink,
                 time,
                 material.endpoint,
@@ -2157,7 +2401,11 @@ fn require_event<S: SecurityEventSink + ?Sized>(
 
 fn bootstrap_rejection(error: BootstrapError) -> TransitionRejection {
     match error {
-        BootstrapError::Pipe(_) | BootstrapError::Envelope(_) | BootstrapError::InvalidKey => {
+        BootstrapError::Pipe(_)
+        | BootstrapError::Envelope(_)
+        | BootstrapError::InvalidKey
+        | BootstrapError::KeyNotIndependent
+        | BootstrapError::IdentityBinding => {
             TransitionRejection::rejected(FailureCode::MalformedInput, None)
         }
         BootstrapError::Credential(CredentialStoreError::Unavailable) => {

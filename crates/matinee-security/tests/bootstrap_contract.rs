@@ -14,7 +14,7 @@ macro_rules! bootstrap_contract_tests {
             TransitionOutcome,
         };
         use crate::test_support_fakes::{FakeCredentialStore, FakeEventSink, FakeOsPipe};
-        use crate::transition::{BootstrapError, BootstrapState};
+        use crate::transition::{BootstrapError, BootstrapState, DaemonSelf};
         use uuid::Uuid;
 
         const NATIVE_PUBLIC_KEY: [u8; 65] = [
@@ -44,6 +44,19 @@ macro_rules! bootstrap_contract_tests {
                 0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
             ];
             PublicKey::from_uncompressed(bytes).expect("valid uncompressed native key")
+        }
+
+        /// The daemon's own public key, independent of [`NATIVE_PUBLIC_KEY`] so a bootstrap
+        /// registers two distinct identities as FR-002 requires.
+        fn daemon_key() -> PublicKey {
+            let bytes = [
+                0x04, 0x7c, 0xf2, 0x7b, 0x18, 0x8d, 0x03, 0x4f, 0x7e, 0x8a, 0x52, 0x38, 0x03, 0x04,
+                0xb5, 0x1a, 0xc3, 0xc0, 0x89, 0x69, 0xe2, 0x77, 0xf2, 0x1b, 0x35, 0xa6, 0x0b, 0x48,
+                0xfc, 0x47, 0x66, 0x99, 0x78, 0x07, 0x77, 0x55, 0x10, 0xdb, 0x8e, 0xd0, 0x40, 0x29,
+                0x3d, 0x9a, 0xc6, 0x9f, 0x74, 0x30, 0xdb, 0xba, 0x7d, 0xad, 0xe6, 0x3c, 0xe9, 0x82,
+                0x29, 0x9e, 0x04, 0xb7, 0x9d, 0x22, 0x78, 0x73, 0xd1,
+            ];
+            PublicKey::from_uncompressed(bytes).expect("valid independent daemon key")
         }
 
         #[test]
@@ -241,11 +254,18 @@ macro_rules! bootstrap_contract_tests {
             store.register(binding, 7);
 
             let pipe = FakeOsPipe::present(9);
+            let daemon_public = daemon_key();
+            let daemon = DaemonSelf {
+                public_key: &daemon_public,
+                contract_min: 1,
+                contract_max: 1,
+            };
             let mut state = BootstrapState::default();
             let mut sink = FakeEventSink::accepted();
             let committed = state.bootstrap_encoded_for_test(
                 &pipe,
                 &capture,
+                daemon,
                 &store,
                 Some(&mut sink),
                 None,
@@ -259,6 +279,7 @@ macro_rules! bootstrap_contract_tests {
             let rejected = rejected_state.bootstrap_encoded_for_test(
                 &pipe,
                 &capture,
+                daemon,
                 &store,
                 Some(&mut rejected_sink),
                 None,
@@ -272,6 +293,7 @@ macro_rules! bootstrap_contract_tests {
             let unavailable = unavailable_state.bootstrap_encoded_for_test(
                 &pipe,
                 &capture,
+                daemon,
                 &store,
                 Some(&mut unavailable_sink),
                 None,

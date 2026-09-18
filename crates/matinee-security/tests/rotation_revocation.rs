@@ -759,6 +759,14 @@ macro_rules! rotation_revocation_tests {
         fn the_bootstrap_command_applies_through_the_serialized_boundary() {
             let transitions = SecurityTransitions::default();
             let signer = RingSigner::generate();
+            // The daemon's own key, independent of the administrator key the envelope
+            // carries, as FR-002 requires of a bootstrap.
+            let daemon_signer = RingSigner::generate();
+            let daemon_self = crate::transition::DaemonSelf {
+                public_key: daemon_signer.public_key(),
+                contract_min: 1,
+                contract_max: 1,
+            };
             let envelope = crate::adapters::os_pipe::BootstrapEnvelope {
                 nonce: [7; 32],
                 state_directory: id(STATE_DIRECTORY).get(),
@@ -793,6 +801,7 @@ macro_rules! rotation_revocation_tests {
                         &pipe,
                         &encoded,
                         b"native://matinee",
+                        daemon_self,
                         &store,
                     )),
                     Some(&mut sink),
@@ -802,6 +811,26 @@ macro_rules! rotation_revocation_tests {
             );
             assert_eq!(transitions.recorded(key(80)), Some(TransitionRecord::Bootstrap));
             assert_eq!(sink.events.len(), 2, "the certified bootstrap events are emitted");
+            // FR-002/FR-004: the commit published one daemon identity and one native
+            // administrator into the registry the rest of the boundary reads, not just a
+            // bootstrap record.
+            let daemon = transitions
+                .bootstrapped_daemon()
+                .expect("one committed daemon identity");
+            let admin = transitions
+                .bootstrapped_admin()
+                .expect("one committed native administrator");
+            assert_eq!(daemon.id(), id(DAEMON));
+            assert_eq!(daemon.public_key(), daemon_signer.public_key());
+            assert_eq!(admin.kind(), crate::identity::PrincipalKind::NativeAdmin);
+            assert_eq!(admin.owner(), id(DAEMON));
+            assert_ne!(admin.id(), daemon.id());
+            assert_eq!(transitions.registered_principal_count(), 1);
+            assert_eq!(
+                transitions.registered_principal(admin.id()).map(|found| found.id()),
+                Some(admin.id()),
+                "the administrator is readable through the registry every decision reads"
+            );
 
             // The same key answers from the record rather than bootstrapping twice.
             let pipe = FakeOsPipe::present(9);
@@ -818,6 +847,7 @@ macro_rules! rotation_revocation_tests {
                         &pipe,
                         &encoded,
                         b"native://matinee",
+                        daemon_self,
                         &store,
                     )),
                     Some(&mut sink),
@@ -826,6 +856,12 @@ macro_rules! rotation_revocation_tests {
                 Ok(TransitionOutcome::AlreadyCommitted)
             );
             assert_eq!(sink.events.len(), 2);
+            // The retry registered no second administrator.
+            assert_eq!(transitions.registered_principal_count(), 1);
+            assert_eq!(
+                transitions.bootstrapped_admin().map(|found| found.id()),
+                Some(admin.id())
+            );
         }
         #[test]
         fn retired_key_material_and_locator_never_reactivate() {
