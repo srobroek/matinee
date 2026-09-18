@@ -1,6 +1,6 @@
 macro_rules! bootstrap_recovery_tests {
     () => {
-        use crate::adapters::credential_store::{CredentialBinding, CredentialStoreError, InMemoryCredentialStore};
+        use crate::adapters::credential_store::{CredentialBinding, CredentialStore, CredentialStoreError, InMemoryCredentialStore};
         use crate::adapters::os_pipe::{BootstrapEnvelope, BootstrapEnvelope as Envelope, EnvelopeError};
         use crate::events::{EndpointClass, EventBoundary, EventOutcome, EventTime, SecurityCode};
         use crate::test_support_fakes::{FakeEventSink, FakeOsPipe};
@@ -51,6 +51,9 @@ macro_rules! bootstrap_recovery_tests {
         fn clean_bootstrap_calls_production_operation_and_emits_bounded_events() {
             let envelope = envelope(10, 7);
             let store = registered(&envelope);
+            let handle = store.lookup(CredentialBinding::for_identities(envelope.state_directory, envelope.daemon)).expect("credential selected");
+            assert_eq!(format!("{handle:?}"), "CredentialHandle(REDACTED)");
+            assert!(!String::from_utf8_lossy(&envelope.encode()).contains("feed"));
             let mut sink = FakeEventSink::accepted();
             let mut state = BootstrapState::default();
             assert_eq!(apply(&mut state, &envelope, &store, &mut sink, None), Ok(crate::identity::TransitionOutcome::Committed));
