@@ -5,7 +5,7 @@ use crate::events::{
 };
 use crate::failures::{FailureCode, SecurityFailure};
 use crate::identity::{
-    Capability, ExtensionGrant, GrantLifecycle, IdentityId, Principal, PrincipalKind,
+    Capability, CapabilityAction, ExtensionGrant, GrantLifecycle, IdentityId, Principal, PrincipalKind,
     PrincipalLifecycle,
 };
 use crate::{AuthorizedInput, SessionInput};
@@ -70,6 +70,8 @@ where
         || request.negotiated_contract > request.contract_max
     {
         Err(FailureCode::CompatibilityUnsupported)
+    } else if !principal_kind_allows_action(principal.kind(), context.requested().action()) {
+        Err(FailureCode::AuthorizationDenied)
     } else if request.object_owner != Some(principal.owner()) {
         Err(FailureCode::ObjectNotFound)
     } else if !ceiling_allows(principal, context.requested()) {
@@ -133,6 +135,12 @@ where
         "accepted".to_owned(),
     )?;
     Ok(AuthorizedInput::from_prevalidated(context, payload))
+}
+fn principal_kind_allows_action(kind: PrincipalKind, action: &CapabilityAction) -> bool {
+    match action {
+        CapabilityAction::ManagePrincipals | CapabilityAction::Rotate | CapabilityAction::Revoke | CapabilityAction::Administer => kind == PrincipalKind::NativeAdmin,
+        CapabilityAction::Read | CapabilityAction::Write | CapabilityAction::Execute => true,
+    }
 }
 
 fn ceiling_allows(principal: &Principal, requested: &Capability) -> bool {

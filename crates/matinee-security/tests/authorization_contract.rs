@@ -6,6 +6,22 @@ macro_rules! authorization_contract_tests {
         };
         use crate::{AuthorizedInput, ConnectionId, PayloadKind, SessionInput};
         use uuid::Uuid;
+        use crate::authorization::{authorize, AuthorizationRequest};
+        use crate::events::{EventTime, SecurityEvent, SecurityEventSink, SecurityEventSinkResult};
+        fn id(value: u128) -> IdentityId { IdentityId::new(Uuid::from_u128(value)) }
+        struct Sink { unavailable: bool, events: Vec<SecurityEvent> }
+        impl SecurityEventSink for Sink {
+            fn emit(&mut self, event: SecurityEvent) -> SecurityEventSinkResult {
+                if self.unavailable { SecurityEventSinkResult::Unavailable } else { self.events.push(event); SecurityEventSinkResult::Accepted }
+            }
+        }
+        fn cap(action: CapabilityAction, scope: &str) -> Capability { Capability::new(action, scope).unwrap() }
+        fn principal(kind: PrincipalKind, principal: IdentityId, owner: IdentityId, ceiling: Vec<Capability>) -> Principal {
+            let mut value = Principal::new(principal, kind, key(), Fingerprint::new("a".repeat(64)).unwrap(), owner, ceiling, credential(owner)).unwrap();
+            value.activate().unwrap(); value
+        }
+        fn context(principal: IdentityId, epoch: u64, requested: Capability, kind: PayloadKind) -> SessionInput { SessionInput::new(ConnectionId::new(Uuid::from_u128(80)), principal, epoch, requested, kind) }
+        fn request<'a>(principal: &'a Principal, context: &'a SessionInput, owner: Option<IdentityId>, grant: Option<&'a ExtensionGrant>) -> AuthorizationRequest<'a> { AuthorizationRequest::new(principal, context, 1, 1, 1, owner, grant, id(99), EventTime(1)) }
 
         fn ids() -> (IdentityId, IdentityId, IdentityId) {
             (
@@ -217,10 +233,9 @@ macro_rules! authorization_contract_tests {
         fn administrator_actions_are_not_conferred_by_mcp_or_extension_ceilings() {
             let owner = id(2);
             for kind in [PrincipalKind::McpClient, PrincipalKind::BrowserExtension] {
-                let principal = principal(kind, id(3), owner, vec![cap(CapabilityAction::Read, "global")]);
-                let context = context(principal.id(), 0, cap(CapabilityAction::ManagePrincipals, "global"), PayloadKind::Command);
-                let grant = (kind == PrincipalKind::BrowserExtension).then(|| ExtensionGrant::new(principal.id(), owner, vec![cap(CapabilityAction::Read, "global")], 0).unwrap());
-                let mut sink = Sink { unavailable: false, events: Vec::new() };
+                let admin_cap = cap(CapabilityAction::ManagePrincipals, "global");
+                let principal = principal(kind, id(3), owner, vec![admin_cap.clone()]); let context = context(principal.id(), 0, admin_cap.clone(), PayloadKind::Command);
+                let grant = (kind == PrincipalKind::BrowserExtension).then(|| ExtensionGrant::new(principal.id(), owner, vec![admin_cap], 0).unwrap()); let mut sink = Sink { unavailable: false, events: Vec::new() };
                 assert_eq!(authorize(request(&principal, &context, Some(owner), grant.as_ref()), vec![1], Some(&mut sink)).unwrap_err().code(), crate::failures::FailureCode::AuthorizationDenied);
             }
         }

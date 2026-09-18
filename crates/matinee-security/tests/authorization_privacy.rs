@@ -29,20 +29,24 @@ macro_rules! authorization_privacy_tests {
 
         #[test]
         fn unknown_cross_owner_filtered_and_unauthorized_reads_share_object_not_found() {
-            let principal = principal(); let context = context(&principal, PayloadKind::Response);
-            for owner in [None, Some(id(8))] {
+            let principal = principal();
+            for kind in [PayloadKind::Event, PayloadKind::Response, PayloadKind::StreamChunk] {
+                let context = context(&principal, kind);
+                for owner in [None, Some(id(8))] {
+                    let mut sink = Sink { events: Vec::new() };
+                    let failure = authorize(request(&principal, &context, owner), b"protected-object-identifier".to_vec(), Some(&mut sink)).unwrap_err();
+                    assert_eq!(failure.code(), crate::failures::FailureCode::ObjectNotFound);
+                    assert_eq!(failure.safe_next_action(), crate::failures::SafeNextAction::DoNotInferObjectExistence);
+                    assert_eq!(sink.events.len(), 1);
+                    assert_eq!(sink.events[0].metadata()[0].value, "object-not_found");
+                    assert!(!sink.events[0].metadata().iter().any(|entry| entry.value.contains("protected")));
+                }
+                let denied = SessionInput::new(context.connection(), principal.id(), 0, Capability::new(CapabilityAction::Write, "owned/object").unwrap(), kind);
                 let mut sink = Sink { events: Vec::new() };
-                let failure = authorize(request(&principal, &context, owner), b"protected-object".to_vec(), Some(&mut sink)).unwrap_err();
-                assert_eq!(failure.code(), crate::failures::FailureCode::ObjectNotFound);
-                assert_eq!(failure.safe_next_action(), crate::failures::SafeNextAction::DoNotInferObjectExistence);
-                assert_eq!(sink.events.len(), 1);
-                assert_eq!(sink.events[0].metadata()[0].value, "object-not_found");
+                let failure = authorize(request(&principal, &denied, Some(id(7))), b"protected-object-identifier".to_vec(), Some(&mut sink)).unwrap_err();
+                assert_eq!(failure.code(), crate::failures::FailureCode::AuthorizationDenied);
+                assert!(!format!("{failure}").contains("protected-object"));
             }
-            let denied = SessionInput::new(context.connection(), principal.id(), 0, Capability::new(CapabilityAction::Write, "owned/object").unwrap(), PayloadKind::Response);
-            let mut sink = Sink { events: Vec::new() };
-            let failure = authorize(request(&principal, &denied, Some(id(7))), b"protected-object".to_vec(), Some(&mut sink)).unwrap_err();
-            assert_eq!(failure.code(), crate::failures::FailureCode::AuthorizationDenied);
-            assert!(!format!("{failure}").contains("protected-object"));
         }
 
         #[test]
