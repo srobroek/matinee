@@ -230,7 +230,6 @@ pub struct ChannelSession {
     connection: Connection,
     contract: u16,
     endpoint: String,
-    enrollment_registry: crate::enrollment::EnrollmentRegistry,
     output_active: Arc<AtomicBool>,
 }
 
@@ -258,16 +257,14 @@ impl ChannelSession {
             connection,
             contract,
             endpoint,
-            enrollment_registry: crate::enrollment::EnrollmentRegistry::default(),
             output_active: Arc::new(AtomicBool::new(true)),
         })
     }
 
     /// Whether the session still carries payloads.
     pub fn is_open(&self) -> bool {
-        let _ = self.enrollment_registry.host_failures(self.endpoint());
-        let boundary_ready = crate::enrollment::boundary_ready(self.endpoint());
-        boundary_ready && self.output_active.load(Ordering::Acquire) && self.connection.lifecycle() == ConnectionLifecycle::Authenticated
+        self.output_active.load(Ordering::Acquire)
+            && self.connection.lifecycle() == ConnectionLifecycle::Authenticated
     }
 
     /// Close the session. A closed session accepts no later payload.
@@ -277,7 +274,7 @@ impl ChannelSession {
     }
     /// Mint the only capability accepted by enrollment custody. A closed or
     /// unauthenticated session cannot receive one-time key material.
-    pub(crate) fn enrollment_output_capability(
+    pub fn enrollment_output_capability(
         &self,
     ) -> Result<crate::enrollment::AuthenticatedOutputCapability, crate::enrollment::EnrollmentCustodyError> {
         if !self.is_open() {
@@ -286,67 +283,6 @@ impl ChannelSession {
         crate::enrollment::AuthenticatedOutputCapability::from_authenticated_channel(
             self.connection_id(), self.epoch(), Arc::clone(&self.output_active),
         )
-    }
-
-
-    pub(crate) fn create_enrollment(
-        &self,
-        input: crate::enrollment::EnrollmentCreationInput,
-    ) -> Result<crate::enrollment::EnrollmentBundle, crate::enrollment::EnrollmentCreateError> {
-        crate::enrollment::create_enrollment(input)
-    }
-
-    pub(crate) fn enrollment_proof_message(
-        &self,
-        bundle: &crate::enrollment::EnrollmentBundle,
-        long_term: &crate::identity::PublicKey,
-    ) -> Vec<u8> {
-        crate::enrollment::enrollment_proof_message(bundle, long_term)
-    }
-
-    pub(crate) fn consume_enrollment_proof<S: crate::events::SecurityEventSink>(
-        &self,
-        bundle: &mut crate::enrollment::EnrollmentBundle,
-        proof: &crate::enrollment::EnrollmentProof,
-        expected_identity: IdentityId,
-        clock: &crate::enrollment::EnrollmentClock,
-        binding: &crate::enrollment::EnrollmentBinding<'_>,
-        capability: &crate::enrollment::ChromeCapability,
-        channel: &mut crate::enrollment::EnrollmentChannel,
-        sink: Option<&mut S>,
-    ) -> Result<crate::identity::Fingerprint, crate::enrollment::EnrollmentConsumeError> {
-        self.enrollment_registry.consume_proof(bundle, proof, expected_identity, clock, binding, capability, channel, sink)
-    }
-
-    pub(crate) fn encrypted_enrollment_key(
-        &self,
-        bundle: &mut crate::enrollment::EnrollmentBundle,
-    ) -> Result<crate::enrollment::EncryptedKeyOutput, crate::enrollment::EnrollmentCustodyError> {
-        let capability = self.enrollment_output_capability()?;
-        bundle.encrypted_private_key_output(&capability)
-    }
-
-    pub(crate) fn reconnect_enrollment(
-        &self,
-        identity: IdentityId,
-        fingerprint: &crate::identity::Fingerprint,
-    ) -> crate::enrollment::ChromeReconnectOutcome {
-        self.enrollment_registry.reconnect(identity, fingerprint)
-    }
-
-    pub(crate) fn update_enrollment_custody(
-        &self,
-        identity: IdentityId,
-        key: &crate::identity::PublicKey,
-    ) -> Result<crate::identity::Fingerprint, crate::enrollment::EnrollmentConsumeError> {
-        self.enrollment_registry.update_custody(identity, key)
-    }
-
-    pub(crate) fn revoke_enrollment(
-        &self,
-        identity: IdentityId,
-    ) -> Result<(), crate::enrollment::EnrollmentConsumeError> {
-        self.enrollment_registry.revoke(identity)
     }
 
     pub(crate) fn connection_id(&self) -> ConnectionId {
@@ -364,6 +300,7 @@ impl ChannelSession {
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
+
 
     /// Check that a caller's context belongs to this session at the current epoch.
     ///
