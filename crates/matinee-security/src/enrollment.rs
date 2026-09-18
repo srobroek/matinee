@@ -30,6 +30,108 @@ const MAX_EXPIRY_MS: u64 = TEN_MINUTE_EXPIRY_MS;
 const MAX_ORIGIN_BYTES: usize = 256;
 const MAX_METADATA_BYTES: usize = 512;
 const MAX_ENDPOINT_BYTES: usize = 256;
+/// `65535.65535.65535.65535` is the longest Chrome manifest version.
+const MAX_VERSION_BYTES: usize = 23;
+
+/// One extension version, in Chrome manifest form: one to four dot-separated integers in
+/// `0..=65535`, each written without a leading zero. Missing trailing components are zero,
+/// so `3` and `3.0.0.0` are one version and order alongside `3.0.1` exactly as Chrome
+/// orders them.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExtensionVersion([u16; 4]);
+
+impl ExtensionVersion {
+    pub fn parse(value: &str) -> Result<Self, ExtensionVersionError> {
+        if value.is_empty() || value.len() > MAX_VERSION_BYTES {
+            return Err(ExtensionVersionError::Malformed);
+        }
+        let mut components = [0u16; 4];
+        let mut count = 0usize;
+        for part in value.split('.') {
+            if count == components.len() {
+                return Err(ExtensionVersionError::Malformed);
+            }
+            if part.is_empty()
+                || !part.bytes().all(|byte| byte.is_ascii_digit())
+                || (part.len() > 1 && part.starts_with('0'))
+            {
+                return Err(ExtensionVersionError::Malformed);
+            }
+            components[count] = part
+                .parse::<u16>()
+                .map_err(|_| ExtensionVersionError::Malformed)?;
+            count += 1;
+        }
+        Ok(Self(components))
+    }
+}
+
+impl fmt::Display for ExtensionVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let [major, minor, patch, build] = self.0;
+        write!(f, "{major}.{minor}.{patch}.{build}")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtensionVersionError {
+    Malformed,
+    InvertedRange,
+}
+
+impl fmt::Display for ExtensionVersionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Malformed => "malformed extension version",
+            Self::InvertedRange => "inverted supported extension version range",
+        })
+    }
+}
+
+/// The inclusive range of extension versions this daemon pairs with.
+///
+/// FR-019 makes a supported version a production pairing requirement, so the range is
+/// pinned into the enrollment at creation and enforced when the browser presents its
+/// version. A range can only be built minimum-first, so no enrollment can carry a range
+/// that admits nothing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SupportedExtensionVersions {
+    minimum: ExtensionVersion,
+    maximum: ExtensionVersion,
+}
+
+impl SupportedExtensionVersions {
+    pub fn new(
+        minimum: ExtensionVersion,
+        maximum: ExtensionVersion,
+    ) -> Result<Self, ExtensionVersionError> {
+        if minimum > maximum {
+            return Err(ExtensionVersionError::InvertedRange);
+        }
+        Ok(Self { minimum, maximum })
+    }
+
+    /// Parse both bounds from their Chrome manifest spellings.
+    pub fn parse(minimum: &str, maximum: &str) -> Result<Self, ExtensionVersionError> {
+        Self::new(
+            ExtensionVersion::parse(minimum)?,
+            ExtensionVersion::parse(maximum)?,
+        )
+    }
+
+    pub fn minimum(&self) -> ExtensionVersion {
+        self.minimum
+    }
+
+    pub fn maximum(&self) -> ExtensionVersion {
+        self.maximum
+    }
+
+    /// Both bounds are inclusive: the oldest and the newest supported build both pair.
+    pub fn contains(&self, version: ExtensionVersion) -> bool {
+        self.minimum <= version && version <= self.maximum
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnrollmentCreation {
@@ -38,18 +140,21 @@ pub struct EnrollmentCreation {
     pub store_metadata: String,
     pub update_metadata: String,
     pub install_metadata: String,
+    pub supported_versions: SupportedExtensionVersions,
     pub daemon: IdentityId,
     pub daemon_endpoint: String,
     pub expiry: ExpiryResult,
 }
 
 impl EnrollmentCreation {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         enrollment: TransitionId,
         origin: impl Into<String>,
         store_metadata: impl Into<String>,
         update_metadata: impl Into<String>,
         install_metadata: impl Into<String>,
+        supported_versions: SupportedExtensionVersions,
         daemon: IdentityId,
         daemon_endpoint: impl Into<String>,
         expiry: ExpiryResult,
@@ -60,6 +165,7 @@ impl EnrollmentCreation {
             store_metadata: store_metadata.into(),
             update_metadata: update_metadata.into(),
             install_metadata: install_metadata.into(),
+            supported_versions,
             daemon,
             daemon_endpoint: daemon_endpoint.into(),
             expiry,
@@ -170,6 +276,7 @@ pub struct EnrollmentBundle {
     store_metadata: String,
     update_metadata: String,
     install_metadata: String,
+    supported_versions: SupportedExtensionVersions,
     daemon: IdentityId,
     daemon_endpoint: String,
 }
@@ -182,6 +289,7 @@ impl fmt::Debug for EnrollmentBundle {
             .field("store_metadata", &self.store_metadata)
             .field("update_metadata", &self.update_metadata)
             .field("install_metadata", &self.install_metadata)
+            .field("supported_versions", &self.supported_versions)
             .field("daemon", &self.daemon)
             .field("daemon_endpoint", &self.daemon_endpoint)
             .field("one_time_public_key", &self.one_time_public_key)
@@ -244,6 +352,7 @@ impl EnrollmentBundle {
             store_metadata: input.store_metadata,
             update_metadata: input.update_metadata,
             install_metadata: input.install_metadata,
+            supported_versions: input.supported_versions,
             daemon: input.daemon,
             daemon_endpoint: input.daemon_endpoint,
         })
@@ -277,6 +386,10 @@ impl EnrollmentBundle {
     }
     pub fn install_metadata(&self) -> &str {
         &self.install_metadata
+    }
+    /// The inclusive extension version range production pairing requires.
+    pub fn supported_versions(&self) -> SupportedExtensionVersions {
+        self.supported_versions
     }
     pub fn daemon(&self) -> IdentityId {
         self.daemon
@@ -831,6 +944,7 @@ impl EnrollmentConsumptionService {
             bundle.store_metadata.clone(),
             bundle.update_metadata.clone(),
             bundle.install_metadata.clone(),
+            bundle.supported_versions,
             bundle.daemon,
             bundle.daemon_endpoint.clone(),
             clock.expiry().clone(),
@@ -1181,6 +1295,8 @@ pub struct EnrollmentBinding<'a> {
     pub store_metadata: &'a str,
     pub update_metadata: &'a str,
     pub install_metadata: &'a str,
+    /// The version the browser reports for the pairing extension, in Chrome manifest form.
+    pub version: &'a str,
     pub development_allowance: DevelopmentIdentityAllowance,
 }
 
@@ -1195,6 +1311,7 @@ pub(crate) enum EnrollmentBindingError {
     Origin,
     Endpoint,
     Metadata,
+    Version,
     DevelopmentAllowance,
 }
 
@@ -1338,6 +1455,16 @@ pub(crate) fn validate_enrollment_binding(
     if !metadata_matches {
         return Err(EnrollmentBindingError::Metadata);
     }
+    // FR-019: a supported version is a pairing requirement, not advice. An unparsable
+    // version and a version outside the pinned inclusive range both fail closed here,
+    // before the development allowance is consulted, so an allowed development install
+    // still has to be a build this daemon supports.
+    let Ok(version) = ExtensionVersion::parse(attempt.version) else {
+        return Err(EnrollmentBindingError::Version);
+    };
+    if !expected.supported_versions.contains(version) {
+        return Err(EnrollmentBindingError::Version);
+    }
     // `install_metadata` is the browser's identity classification. Production
     // pairing uses `normal`; every other install type is non-production and
     // requires the explicit, user-visible warning acknowledgement.
@@ -1440,6 +1567,7 @@ mod tests {
             "stable",
             "https://updates.example.test/ext.xml",
             "normal",
+            SupportedExtensionVersions::parse("1.0", "2.5.1").unwrap(),
             IdentityId::new(Uuid::from_u128(2)),
             "127.0.0.1:7777",
             ExpiryResult::valid(MAX_EXPIRY_MS).unwrap(),
@@ -1484,6 +1612,7 @@ mod tests {
             store_metadata: "stable",
             update_metadata: "https://updates.example.test/ext.xml",
             install_metadata: "normal",
+            version: "1.4.2",
             development_allowance: DevelopmentIdentityAllowance::None,
         }
     }

@@ -20,8 +20,9 @@ mod failures;
 mod identity;
 mod transition;
 pub use crate::channel::{
-    ChannelSigner, ChannelSigningError, ClientHandshake, ClientHandshakeConfig,
-    SECURE_CHANNEL_CONTEXT, ServerHandshake, ServerHandshakeConfig,
+    AdmittedEndpoint, ChannelSigner, ChannelSigningError, ClientHandshake, ClientHandshakeConfig,
+    LoopbackHost, SECURE_CHANNEL_CONTEXT, ServerHandshake, ServerHandshakeConfig,
+    StateBearingRequest, StateBearingRoute,
 };
 pub use crate::events::{
     EndpointClass, EventBoundary, EventOutcome, MetadataEntry, SafeNextAction as EventNextAction,
@@ -54,7 +55,8 @@ pub use crate::enrollment::{
     ChromeCapability, ChromeReconnectOutcome, DevelopmentIdentityAllowance, EncryptedKeyOutput,
     EnrollmentBinding, EnrollmentBundle, EnrollmentChannel, EnrollmentClock,
     EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreateError,
-    EnrollmentCreation, EnrollmentCustodyError, EnrollmentProof, enrollment_proof_message,
+    EnrollmentCreation, EnrollmentCustodyError, EnrollmentProof, ExtensionVersion,
+    ExtensionVersionError, SupportedExtensionVersions, enrollment_proof_message,
 };
 /// The registered identities and grants a session boundary is expressed in. A host builds
 /// the principal snapshot a daemon channel authenticates against and the extension grant one

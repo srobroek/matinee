@@ -2,14 +2,18 @@ macro_rules! enrollment_contract_tests {
     () => {
         use crate::enrollment::{
             DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBindingError,
-            EnrollmentBundle, EnrollmentCreateError, EnrollmentCreation,
-            validate_enrollment_binding,
+            EnrollmentBundle, EnrollmentCreateError, EnrollmentCreation, ExtensionVersion,
+            ExtensionVersionError, SupportedExtensionVersions, validate_enrollment_binding,
         };
         use crate::identity::{
             ConnectionId, EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment,
             Fingerprint, IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
         };
         use uuid::Uuid;
+
+        const VERSION: &str = "1.4.2";
+        const MIN_VERSION: &str = "1.0";
+        const MAX_VERSION: &str = "2.5.1";
 
         fn creation() -> EnrollmentCreation {
             EnrollmentCreation::new(
@@ -18,6 +22,8 @@ macro_rules! enrollment_contract_tests {
                 "Chrome Web Store",
                 "https://updates.example.test/ext.xml",
                 "normal",
+                SupportedExtensionVersions::parse(MIN_VERSION, MAX_VERSION)
+                    .expect("a minimum-first supported extension version range"),
                 IdentityId::new(Uuid::from_u128(0x20)),
                 "127.0.0.1:7777",
                 ExpiryResult::valid(10 * 60 * 1_000).expect("bounded ten-minute expiry"),
@@ -86,6 +92,7 @@ macro_rules! enrollment_contract_tests {
                 store_metadata: expected.store_metadata.as_str(),
                 update_metadata: expected.update_metadata.as_str(),
                 install_metadata: expected.install_metadata.as_str(),
+                version: VERSION,
                 development_allowance: DevelopmentIdentityAllowance::None,
             };
             assert_eq!(validate_enrollment_binding(&expected, &attempt), Ok(()));
@@ -174,6 +181,128 @@ macro_rules! enrollment_contract_tests {
             assert_eq!(
                 budget.record_failed_proof(),
                 Err("enrollment is not pending")
+            );
+        }
+
+        fn attempt(expected: &EnrollmentCreation) -> EnrollmentBinding<'_> {
+            EnrollmentBinding {
+                origin: expected.origin.as_str(),
+                endpoint: expected.daemon_endpoint.as_str(),
+                store_metadata: expected.store_metadata.as_str(),
+                update_metadata: expected.update_metadata.as_str(),
+                install_metadata: expected.install_metadata.as_str(),
+                version: VERSION,
+                development_allowance: DevelopmentIdentityAllowance::None,
+            }
+        }
+
+        /// FR-019: production pairing requires a supported version. A build below the
+        /// range, above it, or in no parsable version form at all fails closed, and the
+        /// bundle carries the range the enrollment was created with.
+        #[test]
+        fn pairing_requires_a_supported_extension_version() {
+            let expected = creation();
+            let bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
+            assert_eq!(
+                bundle.supported_versions(),
+                SupportedExtensionVersions::parse(MIN_VERSION, MAX_VERSION).unwrap()
+            );
+
+            let mut unsupported = attempt(&expected);
+            for version in [
+                "0.9",       // below the minimum
+                "0.9.9.9",   // below the minimum on a later component
+                "2.5.1.1",   // just above the maximum on the last component
+                "2.5.2",     // above the maximum
+                "3",         // above the maximum
+                "65535",     // far above the maximum
+                "1.0.0.0.0", // five components is not a manifest version
+                "1.01",      // a leading zero is not a manifest version
+                "1..2",      // an empty component
+                "1.0-beta",  // a non-numeric component
+                "v1.0",      // a prefixed spelling
+                "65536",     // a component over the manifest maximum
+                "",          // nothing at all
+            ] {
+                unsupported.version = version;
+                assert_eq!(
+                    validate_enrollment_binding(&expected, &unsupported),
+                    Err(EnrollmentBindingError::Version),
+                    "{version:?}"
+                );
+            }
+        }
+
+        /// Both bounds are inclusive, and trailing components default to zero, so the
+        /// oldest and newest supported builds both pair and `1.0` is `1.0.0.0`.
+        #[test]
+        fn a_supported_extension_version_pairs_at_both_inclusive_bounds() {
+            let expected = creation();
+            let mut supported = attempt(&expected);
+            for version in [
+                MIN_VERSION,
+                "1.0.0.0",
+                "1.0.0.1",
+                "2.5.0.9",
+                MAX_VERSION,
+                "2.5.1.0",
+            ] {
+                supported.version = version;
+                assert_eq!(
+                    validate_enrollment_binding(&expected, &supported),
+                    Ok(()),
+                    "{version:?}"
+                );
+            }
+            assert_eq!(
+                ExtensionVersion::parse("1.0").unwrap(),
+                ExtensionVersion::parse("1.0.0.0").unwrap()
+            );
+            assert!(
+                ExtensionVersion::parse("1.0.0.1").unwrap()
+                    > ExtensionVersion::parse("1.0").unwrap()
+            );
+            assert_eq!(
+                SupportedExtensionVersions::parse(MAX_VERSION, MIN_VERSION),
+                Err(ExtensionVersionError::InvertedRange)
+            );
+            assert_eq!(
+                SupportedExtensionVersions::parse(MIN_VERSION, "2.x"),
+                Err(ExtensionVersionError::Malformed)
+            );
+        }
+
+        /// The version requirement is independent of the development allowance: an
+        /// explicitly warned development install still pairs, and one without the
+        /// acknowledgement still fails closed on the allowance rather than the version.
+        #[test]
+        fn the_warned_development_allowance_is_unchanged_by_the_version_requirement() {
+            let mut expected = creation();
+            expected.install_metadata = "development".to_owned();
+            let mut development = attempt(&expected);
+            development.install_metadata = "development";
+
+            assert_eq!(
+                validate_enrollment_binding(&expected, &development),
+                Err(EnrollmentBindingError::DevelopmentAllowance)
+            );
+            development.development_allowance = DevelopmentIdentityAllowance::Explicit {
+                warning_acknowledged: false,
+            };
+            assert_eq!(
+                validate_enrollment_binding(&expected, &development),
+                Err(EnrollmentBindingError::DevelopmentAllowance)
+            );
+            development.development_allowance = DevelopmentIdentityAllowance::Explicit {
+                warning_acknowledged: true,
+            };
+            assert_eq!(validate_enrollment_binding(&expected, &development), Ok(()));
+
+            // An acknowledged warning is not a waiver of the supported range.
+            development.version = "3.0";
+            assert_eq!(
+                validate_enrollment_binding(&expected, &development),
+                Err(EnrollmentBindingError::Version)
             );
         }
     };

@@ -4,7 +4,7 @@ macro_rules! enrollment_custody_tests {
             enrollment_proof_message, ChromeCapability, DevelopmentIdentityAllowance,
             EnrollmentBinding, EnrollmentBundle, EnrollmentChannel, EnrollmentClock,
             EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreation,
-            EnrollmentProof,
+            EnrollmentProof, SupportedExtensionVersions,
         };
         use crate::identity::{ConnectionId, ExpiryResult, Fingerprint, IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES};
         use ring::rand::SystemRandom;
@@ -16,6 +16,7 @@ macro_rules! enrollment_custody_tests {
                 TransitionId::new(Uuid::from_u128(id)),
                 "chrome-extension://abcdefghijklmnopabcdefghijklmnop", "Chrome Web Store",
                 "https://updates.example.test/ext.xml", "normal",
+                SupportedExtensionVersions::parse("1.0", "2.5.1").unwrap(),
                 IdentityId::new(Uuid::from_u128(0x41)), "127.0.0.1:7777",
                 ExpiryResult::valid(600_000).unwrap(),
             )
@@ -26,6 +27,7 @@ macro_rules! enrollment_custody_tests {
                 origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
                 endpoint: "127.0.0.1:7777", store_metadata: "Chrome Web Store",
                 update_metadata: "https://updates.example.test/ext.xml", install_metadata: "normal",
+                version: "1.4.2",
                 development_allowance: DevelopmentIdentityAllowance::None,
             }
         }

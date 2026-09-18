@@ -30,6 +30,9 @@ const PUBLIC_KEY_LEN: usize = 65;
 const SIGNATURE_LEN: usize = 64;
 const CLIENT_TO_DAEMON: &str = "client-to-daemon";
 const DAEMON_TO_CLIENT: &str = "daemon-to-client";
+const MAX_ENDPOINT_BYTES: usize = 256;
+const LOOPBACK_V4: &str = "127.0.0.1";
+const LOOPBACK_V6: &str = "[::1]";
 
 /// A long-term identity signer. Implementations retain custody of the private key.
 /// The channel verifies every returned signature against the configured bound public key.
@@ -132,8 +135,234 @@ impl ServerHandshakeConfig {
     }
 }
 
+/// A configured loopback bind literal. The contract admits exactly `127.0.0.1` and `::1`;
+/// a DNS alias, a wildcard bind, and a routable address are not loopback bindings and are
+/// therefore never configurable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoopbackHost {
+    Ipv4,
+    Ipv6,
+}
+
+impl LoopbackHost {
+    /// The canonical authority host, with the IPv6 literal in its bracketed form.
+    fn literal(self) -> &'static str {
+        match self {
+            Self::Ipv4 => LOOPBACK_V4,
+            Self::Ipv6 => LOOPBACK_V6,
+        }
+    }
+}
+
+/// Canonicalize one authority as a loopback host plus an explicit port.
+///
+/// Exactly one spelling of each authority survives. A DNS alias, a wildcard bind, a
+/// routable address, an absent port, a zero port, and a zero-padded or signed port all
+/// return `None`, so two spellings of one endpoint can never bind two transcripts.
+fn canonical_loopback_authority(authority: &str) -> Option<(LoopbackHost, u16)> {
+    if authority.len() > MAX_ENDPOINT_BYTES {
+        return None;
+    }
+    let (host, port) = authority.rsplit_once(':')?;
+    let host = match host {
+        LOOPBACK_V4 => LoopbackHost::Ipv4,
+        LOOPBACK_V6 => LoopbackHost::Ipv6,
+        _ => return None,
+    };
+    if port.is_empty()
+        || !port.bytes().all(|byte| byte.is_ascii_digit())
+        || (port.len() > 1 && port.starts_with('0'))
+    {
+        return None;
+    }
+    let port: u16 = port.parse().ok()?;
+    (port != 0).then_some((host, port))
+}
+
+/// A serialized origin: a scheme, `://`, and a host authority, with no path, query,
+/// fragment, or trailing slash. The Origin check is exact comparison against the
+/// configured set; this bounds what may enter that set.
+fn is_serialized_origin(origin: &str) -> bool {
+    if origin.is_empty() || origin.len() > MAX_ENDPOINT_BYTES {
+        return false;
+    }
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    let valid_scheme = scheme
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_lowercase())
+        && scheme.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'+' | b'.')
+        });
+    valid_scheme
+        && !authority.is_empty()
+        && !authority.contains(['/', '?', '#'])
+        && authority.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
+/// An absolute request path with no query and no fragment. Admission compares the route
+/// exactly, so a non-default path is refused whatever it spells.
+fn is_route(route: &str) -> bool {
+    route.starts_with('/')
+        && route.len() <= MAX_ENDPOINT_BYTES
+        && !route.contains(['?', '#'])
+        && route.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
+/// An RFC 6455 subprotocol token. FR-018 requires the expected *versioned* subprotocol:
+/// the version lives in the configured token, and exact comparison is what refuses an
+/// unversioned or differently versioned peer.
+fn is_subprotocol_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_ENDPOINT_BYTES
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+')
+        })
+}
+
+/// The values one state-bearing WebSocket upgrade presented.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StateBearingRequest<'a> {
+    pub authority: &'a str,
+    pub route: &'a str,
+    pub subprotocol: &'a str,
+    pub origin: &'a str,
+}
+
+/// One admitted state-bearing endpoint.
+///
+/// The only way to build this value is `StateBearingRoute::admit`, so a handshake
+/// configured from it is bound to an authority that passed loopback, route, subprotocol,
+/// and Origin admission together.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdmittedEndpoint(String);
+
+impl AdmittedEndpoint {
+    /// The canonical authority the handshake transcript binds.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<AdmittedEndpoint> for String {
+    fn from(value: AdmittedEndpoint) -> Self {
+        value.0
+    }
+}
+
+/// The configured admission policy for one state-bearing WebSocket route.
+///
+/// The downstream route owner picks the route and the versioned subprotocol; this module
+/// holds the configured values and admits nothing else. A liveness-only route carries no
+/// state and never reaches this policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StateBearingRoute {
+    host: LoopbackHost,
+    port: u16,
+    route: String,
+    subprotocol: String,
+    allowed_origins: Vec<String>,
+}
+
+impl StateBearingRoute {
+    pub fn new<O: Into<String>>(
+        host: LoopbackHost,
+        port: u16,
+        route: impl Into<String>,
+        subprotocol: impl Into<String>,
+        allowed_origins: impl IntoIterator<Item = O>,
+    ) -> Result<Self, SecurityFailure> {
+        let route = route.into();
+        let subprotocol = subprotocol.into();
+        if port == 0 || !is_route(&route) || !is_subprotocol_token(&subprotocol) {
+            return Err(SecurityFailure::new(FailureCode::EndpointRejected));
+        }
+        let allowed_origins: Vec<String> = allowed_origins.into_iter().map(Into::into).collect();
+        // An empty set admits nothing and an unparsable entry matches no browser-supplied
+        // Origin. Both are configuration mistakes, and neither may present later as a
+        // per-request Origin rejection.
+        if allowed_origins.is_empty()
+            || !allowed_origins
+                .iter()
+                .all(|origin| is_serialized_origin(origin))
+        {
+            return Err(SecurityFailure::new(FailureCode::OriginRejected));
+        }
+        Ok(Self {
+            host,
+            port,
+            route,
+            subprotocol,
+            allowed_origins,
+        })
+    }
+
+    /// Admit one state-bearing WebSocket upgrade.
+    ///
+    /// A non-loopback authority, an unexpected route, and an unexpected subprotocol are
+    /// bounded endpoint failures and carry no event fact. A rejected Origin is one of the
+    /// facts the event contract requires, so it is emitted before the refusal returns, and
+    /// an unavailable sink degrades to `event_sink.unavailable`.
+    pub fn admit(
+        &self,
+        request: &StateBearingRequest<'_>,
+        occurrence_ms: u64,
+        sink: &mut dyn SecurityEventSink,
+    ) -> Result<AdmittedEndpoint, SecurityFailure> {
+        let Some((host, port)) = canonical_loopback_authority(request.authority) else {
+            return Err(SecurityFailure::new(FailureCode::EndpointRejected));
+        };
+        if host != self.host
+            || port != self.port
+            || request.route != self.route
+            || request.subprotocol != self.subprotocol
+        {
+            return Err(SecurityFailure::new(FailureCode::EndpointRejected));
+        }
+        if !self
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == request.origin)
+        {
+            return Err(emit_origin_rejection(sink, occurrence_ms));
+        }
+        Ok(AdmittedEndpoint(format!(
+            "{}:{}",
+            host.literal(),
+            self.port
+        )))
+    }
+}
+
+fn emit_origin_rejection(sink: &mut dyn SecurityEventSink, occurrence_ms: u64) -> SecurityFailure {
+    let event = SecurityEvent::new(
+        Uuid::now_v7(),
+        EventBoundary::Channel,
+        SecurityCode::OriginRejected,
+        EventOutcome::Rejected,
+        SafeNextAction::RePair,
+        None,
+        None,
+        EndpointClass::Loopback,
+        EventTime(occurrence_ms),
+        Uuid::nil(),
+        vec![],
+    );
+    match event.and_then(|event| {
+        events::emit_required(Some(sink), event).map_err(|_| events::EventBuildError::EventTooLarge)
+    }) {
+        Ok(_) => SecurityFailure::new(FailureCode::OriginRejected),
+        Err(_) => SecurityFailure::new(FailureCode::EventSinkUnavailable),
+    }
+}
+
 fn validate_config(endpoint: &str, minimum: u16, maximum: u16) -> Result<(), SecurityFailure> {
-    if endpoint.is_empty() || endpoint.len() > 256 {
+    // FR-018: a state-bearing session binds one canonical loopback authority. A DNS alias,
+    // a wildcard bind, and a routable address never reach a traffic key, whether or not the
+    // caller reached this point through `StateBearingRoute::admit`.
+    if canonical_loopback_authority(endpoint).is_none() {
         return Err(SecurityFailure::new(FailureCode::EndpointRejected));
     }
     if minimum == 0 || minimum > maximum {
