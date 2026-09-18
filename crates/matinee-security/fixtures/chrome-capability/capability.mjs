@@ -8,6 +8,8 @@ const STORAGE_KEY = "matinee.fixture.long_term_key.v1";
 const IDB_NAME = "matinee.fixture.capability.v1";
 const IDB_STORE = "keys";
 const KEY_REFERENCE = "fixture-long-term-key";
+const DAEMON_IDENTITY = "daemon.synthetic";
+const EPOCH = 7;
 const FIXTURE_MESSAGE = new TextEncoder().encode("matinee.chrome-capability.fixture.v1");
 const MAX_U64 = (1n << 64n) - 1n;
 
@@ -73,11 +75,34 @@ function parseCounter(value) {
 function openKeyDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(IDB_NAME, 1);
-    request.onerror = () => reject(request.error ?? new Error("indexeddb.open"));
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        request.onerror = null;
+        reject(new Error("indexeddb.timeout"));
+      }
+    }, 5000);
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(error ?? new Error("indexeddb.open"));
+    };
+    request.onerror = () => fail(request.error);
+    request.onblocked = () => fail(new Error("indexeddb.blocked"));
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(IDB_STORE)) request.result.createObjectStore(IDB_STORE);
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      if (settled) {
+        request.result.close();
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolve(request.result);
+    };
   });
 }
 
@@ -100,7 +125,14 @@ async function readStoredKey() {
 async function writeStoredKey(record) {
   const database = await openKeyDatabase();
   try {
-    await idbRequest(database.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).put(record, KEY_REFERENCE));
+    const transaction = database.transaction(IDB_STORE, "readwrite");
+    const request = transaction.objectStore(IDB_STORE).put(record, KEY_REFERENCE);
+    await new Promise((resolve, reject) => {
+      request.onerror = () => reject(request.error ?? new Error("indexeddb.put"));
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error ?? new Error("indexeddb.transaction"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("indexeddb.abort"));
+    });
   } finally {
     database.close();
   }
@@ -134,6 +166,7 @@ async function probeKeyPersistence() {
     const stored = await chrome.storage.local.get(STORAGE_KEY);
     metadata = stored[STORAGE_KEY];
     if (metadata !== undefined && (metadata?.version !== 1 || metadata.key_reference !== KEY_REFERENCE ||
+        metadata.daemon_identity !== DAEMON_IDENTITY || metadata.epoch !== EPOCH ||
         typeof metadata.public_key_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(metadata.public_key_fingerprint))) {
       await chrome.storage.local.remove(STORAGE_KEY);
       await clearStoredKey();
@@ -156,13 +189,14 @@ async function probeKeyPersistence() {
       }
       record = { privateKey: pair.privateKey, publicKey: pair.publicKey, version: 1 };
       await writeStoredKey(record);
+      record = await readStoredKey();
       await chrome.storage.local.set({
         [STORAGE_KEY]: {
           version: 1,
           key_reference: KEY_REFERENCE,
-          public_key_fingerprint: await publicKeyFingerprint(subtle, pair.publicKey),
-          daemon_identity: "daemon.synthetic",
-          epoch: 7
+          public_key_fingerprint: await publicKeyFingerprint(subtle, record?.publicKey),
+          daemon_identity: DAEMON_IDENTITY,
+          epoch: EPOCH
         }
       });
       metadata = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
@@ -171,6 +205,7 @@ async function probeKeyPersistence() {
     const fingerprint = record?.publicKey ? await publicKeyFingerprint(subtle, record.publicKey) : null;
     if (!record || record.version !== 1 || !record.privateKey || !record.publicKey ||
         metadata?.key_reference !== KEY_REFERENCE || metadata?.version !== 1 ||
+        metadata?.daemon_identity !== DAEMON_IDENTITY || metadata?.epoch !== EPOCH ||
         metadata?.public_key_fingerprint !== fingerprint ||
         record.privateKey.extractable !== false || !record.privateKey.usages.includes("sign") ||
         !record.publicKey.usages.includes("verify")) {
@@ -196,6 +231,8 @@ async function probeKeyPersistence() {
     }
     try {
       await subtle.exportKey("pkcs8", record.privateKey);
+      await chrome.storage.local.remove(STORAGE_KEY);
+      await clearStoredKey();
       return unsupported("capability.exportable");
     } catch {
       // The required non-exportability assertion passed.
