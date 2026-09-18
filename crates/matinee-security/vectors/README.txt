@@ -31,11 +31,14 @@ A Vector has exactly: `id` (ASCII lower-case kebab case), `kind` (`handshake` or
 also have `mutation` with `field`, `boundary`, and `operation`; valid vectors MUST NOT
 have `mutation`. `inputs` contains only the fields needed by its kind. Byte fields are
 lower-case hexadecimal with an exact expected byte length; text is exact UTF-8; UUIDs
-are 32 hex characters; counters/epochs are unsigned decimal integers in [0, 2^64-1].
-No base64, implicit encoding, platform endianness, random value, wall clock, or omitted
-field is permitted.
+are 32 hex characters; epochs are unsigned decimal JSON integers. Counters span the whole
+of [0, 2^64-1], which a JSON number cannot carry exactly, so a counter is the decimal
+digits of that integer as a string: `"counter": "18446744073709551615"` is exact where the
+bare number is not. A counter offered past the range is carried as `counter_text` and is a
+rejected input, never a wrapped one. No base64, implicit encoding, platform endianness,
+random value, wall clock, or omitted field is permitted.
 
-The valid handshake and frame bytes are included as `frame_hex`/`transcript_hex` and
+The valid handshake and frame bytes are included as `framed_hex`/`transcript_hex` and
 are independently derivable from the named inputs. Handshake field order is the
 secure-channel contract order. A frame is exactly version (1), UUID (16), counter (8),
 then ciphertext and tag (16-byte tag); no framing or fragmentation field may appear.
@@ -47,6 +50,13 @@ AAD is derived, never caller-supplied: header || LP(context) || LP(contract) || 
 Every field below has one valid vector and at least one *single-field* invalid vector.
 A mutation changes exactly the named field while all other input bytes remain identical.
 Each mutation records the boundary being exercised and the expected bounded failure.
+
+A mutation vector names the vector it departs from in `inputs.base` and then carries only
+the artifact it actually changed, so "all other input bytes remain identical" is a property
+of the file rather than a claim about it: there is one copy of the shared inputs, under
+`valid.handshake` or `valid.frame`, and nothing to drift against. A vector's `id` states
+the same field and boundary its `mutation` object does, and the readers reject a vector
+whose id and mutation disagree.
 
 Handshake fields: context, hello label, endpoint, principal selector, epoch, minimum
 contract, maximum contract, client nonce, client key (exact 65-byte uncompressed SEC1),
@@ -79,6 +89,10 @@ counter 0, 1, 18446744073709551615 (`u64::MAX`), and the overflow attempt
 Include duplicate, skipped, wrong-direction, and wrapped counter mutations. The sender
 rejects encryption after MAX; the receiver accepts MAX exactly once, then closes. Each
 case records nonce hex and AAD hex so native and WebCrypto outputs are byte-identical.
+Byte-identity is then proved rather than compared: AES-GCM is deterministic and binds both
+values, so a peer that opens the recorded frame has reproduced the nonce and AAD exactly,
+and one that seals the recorded bytes has done the same. A direction a peer cannot receive
+it proves by sealing, which exercises the same derivation.
 
 Payload limits MUST include zero bytes, one byte, the exact plaintext maximum 1,048,535
 bytes, one byte over that maximum, exact encoded-frame maximum 1,048,576 bytes, and one
@@ -86,6 +100,14 @@ byte over. A declared length is checked before allocation. Include a forged four
 length prefix that requests an oversize allocation and a truncated body. Both must
 reject before allocation, close, dispatch zero, and report `resource_limit` or
 `malformed.input` as specified by the mutation.
+
+A megabyte of hexadecimal is not a reviewable fixture, so a size-boundary vector carries a
+repeat rule instead of bytes: `payload_len` and `payload_repeat_byte_hex`, with no
+`framed_hex`. A reader materialises the payload and seals it, which is what makes the case
+deterministic without putting two megabytes of text under review. The forged-prefix cases
+are the opposite shape and stay inline: a prefix declaring four gigabytes is carried by a
+few dozen bytes, and a reader that had to allocate what the prefix declared could not
+answer at all.
 
 Evidence records distinguish `allocation = "none"` (rejected before allocation),
 `allocation = "bounded"` (allocation does not exceed the declared limit), and
@@ -149,12 +171,27 @@ contains IDs and bounded labels only, never plaintext input or full frame plaint
 
 6. Focused conformance and mutation checks
 -------------------------------------------
-After T014/T015 land, run from the workspace root:
+Each test file in `tests/` defines one macro that only `src/lib.rs` invokes, so the tests
+live in the library target and `--test secure_channel_faults` reports zero tests by design.
+Run these from the workspace root:
 
-    cargo test -p matinee-security --test secure_channel_faults -- --exact vector_schema
-    cargo test -p matinee-security --test secure_channel_faults -- --exact mutation_coverage
+    cargo test -p matinee-security --lib -- --exact \
+      secure_channel_faults_contract::secure_channel_faults_inner::vector_schema
+    cargo test -p matinee-security --lib -- --exact \
+      secure_channel_faults_contract::secure_channel_faults_inner::mutation_coverage
     node crates/matinee-security/fixtures/webcrypto/secure-channel-vectors.mjs \
       --vectors crates/matinee-security/vectors/secure-channel-v1.json
+
+The corpus is generated, never hand-edited, and regeneration is byte-identical. Its inputs
+are fixed P-256 private scalars held only in the generator; the two transcript signatures
+are minted once and pinned in the file, because ECDSA signing is randomised and a fresh
+signature would change the HKDF salt and every traffic key under it. Regeneration therefore
+reuses the pinned signatures and writes the file in place, and `--mint-signatures` is the
+deliberate way to roll them. Run the regeneration and the seeded SC-003 campaign with:
+
+    node crates/matinee-security/fixtures/webcrypto/secure-channel-vectors.mjs --generate
+    node crates/matinee-security/fixtures/webcrypto/secure-channel-vectors.mjs \
+      --campaign --seed 0x5ec0000600035c03 --cases 1000
 
 The schema check MUST reject duplicate keys, non-canonical numbers, unknown required
 shape, wrong hex lengths, absent mutation metadata, and secret-bearing strings. The
