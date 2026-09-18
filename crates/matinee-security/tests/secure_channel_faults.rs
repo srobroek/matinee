@@ -3,14 +3,14 @@ macro_rules! secure_channel_faults_tests {
         mod secure_channel_faults_inner {
             use crate::test_support_channel::{
                 CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner, capability,
-                establish_pair, establish_pair_at_epochs, fixture_principal, id, owned_operation,
-                owned_projection, registered_principal,
+                establish_pair, establish_pair_at_epochs, establish_pair_with_ranges,
+                fixture_principal, id, owned_operation, owned_projection, registered_principal,
             };
             use crate::{
                 AuthorizedOutput, CapabilityAction, ChannelSigner, ClientHandshake,
-                ClientHandshakeConfig, ConnectionId, FailureCode, PayloadKind, Principal,
-                PrincipalKind, ProjectionClass, PublicKey, SecurityCode, ServerHandshake,
-                ServerHandshakeConfig,
+                ClientHandshakeConfig, ConnectionId, FailureBoundary, FailureCode, PayloadKind,
+                Principal, PrincipalKind, ProjectionClass, PublicKey, SafeNextAction, SecurityCode,
+                ServerHandshake, ServerHandshakeConfig,
             };
             use std::collections::BTreeMap;
             use uuid::Uuid;
@@ -280,6 +280,257 @@ macro_rules! secure_channel_faults_tests {
                     .expect_err("oversized declaration");
                 assert_eq!(failure.code(), FailureCode::ResourceLimit);
                 assert!(!daemon.is_open());
+            }
+
+            /// The first byte of the length-prefixed selected-contract field inside a
+            /// server proof: `LP("server-proof") || client_hello || LP(selected)`.
+            fn selected_contract_field(hello: &[u8]) -> usize {
+                4 + b"server-proof".len() + hello.len()
+            }
+
+            /// FR-032: a handshake that already completed never replays. Both halves of
+            /// the recorded proof pair are bound to the nonce and ephemeral key of the
+            /// exact run that produced them, so replaying either one into a second
+            /// transcript is refused before any traffic key exists.
+            ///
+            /// Every other field a peer could check is deliberately held constant here:
+            /// the replay reuses the recorded hello, so endpoint, principal selector,
+            /// epoch, contract range and both long-term keys still match. Only the
+            /// per-run nonce and ephemeral context moved, and that alone must refuse it.
+            #[test]
+            fn fr032_a_completed_handshake_never_replays_into_another_session() {
+                let client_signer = RingSigner::generate();
+                let daemon_signer = RingSigner::generate();
+                let mut sink = RecordingSink::default();
+
+                let (client_config, server_config) =
+                    handshake_configs(&client_signer, &daemon_signer);
+                let (client_pending, hello) = ClientHandshake::start(client_config).unwrap();
+                let (server_pending, server_proof) =
+                    ServerHandshake::accept(server_config, &hello, &daemon_signer, &mut sink)
+                        .unwrap();
+                let (client_session, client_proof) = client_pending
+                    .finish(&server_proof, &client_signer, &mut sink)
+                    .expect("the production handshake completes");
+                let daemon_session = server_pending
+                    .finish(&client_proof, &mut sink)
+                    .expect("the production handshake completes");
+                // The handshake is complete, not merely started: both peers hold a live
+                // session, so what follows replays a finished transcript.
+                assert!(client_session.is_open(), "the client half completed");
+                assert!(daemon_session.is_open(), "the daemon half completed");
+                assert!(
+                    sink.events.is_empty(),
+                    "a completed handshake records no failure"
+                );
+
+                // The recorded client proof, replayed into a second server transcript.
+                let (_, replay_server_config) = handshake_configs(&client_signer, &daemon_signer);
+                let (replayed_server, second_proof) = ServerHandshake::accept(
+                    replay_server_config,
+                    &hello,
+                    &daemon_signer,
+                    &mut sink,
+                )
+                .expect("the recorded hello still satisfies every stated field");
+                assert_ne!(
+                    second_proof, server_proof,
+                    "each accept mints its own nonce and ephemeral key"
+                );
+                let failure = replayed_server
+                    .finish(&client_proof, &mut sink)
+                    .expect_err("a completed handshake's client proof never authenticates twice");
+                assert_eq!(failure.code(), FailureCode::AuthenticationFailed);
+                assert_eq!(failure.boundary(), FailureBoundary::Authentication);
+                assert_eq!(
+                    failure.safe_next_action(),
+                    SafeNextAction::VerifyCredentialAndReconnect
+                );
+                assert_eq!(sink.events.len(), 1, "the refused replay is recorded");
+                assert_eq!(
+                    sink.events.last().unwrap().code(),
+                    SecurityCode::AuthenticationFailed
+                );
+
+                // The recorded server proof, replayed to a client that started fresh. The
+                // proof carries the transcript it was signed over, so it cannot be lifted
+                // onto another hello even when every configured field is identical.
+                let (replay_client_config, _) = handshake_configs(&client_signer, &daemon_signer);
+                let (replay_client, replay_hello) =
+                    ClientHandshake::start(replay_client_config).unwrap();
+                assert_eq!(
+                    replay_hello.len(),
+                    hello.len(),
+                    "the two hellos differ only in nonce and ephemeral key"
+                );
+                assert_ne!(replay_hello, hello, "each hello carries its own nonce");
+                let failure = replay_client
+                    .finish(&server_proof, &client_signer, &mut sink)
+                    .expect_err("a completed handshake's server proof never binds a new hello");
+                assert_eq!(failure.code(), FailureCode::AuthenticationFailed);
+                assert_eq!(failure.boundary(), FailureBoundary::Authentication);
+                assert_eq!(sink.events.len(), 2, "both refusals are recorded");
+            }
+
+            /// FR-032: the negotiated contract never replays out of the transcript that
+            /// selected it. The selection is signed inside the server proof and it is both
+            /// an HKDF info input and a frame AAD input, so a contract lifted from another
+            /// completed handshake is refused before key derivation, and a frame sealed
+            /// under one contract is refused by a channel that negotiated another.
+            #[test]
+            fn fr032_a_replayed_contract_selection_and_cross_contract_frame_are_refused() {
+                let client_signer = RingSigner::generate();
+                let daemon_signer = RingSigner::generate();
+                let mut sink = RecordingSink::default();
+
+                // One completed handshake at the fixture range, which selects contract 3.
+                let (reference_client, reference_daemon) =
+                    establish_pair_with_ranges(EPOCH, (1, 3), (2, 4))
+                        .expect("the fixture range negotiates a contract");
+                assert_eq!(reference_client.contract(), 3);
+                assert_eq!(reference_daemon.contract(), 3);
+
+                // A second completed handshake over a narrower range, which selects
+                // contract 2. Its committed selection is the value replayed below.
+                let (donor_client, donor_daemon) =
+                    establish_pair_with_ranges(EPOCH, (1, 2), (1, 2))
+                        .expect("the narrow range negotiates a contract");
+                assert_eq!(donor_client.contract(), 2);
+                assert_eq!(donor_daemon.contract(), 2);
+
+                // Rebuild both transcripts so the exact signed bytes are in hand: the
+                // donor's selection field, and a victim proof still awaiting its client.
+                let (donor_config, donor_server_config) = (
+                    ClientHandshakeConfig::new(
+                        ENDPOINT,
+                        id(PRINCIPAL),
+                        client_signer.public_key().clone(),
+                        id(DAEMON),
+                        daemon_signer.public_key().clone(),
+                        EPOCH,
+                        1,
+                        2,
+                    )
+                    .unwrap(),
+                    ServerHandshakeConfig::new(
+                        ENDPOINT,
+                        fixture_principal(client_signer.public_key().clone(), EPOCH),
+                        id(DAEMON),
+                        daemon_signer.public_key().clone(),
+                        1,
+                        2,
+                        ConnectionId::new(Uuid::from_u128(CONNECTION)),
+                    )
+                    .unwrap(),
+                );
+                let (donor_pending, donor_hello) = ClientHandshake::start(donor_config).unwrap();
+                let (donor_server, donor_proof) = ServerHandshake::accept(
+                    donor_server_config,
+                    &donor_hello,
+                    &daemon_signer,
+                    &mut sink,
+                )
+                .unwrap();
+                let (_, donor_client_proof) = donor_pending
+                    .finish(&donor_proof, &client_signer, &mut sink)
+                    .expect("the donor handshake completes at contract 2");
+                donor_server
+                    .finish(&donor_client_proof, &mut sink)
+                    .expect("the donor handshake completes at contract 2");
+
+                let (victim_config, victim_server_config) =
+                    handshake_configs(&client_signer, &daemon_signer);
+                let (victim_client, victim_hello) = ClientHandshake::start(victim_config).unwrap();
+                let (_, victim_proof) = ServerHandshake::accept(
+                    victim_server_config,
+                    &victim_hello,
+                    &daemon_signer,
+                    &mut sink,
+                )
+                .unwrap();
+                assert!(
+                    sink.events.is_empty(),
+                    "both transcripts were built without a refusal"
+                );
+
+                // Replay the donor's committed selection into the victim transcript. Both
+                // hellos are the same length, so this substitutes exactly the signed
+                // contract field and leaves every other byte of the victim proof intact.
+                let donor_field = selected_contract_field(&donor_hello);
+                let victim_field = selected_contract_field(&victim_hello);
+                assert_eq!(donor_hello.len(), victim_hello.len());
+                let replayed_selection = donor_proof[donor_field..donor_field + 5].to_vec();
+                assert_eq!(
+                    replayed_selection,
+                    [0, 0, 0, 1, b'2'],
+                    "the donor daemon committed to contract 2"
+                );
+                assert_eq!(
+                    &victim_proof[victim_field..victim_field + 5],
+                    [0, 0, 0, 1, b'3'],
+                    "the victim daemon committed to contract 3"
+                );
+                let mut spliced = victim_proof.clone();
+                spliced[victim_field..victim_field + 5].copy_from_slice(&replayed_selection);
+                assert_eq!(spliced.len(), victim_proof.len());
+
+                let failure = victim_client
+                    .finish(&spliced, &client_signer, &mut sink)
+                    .expect_err("a contract replayed from another handshake is refused");
+                assert_eq!(failure.code(), FailureCode::DowngradeRejected);
+                assert_eq!(failure.boundary(), FailureBoundary::Compatibility);
+                assert_eq!(
+                    failure.safe_next_action(),
+                    SafeNextAction::UseFixedContractPeer
+                );
+                assert_eq!(sink.events.len(), 1, "the refused replay is recorded");
+                assert_eq!(sink.events.last().unwrap().code(), SecurityCode::Downgrade);
+
+                // A sealed frame carries its contract in the AAD and in the key it was
+                // sealed under, so it cannot be replayed onto a channel that negotiated a
+                // different one. Both fixture pairs run on the same connection at counter
+                // zero in the same direction: the contract is the only context that moved.
+                let (mut low_client, mut low_daemon) =
+                    establish_pair_with_ranges(EPOCH, (1, 2), (1, 2)).unwrap();
+                let (_high_client, mut high_daemon) =
+                    establish_pair_with_ranges(EPOCH, (1, 3), (2, 4)).unwrap();
+                assert_eq!(low_daemon.contract(), 2);
+                assert_eq!(high_daemon.contract(), 3);
+                assert_eq!(
+                    low_daemon.connection_id(),
+                    high_daemon.connection_id(),
+                    "the connection context is identical"
+                );
+                assert_eq!(low_daemon.epoch(), high_daemon.epoch());
+                let output =
+                    AuthorizedOutput::filtered(PayloadKind::Command, b"cross-contract".to_vec())
+                        .unwrap();
+                let sealed_at_two = low_client.send(&output, &mut sink).unwrap();
+                let failure = high_daemon
+                    .receive(
+                        &sealed_at_two,
+                        &owned_operation(PayloadKind::Command),
+                        &mut sink,
+                    )
+                    .expect_err("a frame sealed under another contract is refused");
+                assert_eq!(failure.code(), FailureCode::CryptographicFailure);
+                assert!(
+                    !high_daemon.is_open(),
+                    "the channel closed before any payload dispatched"
+                );
+
+                // The positive control: the identical bytes inside their own contract
+                // context still open, so the refusal above is the contract and not the
+                // frame.
+                let accepted = low_daemon
+                    .receive(
+                        &sealed_at_two,
+                        &owned_operation(PayloadKind::Command),
+                        &mut sink,
+                    )
+                    .expect("the frame is valid inside the contract that sealed it");
+                assert_eq!(accepted.payload(), b"cross-contract");
+                assert!(low_daemon.is_open());
             }
 
             // ---------------------------------------------------------------

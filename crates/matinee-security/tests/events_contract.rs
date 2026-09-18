@@ -1021,5 +1021,657 @@ macro_rules! events_contract_tests {
             );
             assert_eq!(aggregate.state.bucket_count(), 2);
         }
+
+        /// Every acceptance failure class, driven to its failure through the production
+        /// path that classifies it.
+        ///
+        /// `contracts/failures-events.md` bounds a failure with one stable boundary, one
+        /// code, and one safe next action. Constructing a `FailureCode` proves nothing
+        /// about that mapping, so each row below is a real refused operation and the
+        /// triple is read off the value that operation returned.
+        fn sc009_acceptance_matrix() -> Vec<(&'static str, crate::SecurityFailure)> {
+            let mut matrix = sc009_handshake_failures();
+            matrix.extend(sc009_frame_failures());
+            matrix.extend(sc009_route_failures());
+            matrix.extend(sc009_transition_failures());
+            matrix
+        }
+
+        fn sc009_handshake_failures() -> Vec<(&'static str, crate::SecurityFailure)> {
+            use crate::test_support_channel::{
+                CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner,
+                establish_pair_at_epochs, establish_pair_with_ranges, fixture_principal, id,
+            };
+            let mut sink = RecordingSink::default();
+            let client_signer = RingSigner::generate();
+            let daemon_signer = RingSigner::generate();
+            let configs = |epoch: u64, client_range: (u16, u16), server_range: (u16, u16)| {
+                (
+                    crate::ClientHandshakeConfig::new(
+                        ENDPOINT,
+                        id(PRINCIPAL),
+                        client_signer.public_key().clone(),
+                        id(DAEMON),
+                        daemon_signer.public_key().clone(),
+                        epoch,
+                        client_range.0,
+                        client_range.1,
+                    )
+                    .expect("bounded client configuration"),
+                    crate::ServerHandshakeConfig::new(
+                        ENDPOINT,
+                        fixture_principal(client_signer.public_key().clone(), epoch),
+                        id(DAEMON),
+                        daemon_signer.public_key().clone(),
+                        server_range.0,
+                        server_range.1,
+                        crate::ConnectionId::new(Uuid::from_u128(CONNECTION)),
+                    )
+                    .expect("bounded server configuration"),
+                )
+            };
+
+            // A client hello whose transcript-bound endpoint was altered in flight.
+            let (client, server) = configs(7, (1, 3), (2, 4));
+            let (_, mut hello) = crate::ClientHandshake::start(client).unwrap();
+            let needle = ENDPOINT.as_bytes();
+            let at = hello
+                .windows(needle.len())
+                .position(|part| part == needle)
+                .expect("the endpoint travels in the hello");
+            // A different but perfectly well-formed authority, so the refusal is the
+            // transcript binding and not an encoding fault.
+            assert_eq!(hello[at], b'1');
+            hello[at] = b'8';
+            let authentication =
+                crate::ServerHandshake::accept(server, &hello, &daemon_signer, &mut sink)
+                    .expect_err("an altered endpoint never authenticates");
+
+            // A daemon that committed to a contract outside the range it offered.
+            let (client, server) = configs(7, (1, 3), (2, 4));
+            let (client_pending, hello) = crate::ClientHandshake::start(client).unwrap();
+            let (_, mut proof) =
+                crate::ServerHandshake::accept(server, &hello, &daemon_signer, &mut sink).unwrap();
+            let selected = 4 + b"server-proof".len() + hello.len() + 4;
+            proof[selected] = b'2';
+            let downgrade = client_pending
+                .finish(&proof, &client_signer, &mut sink)
+                .expect_err("a substituted selection never derives a key");
+
+            vec![
+                ("handshake: altered transcript endpoint", authentication),
+                ("handshake: substituted contract selection", downgrade),
+                (
+                    "handshake: disjoint contract ranges",
+                    establish_pair_with_ranges(7, (1, 1), (2, 2))
+                        .expect_err("disjoint ranges create no channel"),
+                ),
+                (
+                    "handshake: client epoch the registry moved past",
+                    establish_pair_at_epochs(6, 7, (1, 3), (2, 4))
+                        .expect_err("a retired epoch creates no channel"),
+                ),
+            ]
+        }
+
+        fn sc009_frame_failures() -> Vec<(&'static str, crate::SecurityFailure)> {
+            use crate::test_support_channel::{
+                OWNER, RecordingSink, SCOPE, capability, establish_pair, id, owned_operation,
+            };
+            let mut sink = RecordingSink::default();
+            let output =
+                crate::AuthorizedOutput::filtered(crate::PayloadKind::Command, b"probe".to_vec())
+                    .unwrap();
+
+            let (_, mut daemon) = establish_pair(7);
+            let malformed = daemon
+                .receive(
+                    &[0, 0, 0, 1, 1],
+                    &owned_operation(crate::PayloadKind::Command),
+                    &mut sink,
+                )
+                .expect_err("a frame shorter than its header is refused");
+
+            let (_, mut daemon) = establish_pair(7);
+            let mut oversized = vec![0u8; 4];
+            oversized.copy_from_slice(&1_048_577u32.to_be_bytes());
+            let resource = daemon
+                .receive(
+                    &oversized,
+                    &owned_operation(crate::PayloadKind::Command),
+                    &mut sink,
+                )
+                .expect_err("a declared length above the bound is refused");
+
+            let (mut client, mut daemon) = establish_pair(7);
+            let frame = client.send(&output, &mut sink).unwrap();
+            daemon
+                .receive(
+                    &frame,
+                    &owned_operation(crate::PayloadKind::Command),
+                    &mut sink,
+                )
+                .expect("the first delivery is accepted");
+            let replay = daemon
+                .receive(
+                    &frame,
+                    &owned_operation(crate::PayloadKind::Command),
+                    &mut sink,
+                )
+                .expect_err("the same counter never opens twice");
+
+            let (mut client, mut daemon) = establish_pair(7);
+            let mut skipped = client.send(&output, &mut sink).unwrap();
+            skipped[21..29].copy_from_slice(&1u64.to_be_bytes());
+            let counter = daemon
+                .receive(
+                    &skipped,
+                    &owned_operation(crate::PayloadKind::Command),
+                    &mut sink,
+                )
+                .expect_err("a skipped counter is refused");
+
+            let (mut client, mut daemon) = establish_pair(7);
+            let mut tampered = client.send(&output, &mut sink).unwrap();
+            *tampered.last_mut().unwrap() ^= 1;
+            let cryptographic = daemon
+                .receive(
+                    &tampered,
+                    &owned_operation(crate::PayloadKind::Command),
+                    &mut sink,
+                )
+                .expect_err("an altered tag is refused");
+
+            // An action above the ceiling this channel established with.
+            let (mut client, mut daemon) = establish_pair(7);
+            let frame = client.send(&output, &mut sink).unwrap();
+            let denied = daemon
+                .receive(
+                    &frame,
+                    &crate::SessionInput::new(
+                        capability(crate::CapabilityAction::ManagePrincipals, "matinee"),
+                        crate::PayloadKind::Command,
+                        crate::ObjectOwner::Owned(id(OWNER)),
+                        None,
+                    ),
+                    &mut sink,
+                )
+                .expect_err("an action above the ceiling is denied");
+
+            // An object owned by someone else: the same result an unknown object gets.
+            let (mut client, mut daemon) = establish_pair(7);
+            let frame = client.send(&output, &mut sink).unwrap();
+            let not_found = daemon
+                .receive(
+                    &frame,
+                    &crate::SessionInput::new(
+                        capability(crate::CapabilityAction::Read, SCOPE),
+                        crate::PayloadKind::Command,
+                        crate::ObjectOwner::Owned(id(0x777)),
+                        None,
+                    ),
+                    &mut sink,
+                )
+                .expect_err("a cross-owner object is never disclosed");
+
+            // The decision event is required, so a sink that cannot record it mints no
+            // authorized input.
+            let (mut client, mut daemon) = establish_pair(7);
+            let frame = client.send(&output, &mut sink).unwrap();
+            let mut unavailable = FakeEventSink::unavailable();
+            let sink_unavailable = daemon
+                .receive(
+                    &frame,
+                    &owned_operation(crate::PayloadKind::Command),
+                    &mut unavailable,
+                )
+                .expect_err("an unrecordable decision authorizes nothing");
+
+            vec![
+                ("frame: shorter than its own header", malformed),
+                ("frame: declared length above the bound", resource),
+                ("frame: duplicate counter", replay),
+                ("frame: skipped counter", counter),
+                ("frame: altered authentication tag", cryptographic),
+                ("authorization: action above the ceiling", denied),
+                ("authorization: cross-owner object", not_found),
+                (
+                    "authorization: decision event unavailable",
+                    sink_unavailable,
+                ),
+            ]
+        }
+
+        fn sc009_route_failures() -> Vec<(&'static str, crate::SecurityFailure)> {
+            use crate::test_support_channel::RecordingSink;
+            use crate::{LoopbackHost, StateBearingRequest, StateBearingRoute};
+            const ALLOWED: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+            let route = StateBearingRoute::new(
+                LoopbackHost::Ipv4,
+                7777,
+                "/matinee",
+                "matinee.secure-channel.v1",
+                [ALLOWED],
+            )
+            .expect("the configured loopback route");
+            let mut sink = RecordingSink::default();
+            let endpoint = route
+                .admit(
+                    &StateBearingRequest {
+                        authority: "10.0.0.5:7777",
+                        route: "/matinee",
+                        subprotocol: "matinee.secure-channel.v1",
+                        origin: ALLOWED,
+                    },
+                    1_000,
+                    &mut sink,
+                )
+                .expect_err("a non-loopback authority is never admitted");
+            let origin = route
+                .admit(
+                    &StateBearingRequest {
+                        authority: "127.0.0.1:7777",
+                        route: "/matinee",
+                        subprotocol: "matinee.secure-channel.v1",
+                        origin: "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba",
+                    },
+                    1_000,
+                    &mut sink,
+                )
+                .expect_err("an unpaired Origin is never admitted");
+            assert_eq!(
+                sink.events.len(),
+                1,
+                "the rejected Origin is a required fact; the endpoint refusal is not"
+            );
+            vec![
+                ("route: non-loopback authority", endpoint),
+                ("route: unpaired browser Origin", origin),
+            ]
+        }
+
+        fn sc009_transition_failures() -> Vec<(&'static str, crate::SecurityFailure)> {
+            use crate::adapters::credential_store::{CredentialBinding, CredentialStoreError};
+            use crate::identity::{
+                ExpiryResult, PrincipalKind, TransitionOperation, TransitionOutcome,
+            };
+            use crate::test_support_channel::{
+                DAEMON, RecordingSink, RingSigner, STATE_DIRECTORY, establish_pair_for, id,
+                registered_principal,
+            };
+            use crate::test_support_fakes::{FakeCredentialStore, FakeOsPipe};
+            use crate::test_support_transitions::{
+                ADMINISTRATOR, EXTENSION, ceiling, connection, create_enrollment, input, key,
+                live_channel, long_term_key, receive, registered, request, revoke, transition,
+            };
+            use crate::transition::{BootstrapMaterial, SecurityTransitions, TransitionMaterial};
+
+            // A snapshot two peers agreed on that the registry never held.
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let _live = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            let mut sink = RecordingSink::default();
+            let forged = registered_principal(
+                EXTENSION,
+                PrincipalKind::NativeAdmin,
+                signer.public_key().clone(),
+                ceiling(),
+                0,
+            );
+            let (_, forged_daemon) = establish_pair_for(&forged, &signer, connection(0x910))
+                .expect("two peers can agree on a snapshot the registry never held");
+            let mismatch = transitions
+                .register_channel(forged_daemon, &mut sink)
+                .expect_err("a forged snapshot is never admitted")
+                .failure();
+
+            // A revoked principal still holding a live channel.
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            let mut client = live_channel(&transitions, &principal, &signer, 0x920);
+            let frame = request(&mut client, &mut sink);
+            assert_eq!(
+                revoke(
+                    &transitions,
+                    principal.id(),
+                    "administrator",
+                    0x921,
+                    0,
+                    Some(&mut sink),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            let revoked = receive(&transitions, connection(0x920), &frame, &mut sink)
+                .expect_err("a revoked principal never authenticates a frame");
+
+            // A deadline the host could not decide: nothing is asserted either way.
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &signer,
+            );
+            let unknown = create_enrollment(
+                &transitions,
+                transition(0x930),
+                administrator.id(),
+                0x931,
+                0,
+                ExpiryResult::uncertain(600_000),
+                Some(&mut sink),
+            )
+            .expect_err("an uncertain deadline decides nothing")
+            .failure();
+
+            // The host proof budget: refusals inside one window, then the rate limit.
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &signer,
+            );
+            let mut rate_limited = None;
+            let mut refusals = 0usize;
+            for attempt in 0..32u128 {
+                let enrollment = transition(0x940 + attempt);
+                create_enrollment(
+                    &transitions,
+                    enrollment,
+                    administrator.id(),
+                    0x960 + attempt,
+                    0,
+                    ExpiryResult::valid(600_000).expect("bounded deadline"),
+                    Some(&mut sink),
+                )
+                .expect("the administrator opens one enrollment");
+                let mut channel =
+                    crate::enrollment::EnrollmentChannel::open(connection(0x980 + attempt), 1)
+                        .expect("native pairing channel");
+                let clock = crate::enrollment::EnrollmentClock::new(
+                    1_000,
+                    ExpiryResult::valid(600_000).expect("bounded deadline"),
+                );
+                let proof = crate::enrollment::EnrollmentProof {
+                    identity: id(EXTENSION),
+                    signature: vec![0; 8],
+                    long_term_public_key: long_term_key(),
+                };
+                let rejection = crate::test_support_transitions::consume_enrollment(
+                    &transitions,
+                    enrollment,
+                    id(EXTENSION),
+                    &proof,
+                    &clock,
+                    &mut channel,
+                    0x9a0 + attempt,
+                    0,
+                    Some(&mut sink),
+                )
+                .expect_err("a proof no one-time key signed never pairs");
+                if rejection.code() == crate::FailureCode::RateLimited {
+                    rate_limited = Some(rejection.failure());
+                    break;
+                }
+                refusals += 1;
+            }
+            let rate_limited =
+                rate_limited.expect("the host budget rate-limits a bounded run of refusals");
+            assert!(
+                refusals > 0,
+                "the budget was spent by real refusals, not by the first attempt"
+            );
+
+            // The platform credential service is down while a bootstrap needs it.
+            let transitions = SecurityTransitions::default();
+            let administrator_signer = RingSigner::generate();
+            let daemon_signer = RingSigner::generate();
+            let envelope = crate::adapters::os_pipe::BootstrapEnvelope {
+                nonce: [11; 32],
+                state_directory: id(STATE_DIRECTORY).get(),
+                daemon: id(DAEMON).get(),
+                bootstrap: Uuid::from_u128(0x9b0),
+                public_key: *administrator_signer.public_key().as_bytes(),
+            };
+            let encoded = envelope.encode();
+            let store = FakeCredentialStore::new().with_error(
+                CredentialBinding::for_identities(envelope.state_directory, envelope.daemon),
+                CredentialStoreError::Unavailable,
+            );
+            let pipe = FakeOsPipe::present(9);
+            let store_unavailable = transitions
+                .apply(
+                    &crate::SecurityCommand::Bootstrap {
+                        state_directory: id(STATE_DIRECTORY),
+                        idempotency: key(0x9c0),
+                    },
+                    &input(
+                        TransitionOperation::Bootstrap,
+                        0x9c0,
+                        0,
+                        TransitionOutcome::Committed,
+                    ),
+                    TransitionMaterial::Bootstrap(BootstrapMaterial::with_store_for_test(
+                        &pipe,
+                        &encoded,
+                        b"native://matinee",
+                        crate::transition::DaemonSelf {
+                            public_key: daemon_signer.public_key(),
+                            contract_min: 1,
+                            contract_max: 1,
+                        },
+                        &store,
+                    )),
+                    Some(&mut sink),
+                    crate::events::EventTime(5),
+                )
+                .expect_err("an unavailable credential service commits no bootstrap")
+                .failure();
+
+            vec![
+                ("transition: forged principal snapshot", mismatch),
+                ("transition: revoked principal frame", revoked),
+                ("transition: undecidable enrollment deadline", unknown),
+                ("transition: host proof budget exhausted", rate_limited),
+                (
+                    "transition: credential service unavailable",
+                    store_unavailable,
+                ),
+            ]
+        }
+
+        /// SC-009: every security failure in the acceptance matrix maps to exactly one
+        /// stable redacted failure class, boundary, and safe next action.
+        ///
+        /// The proof is two-sided. Coverage: every class in the closed taxonomy is
+        /// reached by a real refused operation, so no class is decorative. Injectivity:
+        /// the class determines the triple, so no failure yields two triples and no two
+        /// distinct classes collapse into one. The one conflation the contract requires
+        /// is checked separately, because it is deliberate: an unknown, a cross-owner,
+        /// and an unauthorized object must all answer `object.not_found`.
+        #[test]
+        fn sc009_every_acceptance_failure_maps_to_one_stable_redacted_triple() {
+            use std::collections::BTreeMap;
+
+            let matrix = sc009_acceptance_matrix();
+
+            // Stability, measured rather than re-read: a second independent run of the
+            // same matrix generates fresh keys, nonces and connection state, so a class
+            // that depended on incidental data would move here.
+            let again = sc009_acceptance_matrix();
+            assert_eq!(matrix.len(), again.len());
+            for ((case, first), (repeated, second)) in matrix.iter().zip(&again) {
+                assert_eq!(case, repeated, "the matrix order is fixed");
+                assert_eq!(
+                    (first.boundary(), first.code(), first.safe_next_action()),
+                    (second.boundary(), second.code(), second.safe_next_action()),
+                    "{case}: the triple is stable across independent runs"
+                );
+            }
+
+            let mut by_triple: BTreeMap<(&str, &str, &str), Vec<&str>> = BTreeMap::new();
+            let mut by_code: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+            let mut facts: BTreeMap<&str, Vec<crate::SecurityCode>> = BTreeMap::new();
+
+            for (case, failure) in &matrix {
+                let triple = (
+                    failure.boundary().as_str(),
+                    failure.code().as_str(),
+                    failure.safe_next_action().as_str(),
+                );
+                by_triple.entry(triple).or_default().push(case);
+                by_code
+                    .entry(triple.1)
+                    .or_default()
+                    .push((triple.0, triple.2));
+                // The redacted projection that travels in an event names the same three
+                // closed values the failure reported to its caller.
+                let redacted = failure.redacted();
+                assert_eq!(
+                    (
+                        redacted.0.as_str(),
+                        redacted.1.as_str(),
+                        redacted.2.as_str()
+                    ),
+                    triple,
+                    "{case}: the redacted projection diverged from the failure"
+                );
+                facts
+                    .entry(triple.1)
+                    .or_default()
+                    .push(crate::channel::event_code(failure.code()));
+            }
+
+            // Injectivity: one class never presents two different boundaries or actions,
+            // whichever production path produced it.
+            for (code, observed) in &by_code {
+                let first = observed[0];
+                assert!(
+                    observed.iter().all(|entry| *entry == first),
+                    "{code} reported more than one boundary or safe action: {observed:?}"
+                );
+            }
+
+            // And one class never becomes two different recorded facts, so a reader
+            // cannot tell where the channel died from the fact it was given.
+            for (code, observed) in &facts {
+                let first = observed[0];
+                assert!(
+                    observed.iter().all(|fact| *fact == first),
+                    "{code} was recorded as more than one fact: {observed:?}"
+                );
+            }
+
+            // Coverage: every class the closed taxonomy declares was reached by a real
+            // refused operation. A class missing here is unreachable in production and a
+            // class here that is not declared cannot exist.
+            let reached: std::collections::BTreeSet<&str> = by_code.keys().copied().collect();
+            let declared: std::collections::BTreeSet<&str> = SC009_DECLARED_CLASSES
+                .iter()
+                .map(|code| code.as_str())
+                .collect();
+            assert_eq!(
+                reached, declared,
+                "every declared failure class must be driven by a production path"
+            );
+            assert_eq!(
+                SC009_DECLARED_CLASSES.len(),
+                19,
+                "the closed acceptance-failure taxonomy"
+            );
+
+            // One-to-one, the direction that can actually break: the matrix holds 19
+            // distinct refused operations and they produce 19 distinct classes, so no two
+            // acceptance failures the contract separates collapse into one triple. The
+            // boundary and the action may legitimately be shared -- `malformed.input` and
+            // `authentication.cryptographic` both say discard and reconnect -- which is
+            // why the class is what has to stay distinct.
+            assert_eq!(
+                matrix.len(),
+                SC009_DECLARED_CLASSES.len(),
+                "one acceptance condition per declared class"
+            );
+            assert_eq!(
+                by_code.len(),
+                matrix.len(),
+                "two distinct acceptance conditions collapsed into one class"
+            );
+            assert_eq!(
+                by_triple.len(),
+                matrix.len(),
+                "two distinct acceptance conditions collapsed into one triple"
+            );
+
+            // The deliberate conflation: existence is never disclosed, so an
+            // unauthorized object and an unknown object share one boundary while keeping
+            // distinct safe actions inside it.
+            let denied = matrix
+                .iter()
+                .find(|(_, failure)| failure.code() == crate::FailureCode::AuthorizationDenied)
+                .expect("the denial row");
+            let not_found = matrix
+                .iter()
+                .find(|(_, failure)| failure.code() == crate::FailureCode::ObjectNotFound)
+                .expect("the not-found row");
+            assert_eq!(denied.1.boundary(), not_found.1.boundary());
+            assert_eq!(
+                not_found.1.safe_next_action(),
+                crate::SafeNextAction::DoNotInferObjectExistence
+            );
+
+            // No triple carries a protected field. `Authorization` is deliberately not
+            // in this list: it is the closed boundary name. The header a failure must
+            // never carry is checked by its value form instead.
+            for (case, failure) in &matrix {
+                let rendered = format!("{failure} {failure:?}");
+                for forbidden in [
+                    "private",
+                    "secret",
+                    "cookie",
+                    "Cookie",
+                    "Bearer",
+                    "-----BEGIN",
+                    "matinee/status",
+                    "fixture-store",
+                    "principal-key",
+                    "extension-key",
+                    "native://",
+                    "chrome-extension://",
+                    "127.0.0.1",
+                ] {
+                    assert!(
+                        !rendered.contains(forbidden),
+                        "{case} disclosed {forbidden}: {rendered}"
+                    );
+                }
+            }
+        }
+
+        /// The closed acceptance-failure taxonomy, as `failures.rs` declares it.
+        const SC009_DECLARED_CLASSES: [crate::FailureCode; 19] = [
+            crate::FailureCode::AuthenticationFailed,
+            crate::FailureCode::AuthorizationDenied,
+            crate::FailureCode::ObjectNotFound,
+            crate::FailureCode::CompatibilityUnsupported,
+            crate::FailureCode::DowngradeRejected,
+            crate::FailureCode::MalformedInput,
+            crate::FailureCode::OriginRejected,
+            crate::FailureCode::EndpointRejected,
+            crate::FailureCode::ReplayDetected,
+            crate::FailureCode::CounterMismatch,
+            crate::FailureCode::RateLimited,
+            crate::FailureCode::CredentialStoreUnavailable,
+            crate::FailureCode::CredentialStoreMismatch,
+            crate::FailureCode::ResourceLimit,
+            crate::FailureCode::StaleEpoch,
+            crate::FailureCode::Revoked,
+            crate::FailureCode::TransitionUnknown,
+            crate::FailureCode::EventSinkUnavailable,
+            crate::FailureCode::CryptographicFailure,
+        ];
     };
 }

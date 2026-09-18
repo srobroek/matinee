@@ -987,6 +987,270 @@ macro_rules! rotation_revocation_races_tests {
             assert_eq!(replayed, 100, "every overlapping retry replays one commit");
         }
 
+        /// Recorded so the campaign repeats exactly: the seed drives the per-trial
+        /// fixture id space and the order the two confirmed transitions commit in.
+        const SC008_SEED: u64 = 0x5c00_0800_d15c_0111;
+        const SC008_DISCONNECTS: u128 = 100;
+
+        /// One SplitMix64 step. The campaign needs a reproducible draw and nothing
+        /// cryptographic, so it carries its own generator rather than a dependency.
+        fn sc008_draw(state: &mut u64) -> u64 {
+            *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = *state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+
+        /// FR-031, SC-008: 100 disconnects, each one taken after real confirmed
+        /// daemon-owned work exists, and none of which disturbs it.
+        ///
+        /// The campaign above races a revocation against the disconnect, so its
+        /// mutation is always refused and its object version never leaves zero: it
+        /// proves the revocation half of SC-008 and never reaches the confirmed-work
+        /// half. This one commits the work first -- one object mutation and one
+        /// accepted authorization decision per trial, in a seeded order -- then
+        /// disconnects and proves the work is still exactly there, that the
+        /// disconnect created no second authorization or revocation transition, and
+        /// that a reconnect observes one consistent state it can build on.
+        #[test]
+        fn sc008_confirmed_work_survives_a_hundred_disconnects_and_duplicates_no_transition() {
+            let started = std::time::Instant::now();
+            let mut seed = SC008_SEED;
+            let mut confirmed_mutations = 0usize;
+            let mut confirmed_decisions = 0usize;
+            let mut disconnects = 0usize;
+            let mut duplicate_closes_refused = 0usize;
+            let mut duplicate_decisions_refused = 0usize;
+            let mut dead_channel_mutations_refused = 0usize;
+            let mut reconnects_on_confirmed_work = 0usize;
+            let mut first_revocations = 0usize;
+            let mut events_emitted_by_a_disconnect = 0usize;
+            let mut mutation_first_trials = 0usize;
+
+            for trial in 0..SC008_DISCONNECTS {
+                let mutate_first = sc008_draw(&mut seed) & 1 == 0;
+                mutation_first_trials += usize::from(mutate_first);
+                let first = 0x8_0000 + trial;
+                let second = 0x9_0000 + trial;
+                let decision = transition(0xd_0000 + trial);
+
+                let transitions = SecurityTransitions::default();
+                let signer = RingSigner::generate();
+                let extension = registered(
+                    &transitions,
+                    EXTENSION,
+                    PrincipalKind::BrowserExtension,
+                    &signer,
+                );
+                transitions
+                    .register_grant(grant(extension.id(), 0))
+                    .expect("a grant at the registered epoch");
+                transitions
+                    .open_decision(decision, extension.id())
+                    .expect("a pending decision");
+                let grants_before = transitions.grant_lifecycles(extension.id());
+
+                let mut client = live_channel(&transitions, &extension, &signer, first);
+                let mut sink = RecordingSink::default();
+                let frame = request(&mut client, &mut sink);
+                let authorized = receive(&transitions, connection(first), &frame, &mut sink)
+                    .expect("the live epoch authorizes the frame");
+
+                // Confirmed daemon-owned work: one committed object mutation and one
+                // accepted authorization decision, in the order the seed drew.
+                if mutate_first {
+                    assert_eq!(commit_mutation(&transitions, &authorized), Ok(1));
+                    confirmed_mutations += 1;
+                    assert_eq!(
+                        transitions.complete_decision(decision, Some(&mut sink), EventTime(9)),
+                        Ok(TransitionOutcome::Committed)
+                    );
+                    confirmed_decisions += 1;
+                } else {
+                    assert_eq!(
+                        transitions.complete_decision(decision, Some(&mut sink), EventTime(9)),
+                        Ok(TransitionOutcome::Committed)
+                    );
+                    confirmed_decisions += 1;
+                    assert_eq!(commit_mutation(&transitions, &authorized), Ok(1));
+                    confirmed_mutations += 1;
+                }
+                assert_eq!(transitions.object_version(), 1, "the work is confirmed");
+                assert_eq!(
+                    transitions.decision_state(decision),
+                    Some(DecisionState::Completed)
+                );
+                assert_eq!(transitions.open_channels(), 1);
+                let events_before = sink.events.len();
+
+                // The disconnect.
+                assert!(
+                    transitions.close_channel(connection(first)),
+                    "the live channel closed"
+                );
+                disconnects += 1;
+                events_emitted_by_a_disconnect += sink.events.len() - events_before;
+
+                // The confirmed work is still exactly there, and the disconnect moved no
+                // principal, epoch, grant, or decision.
+                assert_eq!(
+                    transitions.object_version(),
+                    1,
+                    "the confirmed mutation outlived the connection"
+                );
+                assert_eq!(
+                    transitions.decision_state(decision),
+                    Some(DecisionState::Completed),
+                    "the accepted decision outlived the connection"
+                );
+                let after = transitions
+                    .registered_principal(extension.id())
+                    .expect("the principal outlived the connection");
+                assert_eq!(
+                    after.lifecycle(),
+                    PrincipalLifecycle::Active,
+                    "a disconnect revokes nothing"
+                );
+                assert_eq!(after.epoch(), 0, "a disconnect rotates nothing");
+                assert_eq!(
+                    transitions.grant_lifecycles(extension.id()),
+                    grants_before,
+                    "a disconnect invalidates no grant"
+                );
+                assert_eq!(transitions.open_channels(), 0);
+
+                // A second disconnect is not a second anything.
+                assert!(
+                    !transitions.close_channel(connection(first)),
+                    "a closed channel closes once"
+                );
+                duplicate_closes_refused += 1;
+
+                // The disconnect did not reopen the authorization transition: completing
+                // the decision again is a replay and emits no second accepted fact.
+                let before_retry = sink.events.len();
+                let replayed = transitions
+                    .complete_decision(decision, Some(&mut sink), EventTime(9))
+                    .expect_err("a completed decision never completes twice");
+                assert_eq!(replayed.code(), FailureCode::ReplayDetected);
+                assert_eq!(
+                    sink.events.len(),
+                    before_retry,
+                    "the refused replay emitted no duplicate authorization fact"
+                );
+                duplicate_decisions_refused += 1;
+
+                // The dead channel authorizes no new mutation, and that refusal commits
+                // nothing: confirmed work is preserved separately from connection life,
+                // in both directions.
+                let refused = commit_mutation(&transitions, &authorized)
+                    .expect_err("a disconnected channel authorizes no new mutation");
+                assert_eq!(refused.code(), FailureCode::AuthenticationFailed);
+                assert_eq!(
+                    transitions.object_version(),
+                    1,
+                    "the refusal committed nothing"
+                );
+                dead_channel_mutations_refused += 1;
+
+                // The reconnect observes exactly one consistent state and builds on it.
+                let mut reconnected = live_channel(&transitions, &extension, &signer, second);
+                assert_eq!(
+                    transitions.open_channels(),
+                    1,
+                    "exactly one live channel after the reconnect"
+                );
+                assert_eq!(
+                    transitions.object_version(),
+                    1,
+                    "the reconnect observes the confirmed work once: not zero, not twice"
+                );
+                assert_eq!(
+                    transitions.decision_state(decision),
+                    Some(DecisionState::Completed)
+                );
+                assert_eq!(
+                    transitions
+                        .registered_principal(extension.id())
+                        .map(|found| (found.lifecycle(), found.epoch())),
+                    Some((PrincipalLifecycle::Active, 0))
+                );
+                let reconnect_frame = request(&mut reconnected, &mut sink);
+                let reauthorized = receive(
+                    &transitions,
+                    connection(second),
+                    &reconnect_frame,
+                    &mut sink,
+                )
+                .expect("the reconnected channel authorizes");
+                assert_eq!(
+                    commit_mutation(&transitions, &reauthorized),
+                    Ok(2),
+                    "the reconnect extends the confirmed version rather than restarting \
+                     or doubling it"
+                );
+                reconnects_on_confirmed_work += 1;
+
+                // Had the disconnect created a revocation transition of its own, this
+                // explicit one would replay an existing commit instead of being the first.
+                let mut revocation_sink = RecordingSink::default();
+                assert_eq!(
+                    revoke(
+                        &transitions,
+                        extension.id(),
+                        "administrator",
+                        0xe_0000 + trial,
+                        0,
+                        Some(&mut revocation_sink),
+                    ),
+                    Ok(TransitionOutcome::Committed),
+                    "the disconnect created no revocation transition"
+                );
+                assert_eq!(
+                    revocation_sink.events.len(),
+                    1,
+                    "exactly one revocation fact, and the disconnect contributed none"
+                );
+                first_revocations += 1;
+            }
+
+            let cases = SC008_DISCONNECTS as usize;
+            assert_eq!(disconnects, cases, "every trial disconnected");
+            assert_eq!(
+                confirmed_mutations, cases,
+                "one confirmed mutation per trial"
+            );
+            assert_eq!(
+                confirmed_decisions, cases,
+                "one confirmed decision per trial"
+            );
+            assert_eq!(
+                events_emitted_by_a_disconnect, 0,
+                "no disconnect emitted a transition fact"
+            );
+            assert_eq!(duplicate_closes_refused, cases);
+            assert_eq!(duplicate_decisions_refused, cases);
+            assert_eq!(dead_channel_mutations_refused, cases);
+            assert_eq!(reconnects_on_confirmed_work, cases);
+            assert_eq!(first_revocations, cases);
+            // The seeded split, recorded so a rerun that drifts is visible rather than
+            // silently covering one commit order only.
+            assert_eq!(
+                mutation_first_trials, 56,
+                "seeded commit-order split for {SC008_SEED:#x}"
+            );
+            assert!(
+                cases - mutation_first_trials > 0,
+                "both commit orders occurred"
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(120),
+                "the campaign must stay a test, not a benchmark: {:?}",
+                started.elapsed()
+            );
+        }
+
         /// FR-028, FR-032: the failure a real stale race produced reports one stable class
         /// and one safe action, and discloses no key, locator, or payload.
         #[test]
