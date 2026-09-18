@@ -446,6 +446,10 @@ pub(crate) struct CustodyUpdate {
     capability: ChromeCapability,
     retired_fingerprint: Fingerprint,
 }
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CustodyRevocation {
+    identity: IdentityId,
+}
 
 
 #[derive(Debug, Default)]
@@ -456,6 +460,8 @@ struct ConsumptionState {
     quarantined: Vec<Fingerprint>,
     #[cfg(test)]
     fail_next_custody_validation: bool,
+    #[cfg(test)]
+    fail_next_custody_revocation: bool,
 }
 
 /// The process-lifetime registry, host budgets, quarantine set, and required-event
@@ -547,6 +553,11 @@ impl EnrollmentConsumptionService {
 
     pub fn registered_fingerprint(&self, identity: IdentityId) -> Option<Fingerprint> {
         self.state.lock().ok()?.registrations.get(&identity).map(|entry| entry.fingerprint.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_revoked(&self, identity: IdentityId) -> Option<bool> {
+        Some(self.state.lock().ok()?.registrations.get(&identity)?.revoked)
     }
 
     pub fn is_quarantined(&self, fingerprint: &Fingerprint) -> bool {
@@ -724,6 +735,23 @@ impl EnrollmentConsumptionService {
         Self::commit_validated_custody_update(state, update);
     }
 
+    pub(crate) fn prepare_custody_revocation(
+        &mut self,
+        identity: IdentityId,
+    ) -> Result<Option<CustodyRevocation>, EnrollmentConsumeError> {
+        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        if core::mem::take(&mut state.fail_next_custody_revocation) {
+            return Err(EnrollmentConsumeError::EventUnavailable);
+        }
+        Ok(Self::validate_custody_revocation(state, identity))
+    }
+
+    pub(crate) fn commit_custody_revocation(&mut self, revocation: CustodyRevocation) {
+        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::commit_validated_custody_revocation(state, revocation);
+    }
+
     fn validate_custody_update(
         state: &ConsumptionState,
         identity: IdentityId,
@@ -762,15 +790,39 @@ impl EnrollmentConsumptionService {
         registration.capability = update.capability;
     }
 
+    fn validate_custody_revocation(
+        state: &ConsumptionState,
+        identity: IdentityId,
+    ) -> Option<CustodyRevocation> {
+        state.registrations.contains_key(&identity).then_some(CustodyRevocation { identity })
+    }
+
+    fn commit_validated_custody_revocation(
+        state: &mut ConsumptionState,
+        revocation: CustodyRevocation,
+    ) {
+        state.registrations.get_mut(&revocation.identity)
+            .expect("validated custody registration remains present")
+            .revoked = true;
+    }
+
     #[cfg(test)]
     pub(crate) fn fail_next_custody_validation(&mut self) {
         self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner)
             .fail_next_custody_validation = true;
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_custody_revocation(&mut self) {
+        self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fail_next_custody_revocation = true;
+    }
+
     pub fn revoke(&self, identity: IdentityId) -> Result<(), EnrollmentConsumeError> {
         let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-        state.registrations.get_mut(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?.revoked = true;
+        let revocation = Self::validate_custody_revocation(&state, identity)
+            .ok_or(EnrollmentConsumeError::CredentialMismatch)?;
+        Self::commit_validated_custody_revocation(&mut state, revocation);
         Ok(())
     }
 }

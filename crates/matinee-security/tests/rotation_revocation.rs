@@ -1049,5 +1049,95 @@ macro_rules! rotation_revocation_tests {
             assert_eq!(transitions.custody_fingerprint(id(EXTENSION)), before_fingerprint);
             assert_eq!(transitions.registered_principal(id(EXTENSION)).unwrap().epoch(), 0);
         }
+
+        #[test]
+        fn custody_revocation_is_staged_before_event_and_retries_atomically() {
+            let transitions = SecurityTransitions::default();
+            let administrator_signer = RingSigner::generate();
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &administrator_signer,
+            );
+            let mut sink = RecordingSink::default();
+            let enrollment = transition(96);
+            let clock = EnrollmentClock::new(1, ExpiryResult::valid(600_000).unwrap());
+            create_enrollment(
+                &transitions,
+                enrollment,
+                administrator.id(),
+                96,
+                0,
+                ExpiryResult::valid(600_000).unwrap(),
+                Some(&mut sink),
+            ).unwrap();
+            let mut channel = EnrollmentChannel::open(connection(96), 1).unwrap();
+            let proof = paired_proof(&transitions, enrollment, &mut channel, id(EXTENSION));
+            consume_enrollment(
+                &transitions,
+                enrollment,
+                id(EXTENSION),
+                &proof,
+                &clock,
+                &mut channel,
+                97,
+                0,
+                Some(&mut sink),
+            ).unwrap();
+            transitions.register_grant(grant(id(EXTENSION), 0)).unwrap();
+            let decision = transition(97);
+            transitions.open_decision(decision, id(EXTENSION)).unwrap();
+
+            let snapshot = || format!(
+                "principal={:?};custody={:?};custody_revoked={:?};enrollment={:?};channels={};grants={:?};decision={:?};objects={};state={:?}",
+                transitions.registered_principal(id(EXTENSION)),
+                transitions.custody_fingerprint(id(EXTENSION)),
+                transitions.custody_is_revoked(id(EXTENSION)),
+                transitions.enrollment_lifecycle(enrollment),
+                transitions.open_channels(),
+                transitions.grant_lifecycles(id(EXTENSION)),
+                transitions.decision_state(decision),
+                transitions.object_version(),
+                transitions,
+            );
+            let before = snapshot();
+            let before_events = sink.events.len();
+            transitions.fail_next_custody_revocation();
+            let rejected = revoke(
+                &transitions,
+                id(EXTENSION),
+                "administrator",
+                98,
+                0,
+                Some(&mut sink),
+            ).expect_err("custody rejection occurs before acceptance");
+            assert_eq!(rejected.code(), FailureCode::TransitionUnknown);
+            assert_eq!(sink.events.len(), before_events, "no accepted event escapes");
+            assert_eq!(snapshot().as_bytes(), before.as_bytes(), "all state is byte-for-byte unchanged");
+            assert!(transitions.recorded(key(98)).is_none());
+
+            let mut unavailable = RecordingSink { events: Vec::new(), unavailable: true };
+            assert_eq!(
+                revoke(&transitions, id(EXTENSION), "administrator", 99, 0, Some(&mut unavailable))
+                    .expect_err("event failure blocks custody and coordinator commit")
+                    .code(),
+                FailureCode::EventSinkUnavailable
+            );
+            assert!(unavailable.events.is_empty());
+            assert_eq!(snapshot().as_bytes(), before.as_bytes(), "event failure changes no state");
+
+            assert_eq!(
+                revoke(&transitions, id(EXTENSION), "administrator", 99, 0, Some(&mut sink)),
+                Ok(TransitionOutcome::Committed)
+            );
+            assert_eq!(sink.events.len(), before_events + 1);
+            assert_eq!(transitions.custody_is_revoked(id(EXTENSION)), Some(true));
+            assert_eq!(
+                revoke(&transitions, id(EXTENSION), "administrator", 99, 0, Some(&mut sink)),
+                Ok(TransitionOutcome::AlreadyCommitted)
+            );
+            assert_eq!(sink.events.len(), before_events + 1, "retry emits no second event");
+        }
     };
 }

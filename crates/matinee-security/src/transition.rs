@@ -1355,6 +1355,11 @@ impl SecurityTransitions {
         self.state.lock().ok()?.host.registered_fingerprint(principal)
     }
 
+    #[cfg(test)]
+    pub(crate) fn custody_is_revoked(&self, principal: IdentityId) -> Option<bool> {
+        self.state.lock().ok()?.host.is_revoked(principal)
+    }
+
     /// Whether the enrollment host quarantined one retired fingerprint.
     pub(crate) fn is_quarantined(&self, fingerprint: &Fingerprint) -> bool {
         self.state
@@ -1367,6 +1372,12 @@ impl SecurityTransitions {
         let mut state = self.state.lock().expect("transition state lock");
         state.host.fail_next_custody_validation();
     }
+    #[cfg(test)]
+    pub(crate) fn fail_next_custody_revocation(&self) {
+        let mut state = self.state.lock().expect("transition state lock");
+        state.host.fail_next_custody_revocation();
+    }
+
 
 
     /// Seal one bundle's one-time key over an authenticated native channel. The
@@ -1868,6 +1879,14 @@ impl TransitionState {
         .map_err(|_| {
             TransitionRejection::rejected(FailureCode::MalformedInput, Some(principal))
         })?;
+        // The outer transition-state guard owns the host for the entire stage/event/commit
+        // sequence, so this validated plan cannot become stale before its infallible commit.
+        let custody_revocation = self
+            .host
+            .prepare_custody_revocation(principal)
+            .map_err(|error| consume_rejection(error, principal))?;
+        let mut revoked = current.clone();
+        revoked.revoke();
         require_event(
             sink,
             input.transition().get(),
@@ -1889,13 +1908,9 @@ impl TransitionState {
                 },
             ],
         )?;
-        if self.host.registered_fingerprint(principal).is_some() {
-            self.host
-                .revoke(principal)
-                .map_err(|error| consume_rejection(error, principal))?;
+        if let Some(revocation) = custody_revocation {
+            self.host.commit_custody_revocation(revocation);
         }
-        let mut revoked = current.clone();
-        revoked.revoke();
         self.principals.insert(principal, revoked);
         self.close_channels_for(principal);
         self.invalidate_grants_for(principal);
