@@ -1,16 +1,16 @@
 macro_rules! secure_channel_handshake_tests {
     () => {
-        use crate::identity::{Capability, CapabilityAction};
         use crate::test_support_channel::{
             CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner, establish_pair,
-            establish_pair_with_ranges,
+            establish_pair_with_ranges, fixture_principal, id, owned_operation,
         };
         use crate::{
             AuthorizedOutput, ChannelSigner, ClientHandshake, ClientHandshakeConfig, ConnectionId,
             FailureCode, IdentityId, PayloadKind, ServerHandshake, ServerHandshakeConfig,
-            SessionInput,
         };
         use uuid::Uuid;
+
+        const EPOCH: u64 = 7;
 
         fn configs(
             client_signer: &RingSigner,
@@ -18,26 +18,22 @@ macro_rules! secure_channel_handshake_tests {
             client_range: (u16, u16),
             server_range: (u16, u16),
         ) -> (ClientHandshakeConfig, ServerHandshakeConfig) {
-            let principal = IdentityId::new(Uuid::from_u128(PRINCIPAL));
-            let daemon = IdentityId::new(Uuid::from_u128(DAEMON));
             let client = ClientHandshakeConfig::new(
                 ENDPOINT,
-                principal,
+                id(PRINCIPAL),
                 client_signer.public_key().clone(),
-                daemon,
+                id(DAEMON),
                 server_signer.public_key().clone(),
-                7,
+                EPOCH,
                 client_range.0,
                 client_range.1,
             )
             .unwrap();
             let server = ServerHandshakeConfig::new(
                 ENDPOINT,
-                principal,
-                client_signer.public_key().clone(),
-                daemon,
+                fixture_principal(client_signer.public_key().clone(), EPOCH),
+                id(DAEMON),
                 server_signer.public_key().clone(),
-                7,
                 server_range.0,
                 server_range.1,
                 ConnectionId::new(Uuid::from_u128(CONNECTION)),
@@ -71,15 +67,6 @@ macro_rules! secure_channel_handshake_tests {
             let remainder = &corpus[start..];
             &remainder[..remainder.find('"').expect("vector string terminator")]
         }
-        fn context(session: &crate::ChannelSession) -> SessionInput {
-            SessionInput::new(
-                session.connection_id(),
-                session.principal(),
-                session.epoch(),
-                Capability::new(CapabilityAction::Read, "matinee/status").unwrap(),
-                PayloadKind::Command,
-            )
-        }
 
         #[test]
         fn production_handshake_negotiates_and_reaches_bidirectional_sessions() {
@@ -94,7 +81,7 @@ macro_rules! secure_channel_handshake_tests {
             let mut sink = RecordingSink::default();
             let frame = client.send(&output, &mut sink).unwrap();
             let input = daemon
-                .receive(&frame, &context(&daemon), &mut sink)
+                .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                 .unwrap();
             assert_eq!(input.payload(), b"request");
         }
@@ -113,7 +100,7 @@ macro_rules! secure_channel_handshake_tests {
                 "independent ECDH secrets produced the same frame"
             );
             let failure = second_daemon
-                .receive(&first, &context(&second_daemon), &mut sink)
+                .receive(&first, &owned_operation(PayloadKind::Command), &mut sink)
                 .expect_err("an observed frame cannot be opened with another private ECDH secret");
             assert_eq!(failure.code(), FailureCode::CryptographicFailure);
             assert!(!second_daemon.is_open());
@@ -235,21 +222,23 @@ macro_rules! secure_channel_handshake_tests {
                 fixed_hex(text("daemon_to_client_key_hex"))
             );
 
+            // The vector's principal is registered at the epoch its frame authenticated
+            // under, so the session derives epoch 7 rather than accepting it as an argument.
             let principal = IdentityId::new(Uuid::from_bytes(fixed_hex(text("principal_id_hex"))));
             let mut daemon_session = crate::channel::vector_daemon_session(
                 connection,
-                principal,
-                7,
+                fixture_principal(client_key, EPOCH),
                 3,
                 client_to_daemon,
                 daemon_to_client,
             )
             .unwrap();
-            let input_context = context(&daemon_session);
+            assert_eq!(daemon_session.principal(), principal);
+            assert_eq!(daemon_session.epoch(), EPOCH);
             let frame = decode_hex(text("framed_hex"));
             let mut sink = RecordingSink::default();
             let opened = daemon_session
-                .receive(&frame, &input_context, &mut sink)
+                .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                 .unwrap();
             assert_eq!(
                 opened.payload(),

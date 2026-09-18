@@ -7,8 +7,8 @@ macro_rules! malformed_corpus_tests {
             SafeNextAction, SecurityCode, SecurityEvent,
         };
         use crate::failures::{FailureCode, SecurityFailure};
-        use crate::identity::{Capability, CapabilityAction, ConnectionId, IdentityId};
-        use crate::{AuthorizedInput, AuthorizedOutput, PayloadKind, SessionInput};
+        use crate::test_support_channel::{RecordingSink, establish_pair, owned_operation};
+        use crate::{AuthorizedOutput, PayloadKind};
         use uuid::Uuid;
 
         const MALFORMED_CASE_COUNT: usize = 100_000;
@@ -84,23 +84,49 @@ macro_rules! malformed_corpus_tests {
 
         fn forbidden(value: &str) -> bool {
             [
-                "private", "secret", "credential", "password", "cookie", "token",
-                "authorization", "header", "pkcs8", "payload", "https://", "http://",
-                "url", "object_id", "identifier", "artifact_id", "stream_id",
+                "private",
+                "secret",
+                "credential",
+                "password",
+                "cookie",
+                "token",
+                "authorization",
+                "header",
+                "pkcs8",
+                "payload",
+                "https://",
+                "http://",
+                "url",
+                "object_id",
+                "identifier",
+                "artifact_id",
+                "stream_id",
             ]
             .iter()
             .any(|word| value.to_ascii_lowercase().contains(word))
         }
 
-
-        fn context(epoch: u64, kind: PayloadKind) -> SessionInput {
-            SessionInput::new(
-                ConnectionId::new(Uuid::from_u128(1)),
-                IdentityId::new(Uuid::from_u128(2)),
-                epoch,
-                Capability::new(CapabilityAction::Read, "matinee/status").expect("bounded scope"),
-                kind,
-            )
+        /// Seal `payload` from the client side without honouring the declared per-shape
+        /// bound, then hand it to the daemon. This is the only way a non-conforming peer's
+        /// oversize payload reaches the receiving bound check.
+        fn oversize_from_peer(kind: PayloadKind, payload: Vec<u8>) -> SecurityFailure {
+            let (mut client, mut daemon) = establish_pair(7);
+            let mut sink = RecordingSink::default();
+            let frame = match client.seal_unbounded(kind, &payload) {
+                Ok(frame) => frame,
+                // Past the v1 plaintext limit no frame exists at all: the sender rejects it.
+                Err(failure) => return failure,
+            };
+            let failure = daemon
+                .receive(&frame, &owned_operation(kind), &mut sink)
+                .expect_err("payload past the declared bound");
+            assert_eq!(
+                daemon.receive_counter(),
+                0,
+                "rejected frames never dispatch"
+            );
+            assert!(!daemon.is_open());
+            failure
         }
 
         #[test]
@@ -121,19 +147,23 @@ macro_rules! malformed_corpus_tests {
 
         #[test]
         fn preallocation_rejection_preserves_bounds_and_channel_state() {
-            let context = context(7, PayloadKind::StreamChunk);
-            let oversized = vec![0u8; context.kind().max_bytes() + 1];
-            let failure =
-                AuthorizedInput::authorized(&context, oversized).expect_err("oversized input");
-            assert_eq!(failure.code(), FailureCode::ResourceLimit);
-
-            let output = AuthorizedOutput::filtered(
-                PayloadKind::StreamChunk,
-                vec![0u8; PayloadKind::StreamChunk.max_bytes() + 1],
-            )
-            .expect_err("oversized output");
-            assert_eq!(output.code(), FailureCode::ResourceLimit);
-
+            assert_eq!(
+                oversize_from_peer(
+                    PayloadKind::StreamChunk,
+                    vec![0u8; PayloadKind::StreamChunk.max_bytes() + 1]
+                )
+                .code(),
+                FailureCode::ResourceLimit
+            );
+            assert_eq!(
+                AuthorizedOutput::filtered(
+                    PayloadKind::StreamChunk,
+                    vec![0u8; PayloadKind::StreamChunk.max_bytes() + 1],
+                )
+                .expect_err("oversized output")
+                .code(),
+                FailureCode::ResourceLimit
+            );
         }
 
         #[test]
@@ -153,7 +183,10 @@ macro_rules! malformed_corpus_tests {
                     FailureCode::ResourceLimit => {
                         resource_limited += 1;
                         assert_eq!(failure.boundary().as_str(), "resource-limit");
-                        assert_eq!(failure.safe_next_action().as_str(), "reduce-to-declared-bound");
+                        assert_eq!(
+                            failure.safe_next_action().as_str(),
+                            "reduce-to-declared-bound"
+                        );
                     }
                     code => panic!("unexpected failure code: {code:?}"),
                 }
@@ -183,23 +216,19 @@ macro_rules! malformed_corpus_tests {
                 PayloadKind::Event,
                 PayloadKind::StreamChunk,
             ] {
-                let context = context(7, kind);
-                assert!(AuthorizedInput::authorized(&context, vec![]).is_ok());
                 assert!(AuthorizedOutput::filtered(kind, vec![]).is_ok());
-                assert!(AuthorizedInput::authorized(&context, vec![0; kind.max_bytes()]).is_ok());
                 assert!(AuthorizedOutput::filtered(kind, vec![0; kind.max_bytes()]).is_ok());
-                let input = AuthorizedInput::authorized(&context, vec![0; kind.max_bytes() + 1])
-                    .expect_err("one-over input bound");
+                let input = oversize_from_peer(kind, vec![0; kind.max_bytes() + 1]);
                 let output = AuthorizedOutput::filtered(kind, vec![0; kind.max_bytes() + 1])
                     .expect_err("one-over output bound");
                 for failure in [input, output] {
                     assert_eq!(failure.code(), FailureCode::ResourceLimit);
                     assert_eq!(failure.boundary().as_str(), "resource-limit");
-                    assert_eq!(failure.safe_next_action().as_str(), "reduce-to-declared-bound");
-                    assert!(failure.principal_id().is_none());
-                    assert!(failure.connection_id().is_none());
+                    assert_eq!(
+                        failure.safe_next_action().as_str(),
+                        "reduce-to-declared-bound"
+                    );
                 }
-
             }
         }
 

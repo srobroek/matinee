@@ -60,17 +60,26 @@ impl Fingerprint {
     pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
         let value = value.into();
         if value.len() != 64
-            || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        { return Err("fingerprint must be 64 lowercase hexadecimal bytes"); }
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err("fingerprint must be 64 lowercase hexadecimal bytes");
+        }
         Ok(Self(value))
     }
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 
     /// Lowercase SHA-256 over exactly the 65 SEC1 public-key bytes.
     pub fn from_public_key(key: &PublicKey) -> Self {
         let digest = ring::digest::digest(&ring::digest::SHA256, key.as_bytes());
         let mut text = String::with_capacity(64);
-        for byte in digest.as_ref() { use core::fmt::Write; write!(&mut text, "{byte:02x}").unwrap(); }
+        for byte in digest.as_ref() {
+            use core::fmt::Write;
+            write!(&mut text, "{byte:02x}").unwrap();
+        }
         Self(text)
     }
 }
@@ -353,6 +362,11 @@ impl Principal {
     pub fn kind(&self) -> PrincipalKind {
         self.kind
     }
+    /// The bound public key every transcript signature from this principal is verified
+    /// against. It is the registry's copy, not one a connecting peer offered.
+    pub fn public_key(&self) -> &PublicKey {
+        &self.public_key
+    }
     pub fn owner(&self) -> IdentityId {
         self.owner
     }
@@ -367,6 +381,12 @@ impl Principal {
     }
     pub fn ceiling(&self) -> &[Capability] {
         &self.ceiling
+    }
+    /// The non-secret credential locator this principal is registered under. The security
+    /// boundary reads the owning state directory from it, so no caller can bind a session
+    /// to a state directory the principal does not name.
+    pub fn credential(&self) -> &CredentialReference {
+        &self.credential
     }
     pub fn activate(&mut self) -> Result<(), &'static str> {
         if self.lifecycle != PrincipalLifecycle::Pending {
@@ -612,8 +632,12 @@ impl Connection {
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
-    pub(crate) fn client_nonce(&self) -> [u8; 12] { self.client_nonce }
-    pub(crate) fn daemon_nonce(&self) -> [u8; 12] { self.daemon_nonce }
+    pub(crate) fn client_nonce(&self) -> [u8; 12] {
+        self.client_nonce
+    }
+    pub(crate) fn daemon_nonce(&self) -> [u8; 12] {
+        self.daemon_nonce
+    }
     pub fn lifecycle(&self) -> ConnectionLifecycle {
         self.lifecycle
     }
@@ -844,12 +868,11 @@ mod tests {
     use serde::de::value::{Error as ValueError, StrDeserializer};
     fn public_key_bytes() -> [u8; UNCOMPRESSED_KEY_BYTES] {
         [
-            0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc,
-            0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d,
-            0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96,
-            0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb,
-            0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31,
-            0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+            0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63,
+            0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39,
+            0x45, 0xd8, 0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e,
+            0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e,
+            0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
         ]
     }
 
@@ -1017,16 +1040,18 @@ mod tests {
     fn rotation_requires_a_new_epoch_and_a_new_fingerprint() {
         let id = IdentityId::new(Uuid::from_u128(7));
         let same = Fingerprint::new("c".repeat(64)).expect("64 lowercase hex digits");
-        assert!(RotationTransition::new(
-            IdempotencyKey::new(Uuid::from_u128(8)),
-            id,
-            same.clone(),
-            same,
-            7,
-            7,
-            1_000,
-            TransitionOutcome::Committed,
-        )
-        .is_err());
+        assert!(
+            RotationTransition::new(
+                IdempotencyKey::new(Uuid::from_u128(8)),
+                id,
+                same.clone(),
+                same,
+                7,
+                7,
+                1_000,
+                TransitionOutcome::Committed,
+            )
+            .is_err()
+        );
     }
 }

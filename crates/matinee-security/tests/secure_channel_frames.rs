@@ -1,19 +1,10 @@
 macro_rules! secure_channel_frames_tests {
     () => {
-        use crate::identity::{Capability, CapabilityAction};
-        use crate::test_support_channel::{CONNECTION, RecordingSink, establish_pair};
-        use crate::{AuthorizedOutput, FailureCode, PayloadKind, SecurityCode, SessionInput};
+        use crate::test_support_channel::{
+            CONNECTION, RecordingSink, establish_pair, owned_operation, owned_projection,
+        };
+        use crate::{AuthorizedOutput, FailureCode, PayloadKind, ProjectionClass, SecurityCode};
         use uuid::Uuid;
-
-        fn context(session: &crate::ChannelSession, kind: PayloadKind) -> SessionInput {
-            SessionInput::new(
-                session.connection_id(),
-                session.principal(),
-                session.epoch(),
-                Capability::new(CapabilityAction::Read, "matinee/status").unwrap(),
-                kind,
-            )
-        }
 
         #[test]
         fn production_frame_has_length_prefix_and_exact_authenticated_header() {
@@ -28,7 +19,7 @@ macro_rules! secure_channel_frames_tests {
             assert_eq!(&frame[5..21], Uuid::from_u128(CONNECTION).as_bytes());
             assert_eq!(u64::from_be_bytes(frame[21..29].try_into().unwrap()), 0);
             let input = daemon
-                .receive(&frame, &context(&daemon, PayloadKind::Command), &mut sink)
+                .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                 .unwrap();
             assert_eq!(input.payload(), b"payload");
         }
@@ -36,22 +27,27 @@ macro_rules! secure_channel_frames_tests {
         #[test]
         fn directional_counters_start_at_zero_and_are_independent() {
             let (mut client, mut daemon) = establish_pair(7);
-            let output = AuthorizedOutput::filtered(PayloadKind::Response, b"x".to_vec()).unwrap();
+            let output = AuthorizedOutput::filtered(PayloadKind::Command, b"x".to_vec()).unwrap();
             let mut sink = RecordingSink::default();
             let c0 = client.send(&output, &mut sink).unwrap();
             let c1 = client.send(&output, &mut sink).unwrap();
-            let d0 = daemon.send(&output, &mut sink).unwrap();
+            let d0 = daemon
+                .send_projection(
+                    &owned_projection(ProjectionClass::Response, b"x"),
+                    &mut sink,
+                )
+                .unwrap();
             assert_eq!(u64::from_be_bytes(c0[21..29].try_into().unwrap()), 0);
             assert_eq!(u64::from_be_bytes(c1[21..29].try_into().unwrap()), 1);
             assert_eq!(u64::from_be_bytes(d0[21..29].try_into().unwrap()), 0);
             daemon
-                .receive(&c0, &context(&daemon, PayloadKind::Response), &mut sink)
+                .receive(&c0, &owned_operation(PayloadKind::Command), &mut sink)
                 .unwrap();
             daemon
-                .receive(&c1, &context(&daemon, PayloadKind::Response), &mut sink)
+                .receive(&c1, &owned_operation(PayloadKind::Command), &mut sink)
                 .unwrap();
             client
-                .receive(&d0, &context(&client, PayloadKind::Response), &mut sink)
+                .receive_filtered(&d0, PayloadKind::Response, &mut sink)
                 .unwrap();
         }
 
@@ -64,7 +60,7 @@ macro_rules! secure_channel_frames_tests {
             let frame = client.send(&output, &mut sink).unwrap();
             assert_eq!(frame.len(), 4 + 1_048_576);
             let input = daemon
-                .receive(&frame, &context(&daemon, PayloadKind::Command), &mut sink)
+                .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                 .unwrap();
             assert_eq!(input.payload(), payload);
             assert_eq!(
@@ -83,7 +79,7 @@ macro_rules! secure_channel_frames_tests {
             let mut frame = client.send(&output, &mut sink).unwrap();
             frame[..4].copy_from_slice(&(1_048_577u32).to_be_bytes());
             let failure = daemon
-                .receive(&frame, &context(&daemon, PayloadKind::Command), &mut sink)
+                .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                 .expect_err("oversized declared frame");
             assert_eq!(failure.code(), FailureCode::ResourceLimit);
             assert!(!daemon.is_open());
@@ -107,7 +103,7 @@ macro_rules! secure_channel_frames_tests {
                 u64::MAX
             );
             daemon
-                .receive(&frame, &context(&daemon, PayloadKind::Command), &mut sink)
+                .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                 .unwrap();
             let failure = client
                 .send(&output, &mut sink)
@@ -130,7 +126,7 @@ macro_rules! secure_channel_frames_tests {
             let failure = daemon
                 .receive(
                     &frame,
-                    &context(&daemon, PayloadKind::Command),
+                    &owned_operation(PayloadKind::Command),
                     &mut unavailable,
                 )
                 .expect_err("required failure event unavailable");
@@ -145,7 +141,7 @@ macro_rules! secure_channel_frames_tests {
             let mut sink = RecordingSink::default();
             let frame = client.send(&output, &mut sink).unwrap();
             let failure = daemon
-                .receive(&frame, &context(&daemon, PayloadKind::Command), &mut sink)
+                .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                 .expect_err("wire payload kind differs from authorized shape");
             assert_eq!(failure.code(), FailureCode::MalformedInput);
             assert_eq!(sink.events.len(), 1);

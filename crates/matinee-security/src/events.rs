@@ -211,6 +211,11 @@ impl SecurityEvent {
     pub fn connection_id(&self) -> Option<Uuid> {
         self.connection_id
     }
+    /// The local-state directory the fact is attributed to. A sink needs it to keep facts
+    /// from separate state directories apart; it is an identity, never a path.
+    pub fn state_directory_id(&self) -> Uuid {
+        self.state_directory_id
+    }
     pub fn metadata(&self) -> &[MetadataEntry] {
         &self.metadata
     }
@@ -334,7 +339,9 @@ impl AggregationState {
 
 #[cfg(test)]
 impl AggregationState {
-    pub(crate) fn bucket_count(&self) -> usize { self.buckets.len() }
+    pub(crate) fn bucket_count(&self) -> usize {
+        self.buckets.len()
+    }
 
     pub(crate) fn count_for(&self, event: &SecurityEvent) -> Option<u8> {
         let key = AggregationKey {

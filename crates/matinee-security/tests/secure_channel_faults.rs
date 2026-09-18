@@ -1,52 +1,40 @@
 macro_rules! secure_channel_faults_tests {
     () => {
         mod secure_channel_faults_inner {
-            use crate::identity::{Capability, CapabilityAction};
             use crate::test_support_channel::{
                 CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner, establish_pair,
+                establish_pair_at_epochs, fixture_principal, id, owned_operation, owned_projection,
             };
             use crate::{
                 AuthorizedOutput, ChannelSigner, ClientHandshake, ClientHandshakeConfig,
-                ConnectionId, FailureCode, IdentityId, PayloadKind, SecurityCode, ServerHandshake,
-                ServerHandshakeConfig, SessionInput,
+                ConnectionId, FailureCode, PayloadKind, ProjectionClass, SecurityCode,
+                ServerHandshake, ServerHandshakeConfig,
             };
             use uuid::Uuid;
 
-            fn context(session: &crate::ChannelSession, epoch: u64) -> SessionInput {
-                SessionInput::new(
-                    session.connection_id(),
-                    session.principal(),
-                    epoch,
-                    Capability::new(CapabilityAction::Read, "matinee/status").unwrap(),
-                    PayloadKind::Command,
-                )
-            }
+            const EPOCH: u64 = 7;
 
             fn handshake_configs(
                 client: &RingSigner,
                 daemon: &RingSigner,
             ) -> (ClientHandshakeConfig, ServerHandshakeConfig) {
-                let principal = IdentityId::new(Uuid::from_u128(PRINCIPAL));
-                let daemon_id = IdentityId::new(Uuid::from_u128(DAEMON));
                 (
                     ClientHandshakeConfig::new(
                         ENDPOINT,
-                        principal,
+                        id(PRINCIPAL),
                         client.public_key().clone(),
-                        daemon_id,
+                        id(DAEMON),
                         daemon.public_key().clone(),
-                        7,
+                        EPOCH,
                         1,
                         3,
                     )
                     .unwrap(),
                     ServerHandshakeConfig::new(
                         ENDPOINT,
-                        principal,
-                        client.public_key().clone(),
-                        daemon_id,
+                        fixture_principal(client.public_key().clone(), EPOCH),
+                        id(DAEMON),
                         daemon.public_key().clone(),
-                        7,
                         2,
                         4,
                         ConnectionId::new(Uuid::from_u128(CONNECTION)),
@@ -100,6 +88,7 @@ macro_rules! secure_channel_faults_tests {
                         FailureCode::AuthenticationFailed
                             | FailureCode::MalformedInput
                             | FailureCode::ResourceLimit
+                            | FailureCode::StaleEpoch
                     ));
                     assert_eq!(sink.events.len(), 1);
                 }
@@ -181,10 +170,10 @@ macro_rules! secure_channel_faults_tests {
                 let mut sink = RecordingSink::default();
                 let frame = client.send(&output, &mut sink).unwrap();
                 daemon
-                    .receive(&frame, &context(&daemon, 7), &mut sink)
+                    .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                     .unwrap();
                 let failure = daemon
-                    .receive(&frame, &context(&daemon, 7), &mut sink)
+                    .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
                     .expect_err("replay");
                 assert_eq!(failure.code(), FailureCode::ReplayDetected);
                 assert_eq!(
@@ -197,7 +186,7 @@ macro_rules! secure_channel_faults_tests {
                 let mut skipped = client.send(&output, &mut sink).unwrap();
                 skipped[21..29].copy_from_slice(&1u64.to_be_bytes());
                 let failure = daemon
-                    .receive(&skipped, &context(&daemon, 7), &mut sink)
+                    .receive(&skipped, &owned_operation(PayloadKind::Command), &mut sink)
                     .expect_err("skipped counter");
                 assert_eq!(failure.code(), FailureCode::CounterMismatch);
                 assert!(!daemon.is_open());
@@ -210,9 +199,18 @@ macro_rules! secure_channel_faults_tests {
                 let mut sink = RecordingSink::default();
 
                 let (_, mut daemon) = establish_pair(7);
-                let wrong_direction = daemon.send(&output, &mut sink).unwrap();
+                let wrong_direction = daemon
+                    .send_projection(
+                        &owned_projection(ProjectionClass::Response, b"one"),
+                        &mut sink,
+                    )
+                    .unwrap();
                 let failure = daemon
-                    .receive(&wrong_direction, &context(&daemon, 7), &mut sink)
+                    .receive(
+                        &wrong_direction,
+                        &owned_operation(PayloadKind::Response),
+                        &mut sink,
+                    )
                     .expect_err("wrong direction");
                 assert_eq!(failure.code(), FailureCode::CryptographicFailure);
 
@@ -220,7 +218,11 @@ macro_rules! secure_channel_faults_tests {
                 let mut wrong_connection = client.send(&output, &mut sink).unwrap();
                 wrong_connection[5] ^= 1;
                 let failure = daemon
-                    .receive(&wrong_connection, &context(&daemon, 7), &mut sink)
+                    .receive(
+                        &wrong_connection,
+                        &owned_operation(PayloadKind::Command),
+                        &mut sink,
+                    )
                     .expect_err("wrong connection");
                 assert_eq!(failure.code(), FailureCode::MalformedInput);
 
@@ -228,17 +230,23 @@ macro_rules! secure_channel_faults_tests {
                 let mut wrong_tag = client.send(&output, &mut sink).unwrap();
                 *wrong_tag.last_mut().unwrap() ^= 1;
                 let failure = daemon
-                    .receive(&wrong_tag, &context(&daemon, 7), &mut sink)
+                    .receive(
+                        &wrong_tag,
+                        &owned_operation(PayloadKind::Command),
+                        &mut sink,
+                    )
                     .expect_err("wrong tag");
                 assert_eq!(failure.code(), FailureCode::CryptographicFailure);
 
-                let (mut client, mut daemon) = establish_pair(7);
-                let valid = client.send(&output, &mut sink).unwrap();
-                let failure = daemon
-                    .receive(&valid, &context(&daemon, 6), &mut sink)
-                    .expect_err("stale epoch");
+                // No session exists at a stale epoch to begin with: the daemon authenticates
+                // the hello against the epoch the registered principal carries.
+                let failure = establish_pair_at_epochs(6, 7, (1, 3), (2, 4))
+                    .expect_err("client epoch the registry moved past");
                 assert_eq!(failure.code(), FailureCode::StaleEpoch);
-                assert!(!daemon.is_open());
+                assert_eq!(
+                    failure.safe_next_action().as_str(),
+                    "reconnect-current-epoch"
+                );
             }
 
             #[test]
@@ -246,7 +254,11 @@ macro_rules! secure_channel_faults_tests {
                 let (_, mut daemon) = establish_pair(7);
                 let mut sink = RecordingSink::default();
                 let failure = daemon
-                    .receive(&[0, 0, 0, 1, 1], &context(&daemon, 7), &mut sink)
+                    .receive(
+                        &[0, 0, 0, 1, 1],
+                        &owned_operation(PayloadKind::Command),
+                        &mut sink,
+                    )
                     .expect_err("short frame");
                 assert_eq!(failure.code(), FailureCode::MalformedInput);
                 assert_eq!(sink.events.len(), 1);
@@ -257,7 +269,11 @@ macro_rules! secure_channel_faults_tests {
                 let mut oversized = vec![0u8; 4];
                 oversized.copy_from_slice(&(1_048_577u32).to_be_bytes());
                 let failure = daemon
-                    .receive(&oversized, &context(&daemon, 7), &mut sink)
+                    .receive(
+                        &oversized,
+                        &owned_operation(PayloadKind::Command),
+                        &mut sink,
+                    )
                     .expect_err("oversized declaration");
                 assert_eq!(failure.code(), FailureCode::ResourceLimit);
                 assert!(!daemon.is_open());

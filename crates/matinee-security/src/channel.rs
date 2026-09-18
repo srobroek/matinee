@@ -8,12 +8,13 @@ use ring::{aead, agreement, digest, hkdf, rand};
 use uuid::Uuid;
 
 use crate::ChannelSession;
+use crate::authorization::AuthorizationContext;
 use crate::events::{
     self, EndpointClass, EventBoundary, EventOutcome, EventTime, SafeNextAction, SecurityCode,
     SecurityEvent, SecurityEventSink,
 };
 use crate::failures::{FailureCode, SecurityFailure};
-use crate::identity::{ConnectionId, IdentityId, PublicKey};
+use crate::identity::{ConnectionId, IdentityId, Principal, PrincipalLifecycle, PublicKey};
 
 pub const SECURE_CHANNEL_CONTEXT: &str = "matinee.secure-channel.v1";
 const CONTEXT: &[u8] = SECURE_CHANNEL_CONTEXT.as_bytes();
@@ -81,45 +82,53 @@ impl ClientHandshakeConfig {
 }
 
 /// The daemon-side values bound into one handshake.
+///
+/// The daemon accepts the registered principal itself rather than a raw identity and public
+/// key: the identity, the bound public key, the capability ceiling, the authentication
+/// epoch, and the owning state directory are all read off that one snapshot. A caller
+/// therefore cannot present a key, an epoch, or a state directory the registry does not hold
+/// for that principal, and the session that results carries the snapshot for life.
 #[derive(Clone, Debug)]
 pub struct ServerHandshakeConfig {
     endpoint: String,
-    principal: IdentityId,
-    principal_key: PublicKey,
+    principal: Principal,
     daemon: IdentityId,
     daemon_key: PublicKey,
-    epoch: u64,
     contract_min: u16,
     contract_max: u16,
     connection: ConnectionId,
 }
 
 impl ServerHandshakeConfig {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         endpoint: impl Into<String>,
-        principal: IdentityId,
-        principal_key: PublicKey,
+        principal: Principal,
         daemon: IdentityId,
         daemon_key: PublicKey,
-        epoch: u64,
         contract_min: u16,
         contract_max: u16,
         connection: ConnectionId,
     ) -> Result<Self, SecurityFailure> {
         let endpoint = endpoint.into();
         validate_config(&endpoint, contract_min, contract_max)?;
+        if principal.lifecycle() != PrincipalLifecycle::Active {
+            // A pending, rotating, or revoked principal never reaches a traffic key.
+            return Err(SecurityFailure::new(FailureCode::AuthenticationFailed));
+        }
         Ok(Self {
             endpoint,
             principal,
-            principal_key,
             daemon,
             daemon_key,
-            epoch,
             contract_min,
             contract_max,
             connection,
         })
+    }
+
+    /// The authentication epoch this handshake is bound to, as the principal carries it.
+    fn epoch(&self) -> u64 {
+        self.principal.epoch()
     }
 }
 
@@ -223,13 +232,13 @@ impl ClientHandshake {
             &salt,
             fields.selected,
         )?;
-        let session = ChannelSession::new(
+        let session = ChannelSession::client(
             fields.connection,
             self.config.principal,
+            self.config.daemon,
             self.config.epoch,
             fields.selected,
             self.config.endpoint,
-            Role::Client,
             keys,
         )?;
         Ok((session, client_signature))
@@ -260,15 +269,17 @@ impl ServerHandshake {
         signer: &dyn ChannelSigner,
         sink: &mut dyn SecurityEventSink,
     ) -> Result<(Self, Vec<u8>), SecurityFailure> {
-        let result = Self::accept_inner(config.clone(), client_hello_bytes, signer);
-        match result {
+        let principal = config.principal.id();
+        let connection = config.connection;
+        let epoch = config.epoch();
+        match Self::accept_inner(config, client_hello_bytes, signer) {
             Ok(value) => Ok(value),
             Err(failure) => Err(emit_handshake_failure(
                 sink,
                 failure,
-                config.principal,
-                Some(config.connection),
-                config.epoch,
+                principal,
+                Some(connection),
+                epoch,
             )),
         }
     }
@@ -282,13 +293,16 @@ impl ServerHandshake {
             return Err(SecurityFailure::new(FailureCode::AuthenticationFailed));
         }
         let hello = parse_client_hello(client_hello_bytes)?;
-        let expected_selector = principal_selector(config.principal);
+        let expected_selector = principal_selector(config.principal.id());
         if hello.endpoint != config.endpoint.as_bytes()
             || hello.principal_selector != expected_selector.as_bytes()
-            || hello.principal_key != config.principal_key
-            || hello.epoch != config.epoch
+            || hello.principal_key != *config.principal.public_key()
         {
             return Err(SecurityFailure::new(FailureCode::AuthenticationFailed));
+        }
+        if hello.epoch != config.epoch() {
+            // The client authenticated at an epoch the registry has already moved past.
+            return Err(SecurityFailure::new(FailureCode::StaleEpoch));
         }
         let selected = negotiate(
             hello.contract_min,
@@ -346,9 +360,9 @@ impl ServerHandshake {
         client_signature: &[u8],
         sink: &mut dyn SecurityEventSink,
     ) -> Result<ChannelSession, SecurityFailure> {
-        let principal = self.config.principal;
+        let principal = self.config.principal.id();
         let connection = self.config.connection;
-        let epoch = self.config.epoch;
+        let epoch = self.config.epoch();
         match self.finish_inner(client_signature) {
             Ok(session) => Ok(session),
             Err(failure) => Err(emit_handshake_failure(
@@ -366,18 +380,22 @@ impl ServerHandshake {
             return Err(SecurityFailure::new(FailureCode::MalformedInput));
         }
         let client_proof = client_proof_input(&self.proof_input, &self.server_signature);
-        verify_signature(&self.config.principal_key, &client_proof, client_signature)?;
+        verify_signature(
+            self.config.principal.public_key(),
+            &client_proof,
+            client_signature,
+        )?;
         let salt = traffic_salt(&client_proof, client_signature);
         let keys = agree_and_derive(self.ephemeral, &self.client_ephemeral, &salt, self.selected)?;
-        ChannelSession::new(
-            self.config.connection,
+        // The session owns the principal snapshot from here: the ceiling, the epoch, and the
+        // state directory every later decision reads are fixed at this point.
+        let context = AuthorizationContext::new(
             self.config.principal,
-            self.config.epoch,
             self.selected,
-            self.config.endpoint,
-            Role::Daemon,
-            keys,
-        )
+            self.config.contract_min,
+            self.config.contract_max,
+        );
+        ChannelSession::daemon(self.config.connection, context, self.config.endpoint, keys)
     }
 }
 
@@ -1068,22 +1086,20 @@ pub(crate) fn vector_verify_signature(
     verify_signature(key, transcript, signature)
 }
 
+/// A daemon session assembled straight from vector traffic keys, so a fixed vector can be
+/// replayed through the same public receive path a handshake would have produced.
 #[cfg(test)]
 pub(crate) fn vector_daemon_session(
     connection: ConnectionId,
-    principal: IdentityId,
-    epoch: u64,
+    principal: Principal,
     contract: u16,
     client_to_daemon: [u8; 32],
     daemon_to_client: [u8; 32],
 ) -> Result<ChannelSession, SecurityFailure> {
-    ChannelSession::new(
+    ChannelSession::daemon(
         connection,
-        principal,
-        epoch,
-        contract,
+        AuthorizationContext::new(principal, contract, contract, contract),
         "127.0.0.1:7777".to_owned(),
-        Role::Daemon,
         TrafficKeys {
             client_to_daemon,
             daemon_to_client,

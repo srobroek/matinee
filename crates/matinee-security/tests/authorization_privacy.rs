@@ -1,72 +1,499 @@
 macro_rules! authorization_privacy_tests {
     () => {
-        use crate::authorization::{authorize, AuthorizationRequest};
-        use crate::events::{EventTime, SecurityEvent, SecurityEventSink, SecurityEventSinkResult};
-        use crate::identity::{Capability, CapabilityAction, CredentialReference, Fingerprint, IdentityId, Principal, PrincipalKind, PublicKey};
-        use crate::{ConnectionId, PayloadKind, SessionInput};
-        use uuid::Uuid;
+        mod authorization_privacy_inner {
+            use crate::test_support_channel::{
+                CONNECTION, OWNER, PRINCIPAL, RecordingSink, RingSigner, SCOPE, STATE_DIRECTORY,
+                capability, establish_pair, id, owned_operation, owned_projection,
+                registered_principal,
+            };
+            use crate::{
+                AuthorizedOutput, CapabilityAction, ChannelSession, ChannelSigner, ClientHandshake,
+                ClientHandshakeConfig, ConnectionId, EventBoundary, EventOutcome, ExtensionGrant,
+                FailureCode, ObjectOwner, PayloadKind, PrincipalKind, ProjectionClass,
+                SafeNextAction, SecurityCode, ServerHandshake, ServerHandshakeConfig, SessionInput,
+                SessionProjection,
+            };
+            use uuid::Uuid;
 
-        struct Sink { events: Vec<SecurityEvent> }
-        impl SecurityEventSink for Sink {
-            fn emit(&mut self, event: SecurityEvent) -> SecurityEventSinkResult { self.events.push(event); SecurityEventSinkResult::Accepted }
-        }
-        fn id(value: u128) -> IdentityId { IdentityId::new(Uuid::from_u128(value)) }
-        fn key() -> PublicKey { PublicKey::from_uncompressed([
-            0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc,
-            0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d,
-            0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96,
-            0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb,
-            0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31,
-            0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
-        ]).unwrap() }
-        fn principal() -> Principal {
-            let owner = id(7); let credential = CredentialReference::new("test-store", "principal-key", owner, owner).unwrap();
-            let mut value = Principal::new(id(1), PrincipalKind::McpClient, key(), Fingerprint::new("a".repeat(64)).unwrap(), owner, vec![Capability::new(CapabilityAction::Read, "owned").unwrap()], credential).unwrap();
-            value.activate().unwrap(); value
-        }
-        fn request<'a>(principal: &'a Principal, context: &'a SessionInput, owner: Option<IdentityId>) -> AuthorizationRequest<'a> { AuthorizationRequest::new(principal, context, 1, 1, 1, owner, None, id(99), EventTime(1)) }
-        fn context(principal: &Principal, kind: PayloadKind) -> SessionInput { SessionInput::new(ConnectionId::new(Uuid::from_u128(80)), principal.id(), principal.epoch(), Capability::new(CapabilityAction::Read, "owned/object").unwrap(), kind) }
+            const EPOCH: u64 = 4;
+            /// The bytes a probe would learn if any protected value reached a projection.
+            const PROTECTED: &[u8] = b"protected-object-identifier";
 
-        #[test]
-        fn unknown_cross_owner_filtered_and_unauthorized_reads_share_object_not_found() {
-            let principal = principal();
-            for kind in [PayloadKind::Event, PayloadKind::Response, PayloadKind::StreamChunk] {
-                let context = context(&principal, kind);
-                for owner in [None, Some(id(8))] {
-                    let mut sink = Sink { events: Vec::new() };
-                    let failure = authorize(request(&principal, &context, owner), b"protected-object-identifier".to_vec(), Some(&mut sink)).unwrap_err();
-                    assert_eq!(failure.code(), crate::failures::FailureCode::ObjectNotFound);
-                    assert_eq!(failure.safe_next_action(), crate::failures::SafeNextAction::DoNotInferObjectExistence);
-                    assert_eq!(sink.events.len(), 1);
-                    assert_eq!(sink.events[0].metadata()[0].value, "object-not_found");
-                    assert!(!sink.events[0].metadata().iter().any(|entry| entry.value.contains("protected")));
+            /// Establish a daemon session for one principal kind and ceiling, so a probe runs
+            /// against the same path production uses rather than against the policy function.
+            fn daemon_session(
+                kind: PrincipalKind,
+                ceiling: &str,
+            ) -> (ChannelSession, ChannelSession) {
+                let client_signer = RingSigner::generate();
+                let daemon_signer = RingSigner::generate();
+                let client = ClientHandshakeConfig::new(
+                    "127.0.0.1:7777",
+                    id(PRINCIPAL),
+                    client_signer.public_key().clone(),
+                    id(OWNER),
+                    daemon_signer.public_key().clone(),
+                    EPOCH,
+                    1,
+                    3,
+                )
+                .unwrap();
+                let server = ServerHandshakeConfig::new(
+                    "127.0.0.1:7777",
+                    registered_principal(
+                        PRINCIPAL,
+                        kind,
+                        client_signer.public_key().clone(),
+                        vec![capability(CapabilityAction::Read, ceiling)],
+                        EPOCH,
+                    ),
+                    id(OWNER),
+                    daemon_signer.public_key().clone(),
+                    2,
+                    4,
+                    ConnectionId::new(Uuid::from_u128(CONNECTION)),
+                )
+                .unwrap();
+                let mut sink = RecordingSink::default();
+                let (client_pending, hello) = ClientHandshake::start(client).unwrap();
+                let (server_pending, proof) =
+                    ServerHandshake::accept(server, &hello, &daemon_signer, &mut sink).unwrap();
+                let (client_session, client_proof) = client_pending
+                    .finish(&proof, &client_signer, &mut sink)
+                    .unwrap();
+                let daemon_session = server_pending.finish(&client_proof, &mut sink).unwrap();
+                (client_session, daemon_session)
+            }
+
+            fn request_frame(
+                client: &mut ChannelSession,
+                kind: PayloadKind,
+                payload: &[u8],
+            ) -> Vec<u8> {
+                let mut sink = RecordingSink::default();
+                client
+                    .send(
+                        &AuthorizedOutput::filtered(kind, payload.to_vec()).unwrap(),
+                        &mut sink,
+                    )
+                    .unwrap()
+            }
+
+            /// FR-022, FR-029, SC-004: an unknown object, a cross-owner object, and an object a
+            /// filter removed are one outcome on the receive path, and the failure never says
+            /// which. Every payload shape a lookup can arrive on is covered.
+            #[test]
+            fn unknown_cross_owner_and_filtered_lookups_share_one_object_not_found_outcome() {
+                for kind in [
+                    PayloadKind::Command,
+                    PayloadKind::Response,
+                    PayloadKind::Event,
+                    PayloadKind::StreamChunk,
+                ] {
+                    let mut observed = Vec::new();
+                    for owner in [ObjectOwner::Unknown, ObjectOwner::Owned(id(0x1234))] {
+                        let (mut client, mut daemon) = establish_pair(0);
+                        let frame = request_frame(&mut client, kind, PROTECTED);
+                        let mut sink = RecordingSink::default();
+                        let operation = SessionInput::new(
+                            capability(CapabilityAction::Read, SCOPE),
+                            kind,
+                            owner,
+                            None,
+                        );
+                        let failure = daemon
+                            .receive(&frame, &operation, &mut sink)
+                            .expect_err("an unresolved or foreign object discloses nothing");
+                        assert_eq!(failure.code(), FailureCode::ObjectNotFound);
+                        assert_eq!(
+                            failure.safe_next_action(),
+                            SafeNextAction::DoNotInferObjectExistence
+                        );
+                        assert_eq!(sink.events.len(), 1);
+                        assert_eq!(sink.events[0].boundary(), EventBoundary::Authorization);
+                        assert_eq!(sink.events[0].code(), SecurityCode::AuthorizationDenied);
+                        assert_eq!(sink.events[0].metadata()[0].value(), "object-not_found");
+                        // A denial is an answer: the frame is consumed and the channel lives.
+                        assert!(daemon.is_open());
+                        assert_eq!(daemon.receive_counter(), 1);
+                        observed.push(format!("{failure} {:?}", sink.events[0]));
+                    }
+                    assert_eq!(
+                        observed[0], observed[1],
+                        "an unknown object and a foreign object must be indistinguishable"
+                    );
+                    assert!(!observed[0].contains("protected"));
+                    assert!(!observed[0].contains("1234"));
                 }
-                let denied = SessionInput::new(context.connection(), principal.id(), 0, Capability::new(CapabilityAction::Write, "owned/object").unwrap(), kind);
-                let mut sink = Sink { events: Vec::new() };
-                let failure = authorize(request(&principal, &denied, Some(id(7))), b"protected-object-identifier".to_vec(), Some(&mut sink)).unwrap_err();
-                assert_eq!(failure.code(), crate::failures::FailureCode::AuthorizationDenied);
-                assert!(!format!("{failure}").contains("protected-object"));
             }
-        }
 
-        #[test]
-        fn authorization_precedes_payload_acceptance_for_every_typed_output_class() {
-            let principal = principal();
-            for kind in [PayloadKind::Command, PayloadKind::Response, PayloadKind::Event] {
-                let context = context(&principal, kind); let mut sink = Sink { events: Vec::new() };
-                assert!(authorize(request(&principal, &context, Some(id(7))), b"redacted-value".to_vec(), Some(&mut sink)).is_ok());
-                assert_eq!(sink.events.len(), 1);
-                assert_eq!(sink.events[0].boundary, crate::events::EventBoundary::Authorization);
-                assert!(!sink.events[0].metadata().iter().any(|entry| entry.value.contains("redacted")));
+            /// FR-020, FR-021: the receive gate reads principal kind, ceiling, owner, requested
+            /// action, and grant. An administrator action is refused to an MCP client and to an
+            /// extension even when the ceiling names it.
+            #[test]
+            fn administrator_actions_and_out_of_ceiling_actions_are_refused_on_the_live_channel() {
+                for (kind, ceiling, action) in [
+                    (PrincipalKind::McpClient, "matinee", CapabilityAction::Write),
+                    (
+                        PrincipalKind::McpClient,
+                        "matinee",
+                        CapabilityAction::ManagePrincipals,
+                    ),
+                    (
+                        PrincipalKind::BrowserExtension,
+                        "matinee",
+                        CapabilityAction::Administer,
+                    ),
+                ] {
+                    let (mut client, mut daemon) = daemon_session(kind, ceiling);
+                    let frame = request_frame(&mut client, PayloadKind::Command, PROTECTED);
+                    let mut sink = RecordingSink::default();
+                    let operation = SessionInput::new(
+                        capability(action, SCOPE),
+                        PayloadKind::Command,
+                        ObjectOwner::Owned(id(OWNER)),
+                        None,
+                    );
+                    let failure = daemon
+                        .receive(&frame, &operation, &mut sink)
+                        .expect_err("the requested action exceeds the principal ceiling");
+                    assert_eq!(failure.code(), FailureCode::AuthorizationDenied);
+                    assert_eq!(
+                        failure.safe_next_action(),
+                        SafeNextAction::RequestAdministratorGrant
+                    );
+                    assert!(!format!("{failure}").contains("protected"));
+                    assert_eq!(sink.events.len(), 1);
+                    assert_eq!(sink.events[0].outcome(), EventOutcome::Rejected);
+                }
             }
-        }
 
-        #[test]
-        fn authorization_event_and_failure_projections_reject_protected_identifiers() {
-            let failure = crate::failures::SecurityFailure::with_safe_ids(crate::failures::FailureCode::AuthorizationDenied, Some(Uuid::from_u128(1)), Some(Uuid::from_u128(2)));
-            assert!(!failure.to_string().contains("object"));
-            assert_eq!(failure.redacted().1, crate::failures::FailureCode::AuthorizationDenied);
-            assert!(crate::events::SecurityEvent::new(Uuid::from_u128(3), crate::events::EventBoundary::Authorization, crate::events::SecurityCode::AuthorizationDenied, crate::events::EventOutcome::Rejected, crate::events::SafeNextAction::FailClosed, None, None, crate::events::EndpointClass::Loopback, crate::events::EventTime(1), id(99).get(), vec![crate::events::MetadataEntry { key: "reason".into(), value: "artifact-payload".into() }]).is_err());
+            /// FR-021: an extension is limited to its granted sessions. A missing grant, a grant
+            /// for another extension, a revoked grant, and a grant bound to another epoch are all
+            /// refused; the matching grant is the only one that answers.
+            #[test]
+            fn extension_grants_bind_to_the_extension_owner_epoch_and_active_lifecycle() {
+                let granted = capability(CapabilityAction::Read, SCOPE);
+                let matching =
+                    ExtensionGrant::new(id(PRINCIPAL), id(OWNER), vec![granted.clone()], EPOCH)
+                        .unwrap();
+                let foreign =
+                    ExtensionGrant::new(id(0x99), id(OWNER), vec![granted.clone()], EPOCH).unwrap();
+                let stale =
+                    ExtensionGrant::new(id(PRINCIPAL), id(OWNER), vec![granted.clone()], EPOCH + 1)
+                        .unwrap();
+                let mut revoked = matching.clone();
+                revoked.revoke();
+
+                for grant in [None, Some(&foreign), Some(&stale), Some(&revoked)] {
+                    let (mut client, mut daemon) =
+                        daemon_session(PrincipalKind::BrowserExtension, "matinee");
+                    let frame = request_frame(&mut client, PayloadKind::Event, PROTECTED);
+                    let mut sink = RecordingSink::default();
+                    let operation = SessionInput::new(
+                        granted.clone(),
+                        PayloadKind::Event,
+                        ObjectOwner::Owned(id(OWNER)),
+                        grant,
+                    );
+                    assert_eq!(
+                        daemon
+                            .receive(&frame, &operation, &mut sink)
+                            .expect_err("only the extension's own active current grant answers")
+                            .code(),
+                        FailureCode::AuthorizationDenied
+                    );
+                }
+
+                let (mut client, mut daemon) =
+                    daemon_session(PrincipalKind::BrowserExtension, "matinee");
+                let frame = request_frame(&mut client, PayloadKind::Event, b"granted");
+                let mut sink = RecordingSink::default();
+                let operation = SessionInput::new(
+                    granted,
+                    PayloadKind::Event,
+                    ObjectOwner::Owned(id(OWNER)),
+                    Some(&matching),
+                );
+                assert_eq!(
+                    daemon
+                        .receive(&frame, &operation, &mut sink)
+                        .expect("the extension's own grant")
+                        .payload(),
+                    b"granted"
+                );
+            }
+
+            /// FR-023, SC-004: every disclosure class passes the gate before serialization. An
+            /// unauthorized projection produces no frame at all, so no identifier, count, or
+            /// payload byte is ever written for the client to observe.
+            #[test]
+            fn every_projection_class_is_filtered_before_any_byte_is_serialized() {
+                for class in [
+                    ProjectionClass::Response,
+                    ProjectionClass::Status,
+                    ProjectionClass::Event,
+                    ProjectionClass::Artifact,
+                    ProjectionClass::StreamChunk,
+                ] {
+                    let (mut client, mut daemon) = establish_pair(0);
+                    let mut sink = RecordingSink::default();
+
+                    // An authorized projection is disclosed, and the client reads exactly it.
+                    let frame = daemon
+                        .send_projection(&owned_projection(class, b"disclosed"), &mut sink)
+                        .expect("an owned object inside the ceiling");
+                    assert_eq!(sink.events.len(), 1);
+                    assert_eq!(sink.events[0].code(), SecurityCode::AuthorizationAccepted);
+                    assert_eq!(
+                        client
+                            .receive_filtered(&frame, class.payload_kind(), &mut sink)
+                            .unwrap()
+                            .payload(),
+                        b"disclosed"
+                    );
+
+                    // An unresolved owner and an out-of-ceiling action each serialize nothing.
+                    for projection in [
+                        SessionProjection::new(
+                            class,
+                            capability(CapabilityAction::Read, SCOPE),
+                            ObjectOwner::Unknown,
+                            None,
+                            PROTECTED,
+                        ),
+                        SessionProjection::new(
+                            class,
+                            capability(CapabilityAction::Write, SCOPE),
+                            ObjectOwner::Owned(id(OWNER)),
+                            None,
+                            PROTECTED,
+                        ),
+                    ] {
+                        let mut sink = RecordingSink::default();
+                        let failure = daemon
+                            .send_projection(&projection, &mut sink)
+                            .expect_err("an unauthorized projection is never serialized");
+                        assert!(matches!(
+                            failure.code(),
+                            FailureCode::ObjectNotFound | FailureCode::AuthorizationDenied
+                        ));
+                        assert_eq!(sink.events.len(), 1);
+                        assert!(!format!("{failure} {:?}", sink.events[0]).contains("protected"));
+                        assert!(daemon.is_open());
+                    }
+                }
+            }
+
+            /// FR-027, FR-028, SC-009: every decision emits exactly one authorization event that
+            /// names a boundary, a reason class, a safe next action, the state directory, and the
+            /// safe principal and connection identifiers -- and no payload or object identifier.
+            #[test]
+            fn every_decision_emits_one_redacted_authorization_event() {
+                let (mut client, mut daemon) = establish_pair(0);
+                let accepted_frame = request_frame(&mut client, PayloadKind::Command, b"request");
+                let mut sink = RecordingSink::default();
+                daemon
+                    .receive(
+                        &accepted_frame,
+                        &owned_operation(PayloadKind::Command),
+                        &mut sink,
+                    )
+                    .expect("an owned object inside the ceiling");
+                let denied_frame = request_frame(&mut client, PayloadKind::Command, PROTECTED);
+                daemon
+                    .receive(
+                        &denied_frame,
+                        &SessionInput::new(
+                            capability(CapabilityAction::Read, SCOPE),
+                            PayloadKind::Command,
+                            ObjectOwner::Unknown,
+                            None,
+                        ),
+                        &mut sink,
+                    )
+                    .expect_err("an unresolved object");
+
+                assert_eq!(sink.events.len(), 2);
+                let codes: Vec<_> = sink.events.iter().map(|event| event.code()).collect();
+                assert_eq!(
+                    codes,
+                    vec![
+                        SecurityCode::AuthorizationAccepted,
+                        SecurityCode::AuthorizationDenied
+                    ]
+                );
+                for event in &sink.events {
+                    assert_eq!(event.boundary(), EventBoundary::Authorization);
+                    assert_eq!(event.principal_id(), Some(Uuid::from_u128(PRINCIPAL)));
+                    assert_eq!(event.connection_id(), Some(Uuid::from_u128(CONNECTION)));
+                    assert_eq!(event.state_directory_id(), Uuid::from_u128(STATE_DIRECTORY));
+                    assert_eq!(event.metadata().len(), 1);
+                    assert_eq!(event.metadata()[0].key(), "reason");
+                    assert!(event.encoded_len() <= 2_048);
+                    let rendered = format!("{event:?}");
+                    assert!(!rendered.contains("protected"));
+                    assert!(!rendered.contains("request"));
+                }
+                assert_eq!(
+                    sink.events[0].next_action(),
+                    crate::EventNextAction::Continue
+                );
+                assert_eq!(
+                    sink.events[1].next_action(),
+                    crate::EventNextAction::FailClosed
+                );
+            }
+
+            /// FR-027, FR-029: the decision event is required. When its sink is unavailable the
+            /// operation fails closed, the channel closes, and the receive counter never moves,
+            /// so no payload is disclosed and no protected state is mutated.
+            #[test]
+            fn an_unavailable_decision_sink_fails_closed_without_consuming_the_frame() {
+                let (mut client, mut daemon) = establish_pair(0);
+                let frame = request_frame(&mut client, PayloadKind::Command, b"request");
+                let mut unavailable = RecordingSink {
+                    events: Vec::new(),
+                    unavailable: true,
+                };
+                let failure = daemon
+                    .receive(
+                        &frame,
+                        &owned_operation(PayloadKind::Command),
+                        &mut unavailable,
+                    )
+                    .expect_err("the required decision event never reached its sink");
+                assert_eq!(failure.code(), FailureCode::EventSinkUnavailable);
+                assert_eq!(daemon.receive_counter(), 0);
+                assert!(!daemon.is_open());
+
+                let (_, mut daemon) = establish_pair(0);
+                let failure = daemon
+                    .send_projection(
+                        &owned_projection(ProjectionClass::Artifact, PROTECTED),
+                        &mut unavailable,
+                    )
+                    .expect_err("the required decision event never reached its sink");
+                assert_eq!(failure.code(), FailureCode::EventSinkUnavailable);
+                assert!(!daemon.is_open());
+            }
+
+            /// FR-023: a bounded stream chunk is filtered on the same gate as every other class
+            /// and stays inside its own declared bound, which is below the frame maximum.
+            #[test]
+            fn a_bounded_stream_chunk_is_filtered_and_stays_within_its_own_bound() {
+                let (mut client, mut daemon) = establish_pair(0);
+                let mut sink = RecordingSink::default();
+                let chunk = vec![0x5a; ProjectionClass::StreamChunk.max_bytes()];
+                let frame = daemon
+                    .send_projection(
+                        &owned_projection(ProjectionClass::StreamChunk, &chunk),
+                        &mut sink,
+                    )
+                    .expect("a chunk at its declared bound");
+                assert_eq!(
+                    client
+                        .receive_filtered(&frame, PayloadKind::StreamChunk, &mut sink)
+                        .unwrap()
+                        .payload()
+                        .len(),
+                    ProjectionClass::StreamChunk.max_bytes()
+                );
+                assert!(ProjectionClass::StreamChunk.max_bytes() < 1_048_534);
+
+                let oversize = vec![0x5a; ProjectionClass::StreamChunk.max_bytes() + 1];
+                let failure = daemon
+                    .send_projection(
+                        &owned_projection(ProjectionClass::StreamChunk, &oversize),
+                        &mut sink,
+                    )
+                    .expect_err("a chunk past its declared bound");
+                assert_eq!(failure.code(), FailureCode::ResourceLimit);
+                assert_eq!(
+                    failure.safe_next_action(),
+                    SafeNextAction::ReduceToDeclaredBound
+                );
+            }
+
+            /// SC-004: the gate cannot be reached from the side that holds no principal, and the
+            /// side that does hold one cannot take an unauthorized path. A probe therefore has no
+            /// route to a payload that skipped a decision.
+            #[test]
+            fn neither_side_can_reach_a_payload_that_skipped_a_decision() {
+                let (mut client, mut daemon) = establish_pair(0);
+                let mut sink = RecordingSink::default();
+                let frame = request_frame(&mut client, PayloadKind::Command, PROTECTED);
+
+                let failure = daemon
+                    .receive_filtered(&frame, PayloadKind::Command, &mut sink)
+                    .expect_err("a daemon must authorize what it accepts");
+                assert_eq!(failure.code(), FailureCode::AuthorizationDenied);
+                assert!(!daemon.is_open());
+
+                let (_, mut daemon) = establish_pair(0);
+                let failure = daemon
+                    .send(
+                        &AuthorizedOutput::filtered(PayloadKind::Response, PROTECTED.to_vec())
+                            .unwrap(),
+                        &mut sink,
+                    )
+                    .expect_err("a daemon must authorize what it discloses");
+                assert_eq!(failure.code(), FailureCode::AuthorizationDenied);
+                assert!(!daemon.is_open());
+
+                let (mut client, _) = establish_pair(0);
+                let failure = client
+                    .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
+                    .expect_err("a client holds no principal to authorize against");
+                assert_eq!(failure.code(), FailureCode::AuthorizationDenied);
+                assert!(!client.is_open());
+
+                let (mut client, _) = establish_pair(0);
+                let failure = client
+                    .send_projection(
+                        &owned_projection(ProjectionClass::Status, PROTECTED),
+                        &mut sink,
+                    )
+                    .expect_err("a client holds no principal to authorize against");
+                assert_eq!(failure.code(), FailureCode::AuthorizationDenied);
+                assert!(!client.is_open());
+            }
+
+            /// FR-028: no failure projection and no event projection in this matrix renders a
+            /// payload byte, an object identifier, or a key.
+            #[test]
+            fn failure_and_event_projections_in_this_matrix_render_no_protected_value() {
+                let forbidden = [
+                    "protected",
+                    "private",
+                    "secret",
+                    "credential",
+                    "pkcs8",
+                    "object_id",
+                    "identifier",
+                ];
+                let (mut client, mut daemon) = establish_pair(0);
+                let mut sink = RecordingSink::default();
+                let frame = request_frame(&mut client, PayloadKind::Command, PROTECTED);
+                let failure = daemon
+                    .receive(
+                        &frame,
+                        &SessionInput::new(
+                            capability(CapabilityAction::Read, SCOPE),
+                            PayloadKind::Command,
+                            ObjectOwner::Unknown,
+                            None,
+                        ),
+                        &mut sink,
+                    )
+                    .expect_err("an unresolved object");
+                let rendered = format!("{failure} {failure:?} {:?}", sink.events);
+                let lowered = rendered.to_ascii_lowercase();
+                for word in forbidden {
+                    assert!(!lowered.contains(word), "{rendered} disclosed {word}");
+                }
+                assert!(rendered.contains("object.not_found"));
+            }
         }
     };
 }
