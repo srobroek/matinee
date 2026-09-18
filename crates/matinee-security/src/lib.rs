@@ -867,6 +867,11 @@ mod rotation_revocation_races_contract {
     rotation_revocation_races_tests!();
 }
 #[cfg(test)]
+mod quickstart_evidence {
+    include!("../tests/quickstart_evidence.rs");
+    quickstart_evidence_tests!();
+}
+#[cfg(test)]
 mod tests {
     use uuid::Uuid;
 

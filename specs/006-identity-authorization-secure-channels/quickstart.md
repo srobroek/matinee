@@ -319,3 +319,29 @@ Assert that none of the following appears in output:
 Map results to FR-002 through FR-032, and to SC-001 through SC-009. Spec 007 supplies the
 lifecycle and recovery evidence, and Spec 009 supplies the clock and expiry evidence. The
 typed contracts of those two specifications do not block these Spec 006 vectors.
+
+## Recorded evidence
+
+The following commands ran from the repository root on 2026-09-18.
+
+```text
+$ node crates/matinee-security/fixtures/webcrypto/secure-channel-vectors.mjs
+{"schema":"matinee.secure-channel.v1","result":"pass","fixed_outputs":17,"mutations_rejected":7,"peer":"Node.js WebCrypto"}
+
+$ node crates/matinee-security/fixtures/chrome-capability/capability.mjs
+first record: vector_id=chrome.capability.unsupported result=unsupported failure_code=capability.unsupported channel_state=closed dispatch_count=0 secret_scan=pass
+remaining records: seven records; five pass outcomes, one malformed.input rejection, one resource_limit rejection; every record dispatch_count=0 and secret_scan=pass
+
+$ cargo test -p matinee-security --lib quickstart_evidence -- --list
+quickstart_evidence::chrome_capability_fixture_records_explicit_node_unsupported_result: test
+quickstart_evidence::node_webcrypto_fixture_records_pass_for_the_vector_peer: test
+quickstart_evidence::quickstart_mapping_covers_every_required_fr_and_sc: test
+quickstart_evidence::typed_boundaries_are_bounded_and_fail_closed: test
+
+$ cargo test -p matinee-security --test quickstart_evidence -- --list
+0 tests, 0 benchmarks
+```
+
+The WebCrypto command passed 17 fixed outputs and rejected 7 mutations. The Chrome capability invocation recorded an explicit closed, zero-dispatch unsupported result because Node does not provide `chrome.storage.local`; it did not skip the probe. The in-crate suite listed four tests, and the standalone integration target listed zero tests by design.
+
+The suite maps FR-002 through FR-032 and SC-001 through SC-009. It asserts secret-scan output, peer fixture outcomes, zero-dispatch unsupported behavior, bounded payload limits, stable failure codes, and typed fail-closed boundary names. Downstream lifecycle and expiry contracts remain typed inputs supplied by Specs 007 and 009.
