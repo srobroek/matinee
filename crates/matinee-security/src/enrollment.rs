@@ -403,6 +403,16 @@ impl ChromeCapability {
     }
     pub fn storage_local(&self) -> bool { self.storage_local }
     pub fn non_exportable(&self) -> bool { self.non_exportable }
+    pub(crate) fn canonical_fields(&self) -> (&str, &str, &str, &str, bool, bool) {
+        (
+            &self.origin,
+            &self.store_metadata,
+            &self.update_metadata,
+            &self.install_metadata,
+            self.storage_local,
+            self.non_exportable,
+        )
+    }
     fn matches(&self, binding: &EnrollmentBinding<'_>) -> bool {
         self.origin == binding.origin && self.store_metadata == binding.store_metadata && self.update_metadata == binding.update_metadata && self.install_metadata == binding.install_metadata
     }
@@ -428,6 +438,15 @@ struct Registration {
     capability: ChromeCapability,
     revoked: bool,
 }
+#[derive(Clone, Debug)]
+pub(crate) struct CustodyUpdate {
+    identity: IdentityId,
+    key: [u8; UNCOMPRESSED_KEY_BYTES],
+    fingerprint: Fingerprint,
+    capability: ChromeCapability,
+    retired_fingerprint: Fingerprint,
+}
+
 
 #[derive(Debug, Default)]
 struct ConsumptionState {
@@ -435,6 +454,8 @@ struct ConsumptionState {
     consumed: HashMap<TransitionId, IdentityId>,
     host_budgets: HashMap<String, HostAttemptBudget>,
     quarantined: Vec<Fingerprint>,
+    #[cfg(test)]
+    fail_next_custody_validation: bool,
 }
 
 /// The process-lifetime registry, host budgets, quarantine set, and required-event
@@ -452,9 +473,9 @@ pub(crate) enum EnrollmentChannelState { Open, Closed }
 
 /// One authenticated native channel to a pairing peer.
 ///
-/// The channel owns the only sealing capability for its connection, so closing it
-/// destroys the ability to seal or recover one-time key material on that
-/// connection. A replacement connection opens a new channel with a new capability.
+/// The channel owns the only sealing capability for its connection. Closing it
+/// destroys the ability to seal one-time key material on that connection; key
+/// opening belongs to the remote peer and has no production host API.
 #[derive(Debug)]
 pub struct EnrollmentChannel {
     state: EnrollmentChannelState,
@@ -487,16 +508,34 @@ impl EnrollmentChannel {
     ) -> Result<EncryptedKeyOutput, EnrollmentCustodyError> {
         bundle.encrypted_private_key_output(&self.capability)
     }
-    /// The peer half of the same channel: recover a sealed one-time key.
-    ///
-    /// The expected enrollment and this channel's connection and epoch are bound
-    /// into the authenticated data, so a mismatched context recovers nothing.
-    pub fn open_sealed(
+    #[cfg(test)]
+    pub(crate) fn open_sealed_for_test(
         &self,
         expected_enrollment: TransitionId,
         sealed: &EncryptedKeyOutput,
     ) -> Result<Vec<u8>, EnrollmentCustodyError> {
         sealed.decrypt_for_channel(&self.capability, expected_enrollment)
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn sign_sealed_for_test(
+        &self,
+        expected_enrollment: TransitionId,
+        sealed: &EncryptedKeyOutput,
+        message: &[u8],
+    ) -> Result<Vec<u8>, EnrollmentCustodyError> {
+        let pkcs8 = sealed.decrypt_for_channel(&self.capability, expected_enrollment)?;
+        let rng = rand::SystemRandom::new();
+        let key = signature::EcdsaKeyPair::from_pkcs8(
+            &signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+            &pkcs8,
+            &rng,
+        ).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        Ok(key.sign(&rng, message)
+            .map_err(|_| EnrollmentCustodyError::EncryptionFailed)?
+            .as_ref()
+            .to_vec())
     }
 }
 
@@ -660,23 +699,73 @@ impl EnrollmentConsumptionService {
         current_capability: &ChromeCapability,
     ) -> Result<Fingerprint, EnrollmentConsumeError> {
         let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-        let old_fingerprint = {
-            let registration = state.registrations.get(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?;
-            if registration.revoked {
-                return Err(EnrollmentConsumeError::CredentialMismatch);
-            }
-            if !registration.capability.permits(current_capability) {
-                return Err(EnrollmentConsumeError::CapabilityRejected);
-            }
-            registration.fingerprint.clone()
-        };
-        let fingerprint = Fingerprint::new(hex_digest(key.as_bytes())).map_err(|_| EnrollmentConsumeError::InvalidPublicKey)?;
-        state.quarantined.push(old_fingerprint);
-        let registration = state.registrations.get_mut(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?;
-        registration.key = *key.as_bytes();
-        registration.fingerprint = fingerprint.clone();
-        registration.capability = current_capability.clone();
+        let update = Self::validate_custody_update(&state, identity, key, current_capability)?;
+        let fingerprint = update.fingerprint.clone();
+        Self::commit_validated_custody_update(&mut state, update);
         Ok(fingerprint)
+    }
+
+    pub(crate) fn prepare_custody_update(
+        &mut self,
+        identity: IdentityId,
+        key: &PublicKey,
+        current_capability: &ChromeCapability,
+    ) -> Result<CustodyUpdate, EnrollmentConsumeError> {
+        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        if core::mem::take(&mut state.fail_next_custody_validation) {
+            return Err(EnrollmentConsumeError::EventUnavailable);
+        }
+        Self::validate_custody_update(state, identity, key, current_capability)
+    }
+
+    pub(crate) fn commit_custody_update(&mut self, update: CustodyUpdate) {
+        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::commit_validated_custody_update(state, update);
+    }
+
+    fn validate_custody_update(
+        state: &ConsumptionState,
+        identity: IdentityId,
+        key: &PublicKey,
+        current_capability: &ChromeCapability,
+    ) -> Result<CustodyUpdate, EnrollmentConsumeError> {
+        let registration = state.registrations.get(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?;
+        if registration.revoked {
+            return Err(EnrollmentConsumeError::CredentialMismatch);
+        }
+        if !registration.capability.permits(current_capability) {
+            return Err(EnrollmentConsumeError::CapabilityRejected);
+        }
+        let fingerprint = Fingerprint::new(hex_digest(key.as_bytes()))
+            .map_err(|_| EnrollmentConsumeError::InvalidPublicKey)?;
+        if registration.key == *key.as_bytes()
+            || state.quarantined.iter().any(|retired| retired == &fingerprint)
+        {
+            return Err(EnrollmentConsumeError::CredentialMismatch);
+        }
+        Ok(CustodyUpdate {
+            identity,
+            key: *key.as_bytes(),
+            fingerprint,
+            capability: current_capability.clone(),
+            retired_fingerprint: registration.fingerprint.clone(),
+        })
+    }
+
+    fn commit_validated_custody_update(state: &mut ConsumptionState, update: CustodyUpdate) {
+        state.quarantined.push(update.retired_fingerprint);
+        let registration = state.registrations.get_mut(&update.identity)
+            .expect("validated custody registration remains present");
+        registration.key = update.key;
+        registration.fingerprint = update.fingerprint;
+        registration.capability = update.capability;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_custody_validation(&mut self) {
+        self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fail_next_custody_validation = true;
     }
 
     pub fn revoke(&self, identity: IdentityId) -> Result<(), EnrollmentConsumeError> {

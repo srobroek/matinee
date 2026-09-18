@@ -28,7 +28,7 @@ use crate::transition::{
 };
 use crate::{
     AuthorizedInput, AuthorizedOutput, ChannelSession, ChannelSigner, ConnectionId, ObjectOwner,
-    PayloadKind, SecurityCommand, SecurityFailure,
+    PayloadKind, SecurityCommand, SecurityFailure, SessionInput,
 };
 
 /// The administrator principal fixture transitions are owned by. Its identity is the
@@ -61,7 +61,7 @@ pub(crate) fn credential(locator: &str) -> CredentialReference {
 }
 
 pub(crate) fn ceiling() -> Vec<Capability> {
-    vec![capability(CapabilityAction::Read, "matinee")]
+    vec![capability(CapabilityAction::Write, "matinee")]
 }
 
 pub(crate) fn input(
@@ -98,7 +98,7 @@ pub(crate) fn grant(extension: IdentityId, epoch: u64) -> ExtensionGrant {
     ExtensionGrant::new(
         extension,
         id(OWNER),
-        vec![capability(CapabilityAction::Read, SCOPE)],
+        vec![capability(CapabilityAction::Write, SCOPE)],
         epoch,
     )
     .expect("bounded grant")
@@ -187,21 +187,37 @@ pub(crate) fn request(client: &mut ChannelSession, sink: &mut RecordingSink) -> 
     client.send(&output, sink).expect("sealed request")
 }
 
-/// Offer one frame to the daemon boundary as an owned read at the fixture scope.
+pub(crate) fn mutation_input() -> SessionInput<'static> {
+    SessionInput::new(
+        capability(CapabilityAction::Write, SCOPE),
+        PayloadKind::Command,
+        ObjectOwner::Owned(id(OWNER)),
+        None,
+    )
+}
+
 pub(crate) fn receive(
     transitions: &SecurityTransitions,
     connection: ConnectionId,
     frame: &[u8],
     sink: &mut RecordingSink,
 ) -> Result<AuthorizedInput, SecurityFailure> {
+    let operation = mutation_input();
     transitions.receive(
         connection,
         frame,
-        capability(CapabilityAction::Read, SCOPE),
-        PayloadKind::Command,
-        ObjectOwner::Owned(id(OWNER)),
+        operation.requested().clone(),
+        operation.kind(),
+        operation.owner(),
         sink,
     )
+}
+
+pub(crate) fn commit_mutation(
+    transitions: &SecurityTransitions,
+    input: &AuthorizedInput,
+) -> Result<u64, SecurityFailure> {
+    transitions.commit_mutation(input, &mutation_input())
 }
 
 pub(crate) fn binding() -> EnrollmentBinding<'static> {
@@ -328,8 +344,7 @@ pub(crate) fn paired_proof(
     let sealed = transitions
         .seal_one_time_key(enrollment, channel)
         .expect("one-time key seals once");
-    let private = channel
-        .open_sealed(enrollment, &sealed)
+    let private = channel.open_sealed_for_test(enrollment, &sealed)
         .expect("the channel peer recovers the sealed key");
     let rng = SystemRandom::new();
     let one_time = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &private, &rng)

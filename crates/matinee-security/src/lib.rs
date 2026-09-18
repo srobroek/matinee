@@ -27,6 +27,7 @@ pub use crate::events::{
     EndpointClass, EventBoundary, EventOutcome, MetadataEntry, SafeNextAction as EventNextAction,
     SecurityCode, SecurityEvent, SecurityEventSink, SecurityEventSinkResult,
 };
+pub use crate::transition::{SecurityTransitions, TransitionRejection};
 pub use crate::failures::{FailureBoundary, FailureCode, SafeNextAction, SecurityFailure};
 
 #[cfg(test)]
@@ -244,6 +245,7 @@ pub struct AuthorizedInput {
     principal: IdentityId,
     epoch: u64,
     granted: Capability,
+    owner: ObjectOwner,
     kind: PayloadKind,
     /// The authenticated v1 plaintext: one shape byte, then the payload.
     body: Vec<u8>,
@@ -267,6 +269,9 @@ impl AuthorizedInput {
     }
     pub fn granted(&self) -> &Capability {
         &self.granted
+    }
+    pub fn owner(&self) -> ObjectOwner {
+        self.owner
     }
     pub fn kind(&self) -> PayloadKind {
         self.kind
@@ -389,10 +394,9 @@ impl fmt::Debug for SessionPeer {
 /// Stateful payload boundary created only by a mutually authenticated handshake.
 /// Raw transcript construction, traffic keys, framing values, and counters remain private.
 ///
-/// Which methods answer is decided by the peer the handshake authenticated. A daemon
-/// session authorizes every frame it accepts and every projection it discloses. A client
-/// session sends requests and consumes what the daemon already filtered; it holds no
-/// principal, so an authorizing call on it fails closed.
+/// Public methods are client-side only. A completed daemon session must be moved into
+/// [`SecurityTransitions`] before it can receive, disclose, or commit protected work;
+/// rotation and revocation therefore invalidate those operations under the same lock.
 #[derive(Debug)]
 pub struct ChannelSession {
     connection: ConnectionId,
@@ -505,7 +509,7 @@ impl ChannelSession {
     /// value. A malformed shape and an unavailable decision sink both leave the counter
     /// where it was. A decision that denies the operation consumes the frame and leaves the
     /// channel usable, because a denial is an answer and not a protocol fault.
-    pub fn receive(
+    pub(crate) fn receive(
         &mut self,
         frame: &[u8],
         operation: &SessionInput<'_>,
@@ -543,6 +547,7 @@ impl ChannelSession {
             principal: self.principal(),
             epoch: self.epoch,
             granted: operation.requested().clone(),
+            owner: operation.owner(),
             kind: operation.kind(),
             body: plaintext,
         };
@@ -556,7 +561,7 @@ impl ChannelSession {
     /// chunk reaches a frame through, so no object identifier or payload byte is serialized
     /// before the decision accepts it. A denial serializes nothing and leaves the channel
     /// usable; an unavailable decision sink closes it.
-    pub fn send_projection(
+    pub(crate) fn send_projection(
         &mut self,
         projection: &SessionProjection<'_>,
         sink: &mut dyn SecurityEventSink,

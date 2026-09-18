@@ -4,6 +4,9 @@ version = "0.0.2"
 edition = "2024"
 rust-version = "1.85"
 publish = false
+[features]
+test-support = ["matinee-security/test-support"]
+
 
 [dependencies]
 matinee-security = { path = "../matinee-security" }
@@ -15,6 +18,10 @@ unicode-normalization = "0.1"
 [dev-dependencies]
 ring = "0.17"
 uuid = { version = "1", features = ["v7"] }
+[[example]]
+name = "enrollment_lifecycle"
+required-features = ["test-support"]
+
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,6 +1,6 @@
 //! A runnable consumer of the runtime enrollment boundary.
 //!
-//! Run with `cargo run -p matinee-runtime --example enrollment_lifecycle`. It drives
+//! Run with `cargo run -p matinee-runtime --features test-support --example enrollment_lifecycle`. It drives
 //! the whole pairing lifecycle - create, seal the one-time key, consume the proof,
 //! reconnect on a replacement connection, update custody, revoke - against the one
 //! process-lifetime host, and it plays the client half over the same channel.
@@ -56,18 +56,11 @@ fn client_proof(
         "  sealed one-time key: {} ciphertext bytes, debug projection {sealed:?}",
         sealed.ciphertext().len()
     );
-    let one_time_pkcs8 = session.open_sealed(ticket.enrollment(), &sealed)?;
     let rng = SystemRandom::new();
-    let one_time = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &one_time_pkcs8, &rng)
-        .map_err(|error| format!("sealed bytes are not the one-time PKCS#8 key: {error}"))?;
     let public = long_term_public_key(&rng)?;
     let challenge = enrollment_host().proof_challenge(ticket.enrollment(), &public)?;
     println!("  signing a {}-byte published challenge", challenge.len());
-    let signature = one_time
-        .sign(&rng, &challenge)
-        .map_err(|error| format!("sign with the one-time key: {error}"))?
-        .as_ref()
-        .to_vec();
+    let signature = session.sign_proof_for_test(ticket.enrollment(), &sealed, &challenge)?;
     Ok(EnrollmentProof {
         identity,
         signature,

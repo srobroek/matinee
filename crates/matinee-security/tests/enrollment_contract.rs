@@ -101,12 +101,12 @@ macro_rules! enrollment_contract_tests {
             let output = channel.seal_one_time_key(&mut bundle).unwrap();
             assert!(!output.ciphertext().is_empty());
             assert!(channel.seal_one_time_key(&mut bundle).is_err(), "PKCS#8 transfer is one-use");
-            let plain = channel.open_sealed(bundle.enrollment_id(), &output).unwrap();
+            let plain = channel.open_sealed_for_test(bundle.enrollment_id(), &output).unwrap();
             assert!(!plain.is_empty());
             assert!(!format!("{bundle:?}").contains("PKCS#8"));
             channel.close();
             assert_eq!(
-                channel.open_sealed(bundle.enrollment_id(), &output),
+                channel.open_sealed_for_test(bundle.enrollment_id(), &output),
                 Err(crate::enrollment::EnrollmentCustodyError::ChannelNotAuthenticated),
                 "a closed channel recovers no one-time key",
             );

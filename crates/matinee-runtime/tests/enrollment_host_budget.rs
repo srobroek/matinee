@@ -1,3 +1,5 @@
+#![cfg(feature = "test-support")]
+
 //! The host attempt budget belongs to the process, not to a connection.
 //!
 //! This file is its own test binary on purpose: exhausting a host key is process
@@ -88,12 +90,7 @@ fn client_proof(
     let sealed = session
         .deliver_one_time_key(ticket.enrollment())
         .expect("seal the one-time key");
-    let one_time_pkcs8 = session
-        .open_sealed(ticket.enrollment(), &sealed)
-        .expect("peer opens the sealed key");
     let rng = SystemRandom::new();
-    let one_time = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &one_time_pkcs8, &rng)
-        .expect("sealed bytes are the one-time PKCS#8 key");
     let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
         .expect("generate long-term key");
     let long_term = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
@@ -104,11 +101,9 @@ fn client_proof(
     let challenge = enrollment_host()
         .proof_challenge(ticket.enrollment(), &public)
         .expect("host publishes the challenge");
-    let signature = one_time
-        .sign(&rng, &challenge)
-        .expect("sign with the one-time key")
-        .as_ref()
-        .to_vec();
+    let signature = session
+        .sign_proof_for_test(ticket.enrollment(), &sealed, &challenge)
+        .expect("peer returns only its signature");
     EnrollmentProof {
         identity,
         signature,

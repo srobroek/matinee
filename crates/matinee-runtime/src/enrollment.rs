@@ -326,14 +326,17 @@ impl PairingSession<'_> {
         Ok(SealedOneTimeKey(self.channel.seal_one_time_key(bundle)?))
     }
 
-    /// The peer half of this channel: recover a sealed one-time key only for the
-    /// expected enrollment authenticated into the output.
-    pub fn open_sealed(
+    /// Test-only peer simulation. The sealed key never crosses back as plaintext;
+    /// the helper returns only the signature a remote peer would send.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn sign_proof_for_test(
         &self,
         expected_enrollment: TransitionId,
         sealed: &SealedOneTimeKey,
+        challenge: &[u8],
     ) -> Result<Vec<u8>, EnrollmentFailure> {
-        Ok(self.channel.open_sealed(expected_enrollment, &sealed.0)?)
+        Ok(self.channel.sign_sealed_for_test(expected_enrollment, &sealed.0, challenge)?)
     }
 
     /// Consume one pairing proof and register its long-term key.

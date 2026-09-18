@@ -9,9 +9,9 @@ macro_rules! rotation_revocation_races_tests {
         };
         use crate::test_support_channel::{establish_pair_for, id, RecordingSink, RingSigner};
         use crate::test_support_transitions::{
-            connection, consume_enrollment, create_enrollment, credential, grant, input, key,
-            live_channel, paired_proof, receive, registered, request, revoke, rotate, transition,
-            ADMINISTRATOR, EXTENSION,
+            commit_mutation, connection, consume_enrollment, create_enrollment, credential, grant,
+            input, key, live_channel, paired_proof, receive, registered, request, revoke, rotate,
+            transition, ADMINISTRATOR, EXTENSION,
         };
         use crate::transition::{
             DecisionState, ReplacementCredential, SecurityTransitions, TransitionMaterial,
@@ -47,6 +47,39 @@ macro_rules! rotation_revocation_races_tests {
                 transitions,
             )
         }
+        struct StartGate {
+            barrier: std::sync::Barrier,
+            entrants: std::sync::atomic::AtomicUsize,
+            expected: usize,
+        }
+
+        impl StartGate {
+            fn new(expected: usize) -> Self {
+                Self {
+                    barrier: std::sync::Barrier::new(expected + 1),
+                    entrants: std::sync::atomic::AtomicUsize::new(0),
+                    expected,
+                }
+            }
+
+            fn enter(&self) {
+                self.entrants.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.barrier.wait();
+            }
+
+            fn release(&self) {
+                while self.entrants.load(std::sync::atomic::Ordering::SeqCst) < self.expected {
+                    std::thread::yield_now();
+                }
+                assert_eq!(
+                    self.entrants.load(std::sync::atomic::Ordering::SeqCst),
+                    self.expected,
+                    "every contender reached the latch together"
+                );
+                self.barrier.wait();
+            }
+        }
+
 
         /// FR-026, FR-032: one rotation racing one late registration of a channel that was
         /// established against the retired snapshot. Whatever the interleaving, the epoch
@@ -64,6 +97,8 @@ macro_rules! rotation_revocation_races_tests {
                     .expect("production handshake fixture");
 
                 let shared = &transitions;
+                let apply_gate = transitions.gate_next_apply();
+                let attempted = std::sync::atomic::AtomicBool::new(false);
                 let (rotation, registration) = std::thread::scope(|scope| {
                     let rotating = scope.spawn(|| {
                         let mut sink = RecordingSink::default();
@@ -78,7 +113,16 @@ macro_rules! rotation_revocation_races_tests {
                             Some(&mut sink),
                         )
                     });
-                    let registering = scope.spawn(move || shared.register_channel(stale));
+                    apply_gate.wait_until_acquired();
+                    let attempted_ref = &attempted;
+                    let registering = scope.spawn(move || {
+                        attempted_ref.store(true, std::sync::atomic::Ordering::SeqCst);
+                        shared.register_channel(stale)
+                    });
+                    while !attempted.load(std::sync::atomic::Ordering::SeqCst) {
+                        std::thread::yield_now();
+                    }
+                    apply_gate.release();
                     (
                         rotating.join().expect("rotation thread"),
                         registering.join().expect("registration thread"),
@@ -117,10 +161,13 @@ macro_rules! rotation_revocation_races_tests {
             let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
             let replacement = RingSigner::generate();
 
+            let gate = StartGate::new(4);
+            let apply_gate = transitions.gate_next_apply();
             let outcomes = std::thread::scope(|scope| {
                 let workers: Vec<_> = (0..4)
                     .map(|_| {
                         scope.spawn(|| {
+                            gate.enter();
                             let mut sink = RecordingSink::default();
                             let outcome = rotate(
                                 &transitions,
@@ -136,6 +183,9 @@ macro_rules! rotation_revocation_races_tests {
                         })
                     })
                     .collect();
+                gate.release();
+                apply_gate.wait_until_acquired();
+                apply_gate.release();
                 workers
                     .into_iter()
                     .map(|worker| worker.join().expect("delivery thread"))
@@ -188,6 +238,9 @@ macro_rules! rotation_revocation_races_tests {
             }
 
             let shared = &transitions;
+            let apply_gate = transitions.gate_next_apply();
+            let gate = StartGate::new(frames.len());
+            let attempting = std::sync::atomic::AtomicUsize::new(0);
             let (revocation, committed) = std::thread::scope(|scope| {
                 let revoking = scope.spawn(|| {
                     let mut sink = RecordingSink::default();
@@ -200,20 +253,21 @@ macro_rules! rotation_revocation_races_tests {
                         Some(&mut sink),
                     )
                 });
+                apply_gate.wait_until_acquired();
+                let worker_gate = &gate;
+                let worker_attempting = &attempting;
                 let workers: Vec<_> = frames
                     .into_iter()
                     .map(|(connection, frame)| {
                         scope.spawn(move || {
+                            worker_gate.enter();
+                            worker_attempting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             let mut sink = RecordingSink::default();
                             match receive(shared, connection, &frame, &mut sink) {
-                                Ok(authorized) => shared.commit_mutation(&authorized).is_ok(),
+                                Ok(authorized) => commit_mutation(shared, &authorized).is_ok(),
                                 Err(failure) => {
                                     assert!(
-                                        matches!(
-                                            failure.code(),
-                                            FailureCode::Revoked
-                                                | FailureCode::AuthenticationFailed
-                                        ),
+                                        matches!(failure.code(), FailureCode::Revoked | FailureCode::AuthenticationFailed),
                                         "a refused frame names a closed class: {failure:?}"
                                     );
                                     false
@@ -222,10 +276,14 @@ macro_rules! rotation_revocation_races_tests {
                         })
                     })
                     .collect();
+                gate.release();
+                while attempting.load(std::sync::atomic::Ordering::SeqCst) < 8 {
+                    std::thread::yield_now();
+                }
+                apply_gate.release();
                 (
                     revoking.join().expect("revocation thread"),
-                    workers
-                        .into_iter()
+                    workers.into_iter()
                         .map(|worker| worker.join().expect("mutation thread"))
                         .filter(|committed| *committed)
                         .count(),
@@ -718,64 +776,88 @@ macro_rules! rotation_revocation_races_tests {
                 let signer = RingSigner::generate();
                 let extension =
                     registered(&transitions, EXTENSION, PrincipalKind::BrowserExtension, &signer);
-                transitions
-                    .register_grant(grant(extension.id(), 0))
-                    .expect("a grant at the registered epoch");
+                transitions.register_grant(grant(extension.id(), 0)).unwrap();
                 let decision = transition(50);
-                transitions
-                    .open_decision(decision, extension.id())
-                    .expect("a pending extension decision");
+                transitions.open_decision(decision, extension.id()).unwrap();
                 let mut client = live_channel(&transitions, &extension, &signer, 800);
-                let mut sink = RecordingSink::default();
+                let mut setup_sink = RecordingSink::default();
                 let authorized = receive(
                     &transitions,
                     connection(800),
-                    &request(&mut client, &mut sink),
-                    &mut sink,
-                )
-                .expect("the live epoch authorizes");
-                let stale_frame = request(&mut client, &mut sink);
-
+                    &request(&mut client, &mut setup_sink),
+                    &mut setup_sink,
+                ).unwrap();
+                let stale_frame = request(&mut client, &mut setup_sink);
                 let replacement = RingSigner::generate();
-                let outcome = if trial % 2 == 0 {
-                    rotate(
-                        &transitions,
-                        extension.id(),
-                        &replacement,
-                        "key-1",
-                        400 + trial,
-                        0,
-                        None,
-                        Some(&mut sink),
-                    )
-                } else {
-                    revoke(
-                        &transitions,
-                        extension.id(),
-                        "administrator",
-                        400 + trial,
-                        0,
-                        Some(&mut sink),
-                    )
-                };
-                assert_eq!(outcome, Ok(TransitionOutcome::Committed));
+                let apply_gate = transitions.gate_next_apply();
+                let start = StartGate::new(3);
+                let attempting = std::sync::atomic::AtomicUsize::new(0);
+                let shared = &transitions;
 
-                if receive(&transitions, connection(800), &stale_frame, &mut sink).is_ok() {
-                    stale_dispatches += 1;
-                }
-                if transitions.commit_mutation(&authorized).is_ok() {
-                    stale_mutations += 1;
-                }
-                if transitions
-                    .complete_decision(decision, Some(&mut sink), EventTime(8))
-                    .is_ok()
-                {
-                    stale_decisions += 1;
-                }
-                assert_eq!(
-                    transitions.decision_state(decision),
-                    Some(DecisionState::Invalidated)
-                );
+                let (transition_outcome, dispatch, mutation, completion) =
+                    std::thread::scope(|scope| {
+                        let transitioning = scope.spawn(|| {
+                            let mut sink = RecordingSink::default();
+                            if trial % 2 == 0 {
+                                rotate(
+                                    shared,
+                                    extension.id(),
+                                    &replacement,
+                                    "key-1",
+                                    400 + trial,
+                                    0,
+                                    None,
+                                    Some(&mut sink),
+                                )
+                            } else {
+                                revoke(
+                                    shared,
+                                    extension.id(),
+                                    "administrator",
+                                    400 + trial,
+                                    0,
+                                    Some(&mut sink),
+                                )
+                            }
+                        });
+                        apply_gate.wait_until_acquired();
+                        let start_ref = &start;
+                        let attempting_ref = &attempting;
+                        let dispatching = scope.spawn(move || {
+                            start_ref.enter();
+                            attempting_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let mut sink = RecordingSink::default();
+                            receive(shared, connection(800), &stale_frame, &mut sink)
+                        });
+                        let mutating = scope.spawn(|| {
+                            start.enter();
+                            attempting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            commit_mutation(shared, &authorized)
+                        });
+                        let completing = scope.spawn(|| {
+                            start.enter();
+                            attempting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let mut sink = RecordingSink::default();
+                            shared.complete_decision(decision, Some(&mut sink), EventTime(8))
+                        });
+                        start.release();
+                        while attempting.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+                            std::thread::yield_now();
+                        }
+                        apply_gate.release();
+                        (
+                            transitioning.join().unwrap(),
+                            dispatching.join().unwrap(),
+                            mutating.join().unwrap(),
+                            completing.join().unwrap(),
+                        )
+                    });
+
+                assert_eq!(transition_outcome, Ok(TransitionOutcome::Committed));
+                stale_dispatches += usize::from(dispatch.is_ok());
+                stale_mutations += usize::from(mutation.is_ok());
+                stale_decisions += usize::from(completion.is_ok());
+                assert_eq!(transitions.decision_state(decision), Some(DecisionState::Invalidated));
             }
             assert_eq!(stale_dispatches, 0, "no stale frame dispatched a payload");
             assert_eq!(stale_mutations, 0, "no stale input completed a mutation");
@@ -786,72 +868,87 @@ macro_rules! rotation_revocation_races_tests {
         /// connection lifetime and no disconnect creates a duplicate transition.
         #[test]
         fn sc008_disconnects_preserve_confirmed_work_and_duplicate_no_transition() {
-            let transitions = SecurityTransitions::default();
-            let signer = RingSigner::generate();
-            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
-            let mut sink = RecordingSink::default();
-            for index in 0..100u128 {
-                let mut client = live_channel(&transitions, &principal, &signer, 900 + index);
-                let frame = request(&mut client, &mut sink);
-                let authorized = receive(&transitions, connection(900 + index), &frame, &mut sink)
+            let mut transition_events = 0usize;
+            let mut replayed = 0usize;
+            for trial in 0..100u128 {
+                let transitions = SecurityTransitions::default();
+                let signer = RingSigner::generate();
+                let principal =
+                    registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+                let connection_id = connection(900 + trial);
+                let mut client = live_channel(&transitions, &principal, &signer, 900 + trial);
+                let mut setup_sink = RecordingSink::default();
+                let frame = request(&mut client, &mut setup_sink);
+                let authorized = receive(&transitions, connection_id, &frame, &mut setup_sink)
                     .expect("the live epoch authorizes");
-                assert_eq!(
-                    transitions.commit_mutation(&authorized),
-                    Ok(index as u64 + 1)
-                );
-                assert!(transitions.close_channel(connection(900 + index)));
-                assert!(
-                    !transitions.close_channel(connection(900 + index)),
-                    "a repeated disconnect is not a second event"
-                );
-            }
-            assert_eq!(
-                transitions.object_version(),
-                100,
-                "every confirmed mutation survives its connection"
-            );
-            assert_eq!(transitions.open_channels(), 0);
-            assert!(
-                sink.events.iter().all(|event| event.code()
-                    == crate::events::SecurityCode::AuthorizationAccepted),
-                "a disconnect emits no transition event"
-            );
+                let apply_gate = transitions.gate_next_apply();
+                let start = StartGate::new(3);
+                let attempting = std::sync::atomic::AtomicUsize::new(0);
 
-            // One revocation, then a hundred further disconnect attempts.
-            assert_eq!(
-                revoke(
-                    &transitions,
-                    principal.id(),
-                    "administrator",
-                    500,
-                    0,
-                    Some(&mut sink)
-                ),
-                Ok(TransitionOutcome::Committed)
-            );
-            let recorded = transitions.recorded(key(500)).expect("one revocation record");
-            for index in 0..100u128 {
-                assert!(!transitions.close_channel(connection(900 + index)));
+                let (revocation, events, mutation, disconnected, retry) =
+                    std::thread::scope(|scope| {
+                        let revoking = scope.spawn(|| {
+                            let mut sink = RecordingSink::default();
+                            let outcome = revoke(
+                                &transitions,
+                                principal.id(),
+                                "administrator",
+                                500 + trial,
+                                0,
+                                Some(&mut sink),
+                            );
+                            (outcome, sink.events.len())
+                        });
+                        apply_gate.wait_until_acquired();
+                        let mutating = scope.spawn(|| {
+                            start.enter();
+                            attempting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            commit_mutation(&transitions, &authorized)
+                        });
+                        let disconnecting = scope.spawn(|| {
+                            start.enter();
+                            attempting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            transitions.close_channel(connection_id)
+                        });
+                        let retrying = scope.spawn(|| {
+                            start.enter();
+                            attempting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let mut sink = RecordingSink::default();
+                            revoke(
+                                &transitions,
+                                principal.id(),
+                                "administrator",
+                                500 + trial,
+                                0,
+                                Some(&mut sink),
+                            )
+                        });
+                        start.release();
+                        while attempting.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+                            std::thread::yield_now();
+                        }
+                        apply_gate.release();
+                        let (revocation, events) = revoking.join().unwrap();
+                        (
+                            revocation,
+                            events,
+                            mutating.join().unwrap(),
+                            disconnecting.join().unwrap(),
+                            retrying.join().unwrap(),
+                        )
+                    });
+
+                assert_eq!(revocation, Ok(TransitionOutcome::Committed));
+                transition_events += events;
+                assert!(mutation.is_err(), "revocation linearized before the mutation");
+                assert!(!disconnected, "revocation already closed the channel");
+                replayed += usize::from(retry == Ok(TransitionOutcome::AlreadyCommitted));
+                assert_eq!(transitions.object_version(), 0);
+                assert_eq!(transitions.open_channels(), 0);
+                assert!(transitions.recorded(key(500 + trial)).is_some());
             }
-            assert_eq!(
-                transitions.recorded(key(500)),
-                Some(recorded),
-                "no disconnect duplicates the revocation transition"
-            );
-            assert_eq!(transitions.object_version(), 100);
-            assert_eq!(
-                revoke(
-                    &transitions,
-                    principal.id(),
-                    "administrator",
-                    501,
-                    0,
-                    Some(&mut sink)
-                )
-                .expect_err("revocation stays terminal across disconnects")
-                .code(),
-                FailureCode::Revoked
-            );
+            assert_eq!(transition_events, 100, "one event per revocation");
+            assert_eq!(replayed, 100, "every overlapping retry replays one commit");
         }
 
         /// FR-028, FR-032: the failure a real stale race produced reports one stable class

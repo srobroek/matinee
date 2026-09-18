@@ -17,7 +17,7 @@ macro_rules! enrollment_custody_tests {
             let output = channel.seal_one_time_key(&mut bundle).unwrap();
             assert!(!output.ciphertext().is_empty());
             assert!(channel.seal_one_time_key(&mut bundle).is_err());
-            assert!(!channel.open_sealed(crate::identity::TransitionId::new(uuid::Uuid::from_u128(0x40)), &output).unwrap().is_empty());
+            assert!(!channel.open_sealed_for_test(crate::identity::TransitionId::new(uuid::Uuid::from_u128(0x40)), &output).unwrap().is_empty());
             assert!(!format!("{bundle:?}").contains("PKCS#8"));
         }
 
@@ -47,25 +47,25 @@ macro_rules! enrollment_custody_tests {
             assert_eq!(first.enrollment(), first_enrollment);
             assert_eq!(second.enrollment(), second_enrollment);
             assert_eq!(
-                channel.open_sealed(second_enrollment, &first),
+                channel.open_sealed_for_test(second_enrollment, &first),
                 Err(crate::enrollment::EnrollmentCustodyError::ChannelNotAuthenticated),
             );
             let wrong_connection = crate::enrollment::EnrollmentChannel::open(
                 crate::identity::ConnectionId::new(uuid::Uuid::from_u128(0x54)), 7,
             ).unwrap();
             assert_eq!(
-                wrong_connection.open_sealed(first_enrollment, &first),
+                wrong_connection.open_sealed_for_test(first_enrollment, &first),
                 Err(crate::enrollment::EnrollmentCustodyError::ChannelNotAuthenticated),
             );
             let stale_epoch = crate::enrollment::EnrollmentChannel::open(
                 crate::identity::ConnectionId::new(uuid::Uuid::from_u128(0x53)), 8,
             ).unwrap();
             assert_eq!(
-                stale_epoch.open_sealed(first_enrollment, &first),
+                stale_epoch.open_sealed_for_test(first_enrollment, &first),
                 Err(crate::enrollment::EnrollmentCustodyError::ChannelNotAuthenticated),
             );
-            assert!(!channel.open_sealed(first_enrollment, &first).unwrap().is_empty());
-            assert!(!channel.open_sealed(second_enrollment, &second).unwrap().is_empty());
+            assert!(!channel.open_sealed_for_test(first_enrollment, &first).unwrap().is_empty());
+            assert!(!channel.open_sealed_for_test(second_enrollment, &second).unwrap().is_empty());
         }
     };
 }

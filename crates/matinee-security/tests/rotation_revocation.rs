@@ -12,15 +12,15 @@ macro_rules! rotation_revocation_tests {
         };
         use crate::test_support_fakes::{FakeCredentialStore, FakeOsPipe};
         use crate::test_support_transitions::{
-            browser_capability, connection, consume_enrollment, create_enrollment, credential,
-            grant, input, key, live_channel, paired_proof, receive, registered, request, revoke,
-            rotate, transition, ADMINISTRATOR, EXTENSION,
+            browser_capability, commit_mutation, connection, consume_enrollment, create_enrollment,
+            credential, grant, input, key, live_channel, paired_proof, receive, registered, request,
+            revoke, rotate, transition, ADMINISTRATOR, EXTENSION,
         };
         use crate::transition::{
             BootstrapMaterial, DecisionState, ReplacementCredential, SecurityTransitions,
             TransitionMaterial, TransitionRecord,
         };
-        use crate::{ChannelSigner, SecurityCommand};
+        use crate::{CapabilityAction, ChannelSigner, ObjectOwner, PayloadKind, ProjectionClass, SecurityCommand, SessionInput, SessionProjection};
         use uuid::Uuid;
 
         /// FR-024: the replacement credential is registered as part of the transition that
@@ -194,7 +194,7 @@ macro_rules! rotation_revocation_tests {
             let authorized = receive(&transitions, connection(1), &first, &mut sink)
                 .expect("an authorized input at the current epoch");
             assert_eq!(
-                transitions.commit_mutation(&authorized),
+                commit_mutation(&transitions, &authorized),
                 Ok(1),
                 "the live epoch commits one mutation"
             );
@@ -219,8 +219,7 @@ macro_rules! rotation_revocation_tests {
                 .expect_err("a frame from the retired epoch is refused");
             assert_eq!(failure.code(), FailureCode::StaleEpoch);
             assert_eq!(
-                transitions
-                    .commit_mutation(&authorized)
+                commit_mutation(&transitions, &authorized)
                     .expect_err("an input from the retired epoch mutates nothing")
                     .code(),
                 FailureCode::StaleEpoch
@@ -242,8 +241,7 @@ macro_rules! rotation_revocation_tests {
             assert!(transitions.close_channel(connection(2)));
             assert!(!transitions.close_channel(connection(2)), "closing repeats safely");
             assert_eq!(
-                transitions
-                    .commit_mutation(&authorized)
+                commit_mutation(&transitions, &authorized)
                     .expect_err("a closed channel completes no new mutation")
                     .code(),
                 FailureCode::AuthenticationFailed
@@ -826,6 +824,230 @@ macro_rules! rotation_revocation_tests {
                 Ok(TransitionOutcome::AlreadyCommitted)
             );
             assert_eq!(sink.events.len(), 2);
+        }
+        #[test]
+        fn retired_key_material_and_locator_never_reactivate() {
+            let transitions = SecurityTransitions::default();
+            let key_one = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &key_one);
+            let key_two = RingSigner::generate();
+            let mut sink = RecordingSink::default();
+            assert_eq!(
+                rotate(&transitions, principal.id(), &key_two, "key-2", 90, 0, None, Some(&mut sink)),
+                Ok(TransitionOutcome::Committed)
+            );
+
+            let reactivation = rotate(
+                &transitions,
+                principal.id(),
+                &key_one,
+                "key-3",
+                91,
+                1,
+                None,
+                Some(&mut sink),
+            ).expect_err("K1 remains retired after K1 to K2");
+            assert_eq!(reactivation.code(), FailureCode::CredentialStoreMismatch);
+
+            let key_three = RingSigner::generate();
+            let locator_reuse = rotate(
+                &transitions,
+                principal.id(),
+                &key_three,
+                "principal-key-0",
+                92,
+                1,
+                None,
+                Some(&mut sink),
+            ).expect_err("a retired locator remains retired too");
+            assert_eq!(locator_reuse.code(), FailureCode::CredentialStoreMismatch);
+            assert_eq!(transitions.registered_principal(principal.id()).unwrap().epoch(), 1);
+        }
+
+        #[test]
+        fn idempotency_replay_covers_full_input_and_public_material() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            let replacement = RingSigner::generate();
+            let command = SecurityCommand::Rotate {
+                principal: principal.id(),
+                new_fingerprint: Fingerprint::from_public_key(replacement.public_key()),
+                idempotency: key(93),
+            };
+            let original_input = input(TransitionOperation::Rotation, 93, 0, TransitionOutcome::Committed);
+            let mut sink = RecordingSink::default();
+            assert_eq!(
+                transitions.apply(
+                    &command,
+                    &original_input,
+                    TransitionMaterial::Replacement(
+                        ReplacementCredential::new(replacement.public_key().clone(), credential("key-93"))
+                    ),
+                    Some(&mut sink),
+                    EventTime(1),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+
+            let changed_material = transitions.apply(
+                &command,
+                &original_input,
+                TransitionMaterial::Replacement(
+                    ReplacementCredential::new(replacement.public_key().clone(), credential("changed"))
+                ),
+                Some(&mut sink),
+                EventTime(2),
+            ).expect_err("same key cannot replay changed public material");
+            assert_eq!(changed_material.outcome(), TransitionOutcome::Unknown);
+
+            let changed_input = crate::identity::TransitionInput::new(
+                id(STATE_DIRECTORY),
+                transition(999),
+                TransitionOperation::Rotation,
+                key(93),
+                0,
+                TransitionOutcome::Committed,
+            );
+            let input_collision = transitions.apply(
+                &command,
+                &changed_input,
+                TransitionMaterial::Replacement(
+                    ReplacementCredential::new(replacement.public_key().clone(), credential("key-93"))
+                ),
+                Some(&mut sink),
+                EventTime(3),
+            ).expect_err("same key cannot replay changed transition input");
+            assert_eq!(input_collision.outcome(), TransitionOutcome::Unknown);
+        }
+
+        #[test]
+        fn mutation_commit_requires_exact_write_command_and_object_binding() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            let mut client = live_channel(&transitions, &principal, &signer, 94);
+            let mut sink = RecordingSink::default();
+            let frame = request(&mut client, &mut sink);
+            let authorized = receive(&transitions, connection(94), &frame, &mut sink).unwrap();
+
+            let wrong_capability = SessionInput::new(
+                crate::identity::Capability::new(CapabilityAction::Read, "matinee/object").unwrap(),
+                PayloadKind::Command,
+                ObjectOwner::Owned(id(ADMINISTRATOR)),
+                None,
+            );
+            assert_eq!(
+                transitions.commit_mutation(&authorized, &wrong_capability).unwrap_err().code(),
+                FailureCode::AuthorizationDenied
+            );
+            let wrong_kind = SessionInput::new(
+                authorized.granted().clone(),
+                PayloadKind::Event,
+                ObjectOwner::Owned(id(ADMINISTRATOR)),
+                None,
+            );
+            assert_eq!(
+                transitions.commit_mutation(&authorized, &wrong_kind).unwrap_err().code(),
+                FailureCode::AuthorizationDenied
+            );
+            let wrong_owner = SessionInput::new(
+                authorized.granted().clone(),
+                PayloadKind::Command,
+                ObjectOwner::Owned(id(99)),
+                None,
+            );
+            assert_eq!(
+                transitions.commit_mutation(&authorized, &wrong_owner).unwrap_err().code(),
+                FailureCode::AuthorizationDenied
+            );
+            assert_eq!(commit_mutation(&transitions, &authorized), Ok(1));
+        }
+
+        #[test]
+        fn coordinator_refuses_server_send_from_a_retired_epoch() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            let _client = live_channel(&transitions, &principal, &signer, 98);
+            let replacement = RingSigner::generate();
+            let mut sink = RecordingSink::default();
+            rotate(
+                &transitions,
+                principal.id(),
+                &replacement,
+                "key-98",
+                98,
+                0,
+                None,
+                Some(&mut sink),
+            ).unwrap();
+            let projection = SessionProjection::new(
+                ProjectionClass::Event,
+                crate::identity::Capability::new(CapabilityAction::Write, "matinee/object").unwrap(),
+                ObjectOwner::Owned(id(ADMINISTRATOR)),
+                None,
+                b"secret",
+            );
+            let failure = transitions
+                .send_projection(connection(98), &projection, &mut sink)
+                .expect_err("a retired daemon session emits no protected projection");
+            assert_eq!(failure.code(), FailureCode::StaleEpoch);
+        }
+
+        #[test]
+        fn custody_validation_failure_cannot_follow_an_accepted_event() {
+            let transitions = SecurityTransitions::default();
+            let administrator_signer = RingSigner::generate();
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &administrator_signer,
+            );
+            let mut sink = RecordingSink::default();
+            let enrollment = transition(95);
+            let clock = EnrollmentClock::new(1, ExpiryResult::valid(600_000).unwrap());
+            create_enrollment(
+                &transitions,
+                enrollment,
+                administrator.id(),
+                95,
+                0,
+                ExpiryResult::valid(600_000).unwrap(),
+                Some(&mut sink),
+            ).unwrap();
+            let mut channel = EnrollmentChannel::open(connection(95), 1).unwrap();
+            let proof = paired_proof(&transitions, enrollment, &mut channel, id(EXTENSION));
+            consume_enrollment(
+                &transitions,
+                enrollment,
+                id(EXTENSION),
+                &proof,
+                &clock,
+                &mut channel,
+                96,
+                0,
+                Some(&mut sink),
+            ).unwrap();
+            let before_events = sink.events.len();
+            let before_fingerprint = transitions.custody_fingerprint(id(EXTENSION));
+            transitions.fail_next_custody_validation();
+            let replacement = RingSigner::generate();
+            let rejected = rotate(
+                &transitions,
+                id(EXTENSION),
+                &replacement,
+                "extension-key-2",
+                97,
+                0,
+                Some(&browser_capability()),
+                Some(&mut sink),
+            ).expect_err("injected validation failure occurs before acceptance");
+            assert_eq!(rejected.code(), FailureCode::TransitionUnknown);
+            assert_eq!(sink.events.len(), before_events);
+            assert_eq!(transitions.custody_fingerprint(id(EXTENSION)), before_fingerprint);
+            assert_eq!(transitions.registered_principal(id(EXTENSION)).unwrap().epoch(), 0);
         }
     };
 }

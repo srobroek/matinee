@@ -1,3 +1,5 @@
+#![cfg(feature = "test-support")]
+
 //! Consumer-level contract for the runtime's enrollment boundary.
 //!
 //! Every call here goes through `matinee_runtime`'s public surface, the same one a
@@ -89,21 +91,14 @@ fn client_proof(
         !sealed.ciphertext().is_empty(),
         "transport carries ciphertext"
     );
-    let one_time_pkcs8 = session
-        .open_sealed(ticket.enrollment(), &sealed)
-        .expect("peer opens the sealed key");
     let rng = SystemRandom::new();
-    let one_time = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &one_time_pkcs8, &rng)
-        .expect("sealed bytes are the one-time PKCS#8 key");
     let (_long_term, public) = long_term_keypair(&rng);
     let challenge = enrollment_host()
         .proof_challenge(ticket.enrollment(), &public)
         .expect("host publishes the challenge for a pending enrollment");
-    let signature = one_time
-        .sign(&rng, &challenge)
-        .expect("sign with the one-time key")
-        .as_ref()
-        .to_vec();
+    let signature = session
+        .sign_proof_for_test(ticket.enrollment(), &sealed, &challenge)
+        .expect("peer returns only its signature");
     EnrollmentProof {
         identity,
         signature,
@@ -359,10 +354,11 @@ fn a_closed_channel_seals_and_opens_no_one_time_key() {
         .deliver_one_time_key(ticket.enrollment())
         .expect("seal the one-time key");
     session.close();
+    let challenge = host.proof_challenge(ticket.enrollment(), ticket.one_time_public_key()).unwrap();
     assert_eq!(
-        session.open_sealed(ticket.enrollment(), &sealed).unwrap_err(),
+        session.sign_proof_for_test(ticket.enrollment(), &sealed, &challenge).unwrap_err(),
         EnrollmentFailure::Custody(EnrollmentCustodyError::ChannelNotAuthenticated),
-        "a closed channel recovers nothing already on the wire"
+        "a closed channel signs nothing already on the wire"
     );
 
     let second = host

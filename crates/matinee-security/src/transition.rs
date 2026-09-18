@@ -15,16 +15,17 @@ use crate::adapters::credential_store::{CredentialStore, CredentialStoreError, P
 use crate::adapters::os_pipe::{BootstrapEnvelope, EnvelopeError, NonceLedger, OsPipe, OsPipeError, PlatformOsPipe};
 use crate::authorization::endpoint_class;
 use crate::enrollment::{
-    ChromeCapability, EnrollmentBinding, EnrollmentBundle, EnrollmentChannel, EnrollmentClock,
-    EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreation, EnrollmentProof,
+    ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBundle,
+    EnrollmentChannel, EnrollmentClock, EnrollmentConsumeError, EnrollmentConsumptionService,
+    EnrollmentCreation, EnrollmentProof,
 };
 use crate::events::{emit_required, EndpointClass, EventBoundary, EventOutcome, EventTime, MetadataEntry, SafeNextAction, SecurityCode, SecurityEvent, SecurityEventSink};
 use crate::failures::{FailureCode, SecurityFailure};
 use crate::identity::{
-    Capability, ConnectionId, CredentialReference, EnrollmentLifecycle, ExtensionGrant, Fingerprint,
-    GrantLifecycle, IdempotencyKey, IdentityId, Principal, PrincipalKind, PrincipalLifecycle,
-    PublicKey, RevocationTransition, RotationTransition, TransitionId, TransitionInput,
-    TransitionOutcome,
+    Capability, CapabilityAction, ConnectionId, CredentialReference, EnrollmentLifecycle,
+    ExpiryStatus, ExtensionGrant, Fingerprint, GrantLifecycle, IdempotencyKey, IdentityId,
+    Principal, PrincipalKind, PrincipalLifecycle, PublicKey, RevocationTransition,
+    RotationTransition, TransitionId, TransitionInput, TransitionOperation, TransitionOutcome,
 };
 use crate::{AuthorizedInput, ChannelSession, ObjectOwner, PayloadKind, SecurityCommand, SessionInput};
 
@@ -299,7 +300,7 @@ fn classify_endpoint(endpoint: &str) -> EndpointClass {
 /// undecidable one: the durable record, the deadline, or the lock could not be read,
 /// so the module reports no protected success and mutates nothing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TransitionRejection {
+pub struct TransitionRejection {
     outcome: TransitionOutcome,
     failure: SecurityFailure,
 }
@@ -319,15 +320,15 @@ impl TransitionRejection {
         }
     }
 
-    pub(crate) fn outcome(&self) -> TransitionOutcome {
+    pub fn outcome(&self) -> TransitionOutcome {
         self.outcome
     }
 
-    pub(crate) fn failure(&self) -> SecurityFailure {
+    pub fn failure(&self) -> SecurityFailure {
         self.failure
     }
 
-    pub(crate) fn code(&self) -> FailureCode {
+    pub fn code(&self) -> FailureCode {
         self.failure.code()
     }
 }
@@ -453,6 +454,205 @@ pub(crate) enum TransitionMaterial<'a> {
     Replacement(ReplacementCredential),
     Revocation(&'a str),
 }
+fn transition_digest(
+    command: &SecurityCommand,
+    input: &TransitionInput,
+    material: &TransitionMaterial<'_>,
+) -> [u8; 32] {
+    let mut digest = CanonicalDigest::new();
+    digest.bytes("domain", b"matinee.transition.replay.v1");
+    match command {
+        SecurityCommand::Bootstrap { state_directory, idempotency } => {
+            digest.byte("command", 0);
+            digest.uuid("state-directory", state_directory.get());
+            digest.uuid("idempotency", idempotency.get());
+        }
+        SecurityCommand::CreateEnrollment { enrollment, daemon, idempotency } => {
+            digest.byte("command", 1);
+            digest.uuid("enrollment", enrollment.get());
+            digest.uuid("daemon", daemon.get());
+            digest.uuid("idempotency", idempotency.get());
+        }
+        SecurityCommand::ConsumeEnrollment { enrollment, idempotency } => {
+            digest.byte("command", 2);
+            digest.uuid("enrollment", enrollment.get());
+            digest.uuid("idempotency", idempotency.get());
+        }
+        SecurityCommand::Rotate { principal, new_fingerprint, idempotency } => {
+            digest.byte("command", 3);
+            digest.uuid("principal", principal.get());
+            digest.bytes("new-fingerprint", new_fingerprint.as_str().as_bytes());
+            digest.uuid("idempotency", idempotency.get());
+        }
+        SecurityCommand::Revoke { principal, idempotency } => {
+            digest.byte("command", 4);
+            digest.uuid("principal", principal.get());
+            digest.uuid("idempotency", idempotency.get());
+        }
+    }
+    digest.uuid("input-state-directory", input.state_directory().get());
+    digest.uuid("input-transition", input.transition().get());
+    digest.byte("input-operation", operation_code(input.operation()));
+    digest.uuid("input-idempotency", input.idempotency().get());
+    digest.u64("input-prior-epoch", input.prior_epoch());
+    digest.byte("input-outcome", outcome_code(input.outcome()));
+    match material {
+        TransitionMaterial::Bootstrap(value) => {
+            digest.byte("material", 0);
+            digest.bytes("envelope", value.envelope);
+            digest.bytes("endpoint", value.endpoint);
+        }
+        TransitionMaterial::Enrollment(value) => {
+            digest.byte("material", 1);
+            digest.uuid("enrollment", value.enrollment.get());
+            digest.bytes("origin", value.origin.as_bytes());
+            digest.bytes("store", value.store_metadata.as_bytes());
+            digest.bytes("update", value.update_metadata.as_bytes());
+            digest.bytes("install", value.install_metadata.as_bytes());
+            digest.uuid("daemon", value.daemon.get());
+            digest.bytes("daemon-endpoint", value.daemon_endpoint.as_bytes());
+            digest.byte("expiry-status", expiry_code(value.expiry.status()));
+            digest.u64("expiry-deadline", value.expiry.deadline_ms());
+        }
+        TransitionMaterial::Pairing(value) => {
+            digest.byte("material", 2);
+            digest.uuid("identity", value.identity.get());
+            digest.uuid("proof-identity", value.proof.identity.get());
+            digest.bytes("proof-signature", &value.proof.signature);
+            digest.bytes("proof-public-key", value.proof.long_term_public_key.as_bytes());
+            digest.u64("clock-occurrence", value.clock.occurrence_ms());
+            digest.byte("clock-expiry-status", expiry_code(value.clock.expiry().status()));
+            digest.u64("clock-expiry-deadline", value.clock.expiry().deadline_ms());
+            digest.bytes("binding-origin", value.binding.origin.as_bytes());
+            digest.bytes("binding-endpoint", value.binding.endpoint.as_bytes());
+            digest.bytes("binding-store", value.binding.store_metadata.as_bytes());
+            digest.bytes("binding-update", value.binding.update_metadata.as_bytes());
+            digest.bytes("binding-install", value.binding.install_metadata.as_bytes());
+            let development = match value.binding.development_allowance {
+                DevelopmentIdentityAllowance::None => 0,
+                DevelopmentIdentityAllowance::Explicit { warning_acknowledged: false } => 1,
+                DevelopmentIdentityAllowance::Explicit { warning_acknowledged: true } => 2,
+            };
+            digest.byte("binding-development", development);
+            add_chrome_capability(&mut digest, value.capability);
+            digest.uuid("channel-connection", value.channel.connection().get());
+            digest.u64("channel-epoch", value.channel.epoch());
+            digest.u64("ceiling-count", value.ceiling.len() as u64);
+            for capability in &value.ceiling {
+                add_capability(&mut digest, capability);
+            }
+            add_credential(&mut digest, &value.credential);
+        }
+        TransitionMaterial::Replacement(value) => {
+            digest.byte("material", 3);
+            digest.bytes("replacement-key", value.public_key.as_bytes());
+            add_credential(&mut digest, &value.credential);
+            digest.bool("replacement-custody", value.custody.is_some());
+            if let Some(capability) = &value.custody {
+                add_chrome_capability(&mut digest, capability);
+            }
+        }
+        TransitionMaterial::Revocation(reason) => {
+            digest.byte("material", 4);
+            digest.bytes("reason", reason.as_bytes());
+        }
+    }
+    digest.finish()
+}
+
+fn add_chrome_capability(digest: &mut CanonicalDigest, capability: &ChromeCapability) {
+    let (origin, store, update, install, storage_local, non_exportable) =
+        capability.canonical_fields();
+    digest.bytes("capability-origin", origin.as_bytes());
+    digest.bytes("capability-store", store.as_bytes());
+    digest.bytes("capability-update", update.as_bytes());
+    digest.bytes("capability-install", install.as_bytes());
+    digest.bool("capability-storage-local", storage_local);
+    digest.bool("capability-non-exportable", non_exportable);
+}
+
+fn add_capability(digest: &mut CanonicalDigest, capability: &Capability) {
+    let action = match capability.action() {
+        CapabilityAction::Read => 0,
+        CapabilityAction::Write => 1,
+        CapabilityAction::Execute => 2,
+        CapabilityAction::Administer => 3,
+        CapabilityAction::ManagePrincipals => 4,
+        CapabilityAction::Rotate => 5,
+        CapabilityAction::Revoke => 6,
+    };
+    digest.byte("capability-action", action);
+    digest.bytes("capability-scope", capability.resource_scope().as_bytes());
+}
+
+fn add_credential(digest: &mut CanonicalDigest, credential: &CredentialReference) {
+    digest.bytes("credential-provider", credential.provider().as_bytes());
+    digest.bytes("credential-locator", credential.key_locator().as_bytes());
+    digest.uuid("credential-daemon", credential.daemon().get());
+    digest.uuid("credential-state-directory", credential.state_directory().get());
+}
+
+const fn operation_code(operation: &TransitionOperation) -> u8 {
+    match operation {
+        TransitionOperation::Bootstrap => 0,
+        TransitionOperation::EnrollmentCreate => 1,
+        TransitionOperation::EnrollmentConsume => 2,
+        TransitionOperation::Rotation => 3,
+        TransitionOperation::Revocation => 4,
+    }
+}
+
+const fn outcome_code(outcome: TransitionOutcome) -> u8 {
+    match outcome {
+        TransitionOutcome::Committed => 0,
+        TransitionOutcome::AlreadyCommitted => 1,
+        TransitionOutcome::Rejected => 2,
+        TransitionOutcome::Unknown => 3,
+    }
+}
+
+const fn expiry_code(status: ExpiryStatus) -> u8 {
+    match status {
+        ExpiryStatus::Valid => 0,
+        ExpiryStatus::Expired => 1,
+        ExpiryStatus::Uncertain => 2,
+    }
+}
+
+struct CanonicalDigest(ring::digest::Context);
+
+impl CanonicalDigest {
+    fn new() -> Self {
+        Self(ring::digest::Context::new(&ring::digest::SHA256))
+    }
+
+    fn bytes(&mut self, name: &str, value: &[u8]) {
+        self.0.update(&(name.len() as u32).to_be_bytes());
+        self.0.update(name.as_bytes());
+        self.0.update(&(value.len() as u64).to_be_bytes());
+        self.0.update(value);
+    }
+
+    fn byte(&mut self, name: &str, value: u8) {
+        self.bytes(name, &[value]);
+    }
+
+    fn bool(&mut self, name: &str, value: bool) {
+        self.byte(name, u8::from(value));
+    }
+
+    fn u64(&mut self, name: &str, value: u64) {
+        self.bytes(name, &value.to_be_bytes());
+    }
+
+    fn uuid(&mut self, name: &str, value: uuid::Uuid) {
+        self.bytes(name, value.as_bytes());
+    }
+
+    fn finish(self) -> [u8; 32] {
+        self.0.finish().as_ref().try_into().expect("SHA-256 is 32 bytes")
+    }
+}
 
 struct EnrollmentRegistration {
     bundle: EnrollmentBundle,
@@ -467,8 +667,14 @@ struct PendingDecision {
 }
 
 struct AppliedTransition {
-    command: SecurityCommand,
+    digest: [u8; 32],
     record: TransitionRecord,
+}
+
+struct RetiredCredential {
+    public_key: PublicKey,
+    fingerprint: Fingerprint,
+    credential: CredentialReference,
 }
 
 #[derive(Default)]
@@ -480,14 +686,34 @@ struct TransitionState {
     grants: Vec<ExtensionGrant>,
     decisions: HashMap<TransitionId, PendingDecision>,
     applied: HashMap<IdempotencyKey, AppliedTransition>,
+    retired_credentials: HashMap<IdentityId, Vec<RetiredCredential>>,
     host: EnrollmentConsumptionService,
     object_version: u64,
 }
 
+#[cfg(test)]
+pub(crate) struct ApplyGate {
+    acquired: std::sync::Barrier,
+    release: std::sync::Barrier,
+}
+
+#[cfg(test)]
+impl ApplyGate {
+    pub(crate) fn wait_until_acquired(&self) {
+        self.acquired.wait();
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.wait();
+    }
+}
+
 /// The one process-lifetime security state every transition serializes against.
 #[derive(Default)]
-pub(crate) struct SecurityTransitions {
+pub struct SecurityTransitions {
     state: Mutex<TransitionState>,
+    #[cfg(test)]
+    next_apply_gate: Mutex<Option<std::sync::Arc<ApplyGate>>>,
 }
 
 impl fmt::Debug for SecurityTransitions {
@@ -521,6 +747,16 @@ impl SecurityTransitions {
             .lock()
             .map_err(|_| SecurityFailure::new(FailureCode::TransitionUnknown))
     }
+    #[cfg(test)]
+    pub(crate) fn gate_next_apply(&self) -> std::sync::Arc<ApplyGate> {
+        let gate = std::sync::Arc::new(ApplyGate {
+            acquired: std::sync::Barrier::new(2),
+            release: std::sync::Barrier::new(2),
+        });
+        *self.next_apply_gate.lock().expect("apply gate lock") = Some(gate.clone());
+        gate
+    }
+
 
     /// Apply one closed lifecycle command against the durable transition record the
     /// owning state actor reported.
@@ -537,7 +773,13 @@ impl SecurityTransitions {
         sink: Option<&mut S>,
         time: EventTime,
     ) -> Result<TransitionOutcome, TransitionRejection> {
+        let digest = transition_digest(command, input, &material);
         let mut state = self.lock()?;
+        #[cfg(test)]
+        if let Some(gate) = self.next_apply_gate.lock().expect("apply gate lock").take() {
+            gate.acquired.wait();
+            gate.release.wait();
+        }
         if *input.operation() != command.operation()
             || input.idempotency() != command.idempotency()
         {
@@ -546,10 +788,8 @@ impl SecurityTransitions {
                 None,
             ));
         }
-        // A retry answers from the recorded decision and commits nothing a second
-        // time. A different command under a recorded key is a conflicting reuse.
         if let Some(applied) = state.applied.get(&command.idempotency()) {
-            return if &applied.command == command {
+            return if applied.digest == digest {
                 Ok(TransitionOutcome::AlreadyCommitted)
             } else {
                 Err(TransitionRejection::undecided(
@@ -559,8 +799,6 @@ impl SecurityTransitions {
             };
         }
         if input.outcome() == TransitionOutcome::AlreadyCommitted {
-            // The record claims a commit this process holds no decision for, so
-            // whether the protected state moved cannot be established here.
             return Err(TransitionRejection::undecided(
                 FailureCode::TransitionUnknown,
                 None,
@@ -579,17 +817,17 @@ impl SecurityTransitions {
                     state_directory, ..
                 },
                 TransitionMaterial::Bootstrap(bootstrap),
-            ) => state.bootstrap(command, input, *state_directory, bootstrap, sink, time),
+            ) => state.bootstrap(command, input, digest, *state_directory, bootstrap, sink, time),
             (
                 SecurityCommand::CreateEnrollment {
                     enrollment, daemon, ..
                 },
                 TransitionMaterial::Enrollment(creation),
-            ) => state.create_enrollment(command, input, *enrollment, *daemon, creation, sink, time),
+            ) => state.create_enrollment(command, input, digest, *enrollment, *daemon, creation, sink, time),
             (
                 SecurityCommand::ConsumeEnrollment { enrollment, .. },
                 TransitionMaterial::Pairing(pairing),
-            ) => state.consume_enrollment(command, input, *enrollment, pairing, sink, time),
+            ) => state.consume_enrollment(command, input, digest, *enrollment, pairing, sink, time),
             (
                 SecurityCommand::Rotate {
                     principal,
@@ -600,6 +838,7 @@ impl SecurityTransitions {
             ) => state.rotate(
                 command,
                 input,
+                digest,
                 *principal,
                 new_fingerprint,
                 replacement,
@@ -609,7 +848,7 @@ impl SecurityTransitions {
             (
                 SecurityCommand::Revoke { principal, .. },
                 TransitionMaterial::Revocation(reason),
-            ) => state.revoke(command, input, *principal, reason, sink, time),
+            ) => state.revoke(command, input, digest, *principal, reason, sink, time),
             _ => Err(TransitionRejection::undecided(
                 FailureCode::TransitionUnknown,
                 None,
@@ -622,7 +861,7 @@ impl SecurityTransitions {
     /// This registry is the only snapshot source a handshake configuration may read,
     /// so every committed rotation and revocation is visible to every later handshake,
     /// frame, grant, and decision.
-    pub(crate) fn register_principal(
+    pub fn register_principal(
         &self,
         principal: Principal,
     ) -> Result<(), TransitionRejection> {
@@ -701,7 +940,7 @@ impl SecurityTransitions {
     /// A handshake that completed against a retired epoch, a revoked principal, or an
     /// identity this registry does not hold never becomes a live channel, so a
     /// concurrent handshake cannot outlive the transition it raced.
-    pub(crate) fn register_channel(
+    pub fn register_channel(
         &self,
         session: ChannelSession,
     ) -> Result<ConnectionId, TransitionRejection> {
@@ -746,7 +985,7 @@ impl SecurityTransitions {
     ///
     /// A disconnect is not a transition: it closes a channel and touches no principal,
     /// grant, decision, recorded outcome, or object version.
-    pub(crate) fn close_channel(&self, connection: ConnectionId) -> bool {
+    pub fn close_channel(&self, connection: ConnectionId) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
@@ -759,7 +998,7 @@ impl SecurityTransitions {
         }
     }
 
-    pub(crate) fn channel_is_open(&self, connection: ConnectionId) -> bool {
+    pub fn channel_is_open(&self, connection: ConnectionId) -> bool {
         self.state
             .lock()
             .ok()
@@ -890,7 +1129,7 @@ impl SecurityTransitions {
     /// principal that rotated, one that was revoked, and a channel from a retired
     /// epoch are refused before the frame is opened. The extension grant is read from
     /// the registry too, so no caller can present one the registry does not hold.
-    pub(crate) fn receive(
+    pub fn receive(
         &self,
         connection: ConnectionId,
         frame: &[u8],
@@ -952,6 +1191,66 @@ impl SecurityTransitions {
         let operation = SessionInput::new(requested, kind, owner, grant);
         session.receive(frame, &operation, sink)
     }
+    /// Authorize and seal one daemon projection on a registered live channel.
+    pub fn send_projection(
+        &self,
+        connection: ConnectionId,
+        projection: &crate::SessionProjection<'_>,
+        sink: &mut dyn SecurityEventSink,
+    ) -> Result<Vec<u8>, SecurityFailure> {
+        let mut state = self.lock_for_frame()?;
+        let TransitionState { principals, channels, grants, .. } = &mut *state;
+        let session = channels
+            .get_mut(&connection)
+            .ok_or_else(|| SecurityFailure::new(FailureCode::AuthenticationFailed))?;
+        let principal = principals.get(&session.principal()).ok_or_else(|| {
+            SecurityFailure::with_safe_ids(
+                FailureCode::AuthenticationFailed,
+                Some(session.principal().get()),
+                Some(connection.get()),
+            )
+        })?;
+        let safe_ids = (Some(principal.id().get()), Some(connection.get()));
+        if principal.lifecycle() == PrincipalLifecycle::Revoked {
+            session.close();
+            return Err(SecurityFailure::with_safe_ids(
+                FailureCode::Revoked,
+                safe_ids.0,
+                safe_ids.1,
+            ));
+        }
+        if principal.lifecycle() != PrincipalLifecycle::Active {
+            session.close();
+            return Err(SecurityFailure::with_safe_ids(
+                FailureCode::AuthenticationFailed,
+                safe_ids.0,
+                safe_ids.1,
+            ));
+        }
+        if session.epoch() != principal.epoch() {
+            session.close();
+            return Err(SecurityFailure::with_safe_ids(
+                FailureCode::StaleEpoch,
+                safe_ids.0,
+                safe_ids.1,
+            ));
+        }
+        let grant = grants.iter().find(|grant| {
+            grant.extension() == principal.id()
+                && grant.lifecycle() == GrantLifecycle::Active
+                && grant.epoch() == principal.epoch()
+        });
+        let operation = projection.operation();
+        let coordinated = crate::SessionProjection::new(
+            projection.class(),
+            operation.requested().clone(),
+            operation.owner(),
+            grant,
+            projection.payload(),
+        );
+        session.send_projection(&coordinated, sink)
+    }
+
 
     /// Commit one object mutation the receive path authorized.
     ///
@@ -959,9 +1258,10 @@ impl SecurityTransitions {
     /// crossed a committed rotation or revocation mutates nothing. The registry is
     /// consulted before the connection, so a stale credential is reported as the stale
     /// epoch it is rather than as the closed channel that followed from it.
-    pub(crate) fn commit_mutation(
+    pub fn commit_mutation(
         &self,
         input: &AuthorizedInput,
+        expected: &SessionInput<'_>,
     ) -> Result<u64, SecurityFailure> {
         let mut state = self.lock_for_frame()?;
         let safe_ids = (
@@ -987,6 +1287,19 @@ impl SecurityTransitions {
         {
             return Err(SecurityFailure::with_safe_ids(
                 FailureCode::StaleEpoch,
+                safe_ids.0,
+                safe_ids.1,
+            ));
+        }
+        if input.granted() != expected.requested()
+            || input.kind() != expected.kind()
+            || input.owner() != expected.owner()
+            || input.granted().action() != &CapabilityAction::Write
+            || input.kind() != PayloadKind::Command
+            || input.owner() != ObjectOwner::Owned(principal.owner())
+        {
+            return Err(SecurityFailure::with_safe_ids(
+                FailureCode::AuthorizationDenied,
                 safe_ids.0,
                 safe_ids.1,
             ));
@@ -1049,6 +1362,12 @@ impl SecurityTransitions {
             .map(|state| state.host.is_quarantined(fingerprint))
             .unwrap_or(true)
     }
+    #[cfg(test)]
+    pub(crate) fn fail_next_custody_validation(&self) {
+        let mut state = self.state.lock().expect("transition state lock");
+        state.host.fail_next_custody_validation();
+    }
+
 
     /// Seal one bundle's one-time key over an authenticated native channel. The
     /// pending registration keeps the only copy of that key, and it leaves exactly
@@ -1089,6 +1408,7 @@ impl TransitionState {
         &mut self,
         command: &SecurityCommand,
         input: &TransitionInput,
+        digest: [u8; 32],
         state_directory: IdentityId,
         material: BootstrapMaterial<'_>,
         sink: Option<&mut S>,
@@ -1111,7 +1431,7 @@ impl TransitionState {
         self.applied.insert(
             command.idempotency(),
             AppliedTransition {
-                command: command.clone(),
+                digest,
                 record: TransitionRecord::Bootstrap,
             },
         );
@@ -1165,6 +1485,7 @@ impl TransitionState {
         &mut self,
         command: &SecurityCommand,
         input: &TransitionInput,
+        digest: [u8; 32],
         enrollment: TransitionId,
         daemon: IdentityId,
         creation: EnrollmentCreation,
@@ -1236,7 +1557,7 @@ impl TransitionState {
         self.applied.insert(
             command.idempotency(),
             AppliedTransition {
-                command: command.clone(),
+                digest,
                 record: TransitionRecord::EnrollmentCreated(enrollment),
             },
         );
@@ -1247,6 +1568,7 @@ impl TransitionState {
         &mut self,
         command: &SecurityCommand,
         input: &TransitionInput,
+        digest: [u8; 32],
         enrollment: TransitionId,
         pairing: PairingMaterial<'_>,
         sink: Option<&mut S>,
@@ -1347,7 +1669,7 @@ impl TransitionState {
         self.applied.insert(
             command.idempotency(),
             AppliedTransition {
-                command: command.clone(),
+                digest,
                 record: TransitionRecord::EnrollmentConsumed {
                     enrollment,
                     principal: identity,
@@ -1362,6 +1684,7 @@ impl TransitionState {
         &mut self,
         command: &SecurityCommand,
         input: &TransitionInput,
+        digest: [u8; 32],
         principal: IdentityId,
         new_fingerprint: &Fingerprint,
         replacement: ReplacementCredential,
@@ -1381,12 +1704,22 @@ impl TransitionState {
                 Some(principal),
             ));
         }
-        // One whole replacement: the fingerprint names the key being installed, the
-        // key is not the retired one, and the locator stays inside the owning daemon
-        // and state directory.
+        // No key, fingerprint, or locator that became retired may ever become active
+        // again. The current locator must move too, otherwise it would become both
+        // active and retired in this commit.
         let fingerprint = replacement.fingerprint();
+        let reactivates_retired = self
+            .retired_credentials
+            .get(&principal)
+            .is_some_and(|retired| retired.iter().any(|retired| {
+                retired.public_key == replacement.public_key
+                    || retired.fingerprint == fingerprint
+                    || retired.credential == replacement.credential
+            }));
         if &fingerprint != new_fingerprint
             || replacement.public_key == *current.public_key()
+            || replacement.credential == *current.credential()
+            || reactivates_retired
             || replacement.credential.daemon() != current.owner()
             || replacement.credential.state_directory()
                 != current.credential().state_directory()
@@ -1396,9 +1729,9 @@ impl TransitionState {
                 Some(principal),
             ));
         }
-        // A principal the enrollment host stores a key for rotates together with that
-        // custody, so no retired extension key survives unquarantined.
-        let custody = match (
+        // Every fallible custody check completes before the accepted event. The
+        // resulting plan is an owned, validated commit that cannot fail afterwards.
+        let custody_update = match (
             self.host.registered_fingerprint(principal),
             replacement.custody.as_ref(),
         ) {
@@ -1408,7 +1741,11 @@ impl TransitionState {
                     Some(principal),
                 ));
             }
-            (Some(_), Some(capability)) => Some(capability),
+            (Some(_), Some(capability)) => Some(
+                self.host
+                    .prepare_custody_update(principal, &replacement.public_key, capability)
+                    .map_err(|error| consume_rejection(error, principal))?,
+            ),
             (None, _) => None,
         };
         let next_epoch = current
@@ -1469,11 +1806,17 @@ impl TransitionState {
                 },
             ],
         )?;
-        if let Some(capability) = custody {
-            self.host
-                .update_custody(principal, &replacement.public_key, capability)
-                .map_err(|error| consume_rejection(error, principal))?;
+        if let Some(update) = custody_update {
+            self.host.commit_custody_update(update);
         }
+        self.retired_credentials
+            .entry(principal)
+            .or_default()
+            .push(RetiredCredential {
+                public_key: current.public_key().clone(),
+                fingerprint: current.fingerprint().clone(),
+                credential: current.credential().clone(),
+            });
         self.principals.insert(principal, rotated);
         self.close_channels_for(principal);
         self.invalidate_grants_for(principal);
@@ -1481,7 +1824,7 @@ impl TransitionState {
         self.applied.insert(
             command.idempotency(),
             AppliedTransition {
-                command: command.clone(),
+                digest,
                 record: TransitionRecord::Rotated(carrier),
             },
         );
@@ -1492,6 +1835,7 @@ impl TransitionState {
         &mut self,
         command: &SecurityCommand,
         input: &TransitionInput,
+        digest: [u8; 32],
         principal: IdentityId,
         reason: &str,
         sink: Option<&mut S>,
@@ -1560,7 +1904,7 @@ impl TransitionState {
         self.applied.insert(
             command.idempotency(),
             AppliedTransition {
-                command: command.clone(),
+                digest,
                 record: TransitionRecord::Revoked(carrier),
             },
         );

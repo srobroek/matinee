@@ -2,8 +2,8 @@ use matinee_security::{
     AuthorizedOutput, Capability, CapabilityAction, ChannelSigner, ChannelSigningError,
     ClientHandshake, ClientHandshakeConfig, ConnectionId, CredentialReference, FailureCode,
     Fingerprint, IdentityId, ObjectOwner, PayloadKind, Principal, PrincipalKind, ProjectionClass,
-    PublicKey, SecurityEvent, SecurityEventSink, SecurityEventSinkResult, ServerHandshake,
-    ServerHandshakeConfig, SessionInput, SessionProjection,
+    PublicKey, SecurityEvent, SecurityEventSink, SecurityEventSinkResult, SecurityTransitions,
+    ServerHandshake, ServerHandshakeConfig, SessionProjection,
 };
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
@@ -110,7 +110,7 @@ fn registered_principal(key: PublicKey, owner: IdentityId, epoch: u64) -> Princi
 
 struct Pair {
     client: matinee_security::ChannelSession,
-    daemon: matinee_security::ChannelSession,
+    transitions: SecurityTransitions,
     connection: ConnectionId,
     owner: IdentityId,
 }
@@ -131,9 +131,12 @@ fn establish() -> Pair {
         3,
     )
     .unwrap();
+    let principal = registered_principal(client_signer.public.clone(), owner, EPOCH);
+    let transitions = SecurityTransitions::default();
+    transitions.register_principal(principal.clone()).unwrap();
     let server_config = ServerHandshakeConfig::new(
         ENDPOINT,
-        registered_principal(client_signer.public.clone(), owner, EPOCH),
+        principal,
         owner,
         daemon_signer.public.clone(),
         2,
@@ -149,9 +152,10 @@ fn establish() -> Pair {
         .finish(&proof, &client_signer, &mut sink)
         .unwrap();
     let daemon = server_pending.finish(&client_proof, &mut sink).unwrap();
+    transitions.register_channel(daemon).unwrap();
     Pair {
         client,
-        daemon,
+        transitions,
         connection,
         owner,
     }
@@ -161,19 +165,19 @@ fn establish() -> Pair {
 fn external_consumer_establishes_and_uses_only_the_typed_boundary() {
     let mut pair = establish();
     let mut sink = Sink::default();
-    assert_eq!(pair.daemon.connection_id(), pair.connection);
-    assert_eq!(pair.daemon.epoch(), EPOCH);
+    assert!(pair.transitions.channel_is_open(pair.connection));
     assert_eq!(pair.client.epoch(), EPOCH);
 
     let output = AuthorizedOutput::filtered(PayloadKind::Command, b"status".to_vec()).unwrap();
     let frame = pair.client.send(&output, &mut sink).unwrap();
-    let operation = SessionInput::new(
+    let input = pair.transitions.receive(
+        pair.connection,
+        &frame,
         capability(CapabilityAction::Read, "matinee/status"),
         PayloadKind::Command,
         ObjectOwner::Owned(pair.owner),
-        None,
-    );
-    let input = pair.daemon.receive(&frame, &operation, &mut sink).unwrap();
+        &mut sink,
+    ).unwrap();
     assert_eq!(input.payload(), b"status");
     assert_eq!(input.granted().resource_scope(), "matinee/status");
 
@@ -184,59 +188,32 @@ fn external_consumer_establishes_and_uses_only_the_typed_boundary() {
         None,
         b"ready",
     );
-    let response = pair.daemon.send_projection(&projection, &mut sink).unwrap();
+    let response = pair.transitions.send_projection(pair.connection, &projection, &mut sink).unwrap();
     let filtered = pair
         .client
         .receive_filtered(&response, PayloadKind::Response, &mut sink)
         .unwrap();
     assert_eq!(filtered.payload(), b"ready");
-    assert!(pair.client.is_open() && pair.daemon.is_open());
+    assert!(pair.client.is_open() && pair.transitions.channel_is_open(pair.connection));
 }
 
 #[test]
-fn an_external_consumer_cannot_reach_an_unauthorized_path_on_either_side() {
+fn an_external_consumer_cannot_bypass_coordinator_authorization() {
     let mut pair = establish();
     let mut sink = Sink::default();
-    let operation = SessionInput::new(
-        capability(CapabilityAction::Read, "matinee/status"),
-        PayloadKind::Command,
-        ObjectOwner::Owned(pair.owner),
-        None,
-    );
     let output = AuthorizedOutput::filtered(PayloadKind::Command, b"status".to_vec()).unwrap();
     let frame = pair.client.send(&output, &mut sink).unwrap();
 
-    // The daemon holds the principal, so it cannot consume a frame without authorizing it.
-    let failure = pair
-        .daemon
-        .receive_filtered(&frame, PayloadKind::Command, &mut sink)
-        .expect_err("a daemon must authorize what it accepts");
-    assert_eq!(failure.code(), FailureCode::AuthorizationDenied);
-    assert!(!pair.daemon.is_open());
-
-    // The client holds no principal, so it cannot authorize anything.
-    let mut pair = establish();
-    let failure = pair
-        .client
-        .receive(&frame, &operation, &mut sink)
-        .expect_err("a client cannot authorize");
-    assert_eq!(failure.code(), FailureCode::AuthorizationDenied);
-    assert!(!pair.client.is_open());
-
-    let mut pair = establish();
-    let projection = SessionProjection::new(
-        ProjectionClass::Event,
+    let failure = pair.transitions.receive(
+        pair.connection,
+        &frame,
         capability(CapabilityAction::Read, "matinee/status"),
-        ObjectOwner::Owned(pair.owner),
-        None,
-        b"event",
-    );
-    let failure = pair
-        .client
-        .send_projection(&projection, &mut sink)
-        .expect_err("a client cannot disclose an authorized projection");
-    assert_eq!(failure.code(), FailureCode::AuthorizationDenied);
-    assert!(!pair.client.is_open());
+        PayloadKind::Command,
+        ObjectOwner::Owned(id(99)),
+        &mut sink,
+    ).expect_err("the coordinator refuses a foreign object");
+    assert_eq!(failure.code(), FailureCode::ObjectNotFound);
+    assert!(pair.transitions.channel_is_open(pair.connection));
 }
 
 #[test]

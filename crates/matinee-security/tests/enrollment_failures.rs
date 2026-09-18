@@ -56,7 +56,7 @@ macro_rules! enrollment_failure_tests {
             let channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9000)), 1).unwrap();
             let enrollment = bundle.enrollment_id();
             let transfer = channel.seal_one_time_key(bundle).unwrap();
-            let private = channel.open_sealed(enrollment, &transfer).unwrap();
+            let private = channel.open_sealed_for_test(enrollment, &transfer).unwrap();
             let rng = SystemRandom::new();
             let signer = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &private, &rng).unwrap();
             let mut bytes = [0u8; crate::identity::UNCOMPRESSED_KEY_BYTES]; bytes.copy_from_slice(signer.public_key().as_ref());
