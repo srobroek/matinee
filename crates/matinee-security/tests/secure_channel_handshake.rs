@@ -8,8 +8,8 @@ macro_rules! secure_channel_handshake_tests {
         use crate::test_support_transitions::{EXTENSION, ceiling, connection, registered};
         use crate::{
             AuthorizedOutput, ChannelSigner, ClientHandshake, ClientHandshakeConfig, ConnectionId,
-            FailureCode, IdentityId, PayloadKind, PrincipalKind, SecurityTransitions,
-            ServerHandshake, ServerHandshakeConfig,
+            FailureCode, IdentityId, LoopbackHost, PayloadKind, PrincipalKind, SecurityTransitions,
+            ServerHandshake, ServerHandshakeConfig, StateBearingRequest, StateBearingRoute,
         };
         use uuid::Uuid;
 
@@ -408,6 +408,262 @@ macro_rules! secure_channel_handshake_tests {
             );
             assert!(!transitions.channel_is_open(connection(1)));
             assert_eq!(transitions.open_channels(), 0);
+        }
+
+        const ROUTE: &str = "/v1/session";
+        const SUBPROTOCOL: &str = crate::SECURE_CHANNEL_CONTEXT;
+        const PAIRED_ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+
+        fn state_bearing_route() -> StateBearingRoute {
+            StateBearingRoute::new(
+                LoopbackHost::Ipv4,
+                7777,
+                ROUTE,
+                SUBPROTOCOL,
+                [PAIRED_ORIGIN],
+            )
+            .expect("a configured state-bearing route")
+        }
+
+        fn upgrade() -> StateBearingRequest<'static> {
+            StateBearingRequest {
+                authority: ENDPOINT,
+                route: ROUTE,
+                subprotocol: SUBPROTOCOL,
+                origin: PAIRED_ORIGIN,
+            }
+        }
+
+        /// FR-018: a state-bearing route accepts only a configured loopback endpoint. A
+        /// DNS alias, a wildcard bind, a routable address, an implicit port, and the
+        /// loopback family or port that was not configured are all non-loopback bindings
+        /// for this route, and each fails closed.
+        #[test]
+        fn a_state_bearing_route_admits_only_its_configured_loopback_endpoint() {
+            let route = state_bearing_route();
+            let mut sink = RecordingSink::default();
+            for authority in [
+                "localhost:7777",
+                "0.0.0.0:7777",
+                "[::]:7777",
+                "192.168.1.9:7777",
+                "daemon.example.test:7777",
+                "127.0.0.1",
+                "127.0.0.1:0",
+                "127.0.0.1:07777",
+                "127.0.0.1:+7777",
+                "[::1]:7777",
+                "127.0.0.1:7778",
+            ] {
+                let request = StateBearingRequest {
+                    authority,
+                    ..upgrade()
+                };
+                assert_eq!(
+                    route
+                        .admit(&request, 1, &mut sink)
+                        .expect_err(authority)
+                        .code(),
+                    FailureCode::EndpointRejected,
+                    "{authority}"
+                );
+            }
+            // An endpoint refusal is a configuration mismatch, not one of the facts the
+            // event contract enumerates, so it emits nothing.
+            assert!(sink.events.is_empty());
+
+            // The same refusal holds at the handshake itself, so an endpoint that never
+            // passed admission cannot reach a traffic key by skipping the route.
+            let signer = RingSigner::generate();
+            assert_eq!(
+                ServerHandshakeConfig::new(
+                    "daemon.example.test:7777",
+                    fixture_principal(signer.public_key().clone(), EPOCH),
+                    id(DAEMON),
+                    signer.public_key().clone(),
+                    1,
+                    3,
+                    ConnectionId::new(Uuid::from_u128(CONNECTION)),
+                )
+                .expect_err("a routable endpoint never binds a state-bearing session")
+                .code(),
+                FailureCode::EndpointRejected
+            );
+        }
+
+        /// FR-018: the expected route and the expected *versioned* subprotocol are both
+        /// required. An unversioned and a differently versioned subprotocol are refused by
+        /// the same exact comparison.
+        #[test]
+        fn a_state_bearing_route_admits_only_the_expected_route_and_versioned_subprotocol() {
+            let route = state_bearing_route();
+            let mut sink = RecordingSink::default();
+            for wrong_route in ["/v1/health", "/v1/session/extra", "/", "/V1/session", ""] {
+                let request = StateBearingRequest {
+                    route: wrong_route,
+                    ..upgrade()
+                };
+                assert_eq!(
+                    route
+                        .admit(&request, 1, &mut sink)
+                        .expect_err(wrong_route)
+                        .code(),
+                    FailureCode::EndpointRejected,
+                    "route {wrong_route:?}"
+                );
+            }
+            for wrong_subprotocol in [
+                "matinee.secure-channel",
+                "matinee.secure-channel.v2",
+                "matinee.secure-channel.v11",
+                "",
+            ] {
+                let request = StateBearingRequest {
+                    subprotocol: wrong_subprotocol,
+                    ..upgrade()
+                };
+                assert_eq!(
+                    route
+                        .admit(&request, 1, &mut sink)
+                        .expect_err(wrong_subprotocol)
+                        .code(),
+                    FailureCode::EndpointRejected,
+                    "subprotocol {wrong_subprotocol:?}"
+                );
+            }
+            assert!(sink.events.is_empty());
+        }
+
+        /// FR-018 with the event contract: an unexpected Origin fails closed, and a
+        /// rejected Origin is one of the facts the module must emit. The fact carries no
+        /// Origin string, and a sink that cannot accept it degrades to the sink failure
+        /// rather than to a silent admission.
+        #[test]
+        fn a_disallowed_origin_is_refused_and_emits_the_required_rejected_origin_fact() {
+            let route = state_bearing_route();
+            let mut sink = RecordingSink::default();
+            let request = StateBearingRequest {
+                origin: "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba",
+                ..upgrade()
+            };
+            assert_eq!(
+                route
+                    .admit(&request, 42, &mut sink)
+                    .expect_err("an unpaired Origin never reaches a handshake")
+                    .code(),
+                FailureCode::OriginRejected
+            );
+            assert_eq!(sink.events.len(), 1);
+            let event = &sink.events[0];
+            assert_eq!(event.code(), crate::SecurityCode::OriginRejected);
+            assert_eq!(event.outcome(), crate::EventOutcome::Rejected);
+            assert_eq!(event.next_action(), crate::EventNextAction::RePair);
+            assert_eq!(event.boundary(), crate::EventBoundary::Channel);
+            assert_eq!(event.endpoint, crate::EndpointClass::Loopback);
+            assert_eq!(event.time, crate::events::EventTime(42));
+            assert!(event.metadata().is_empty());
+
+            let mut unavailable = RecordingSink {
+                events: vec![],
+                unavailable: true,
+            };
+            assert_eq!(
+                route
+                    .admit(&request, 42, &mut unavailable)
+                    .expect_err("a required fact the sink cannot accept fails closed")
+                    .code(),
+                FailureCode::EventSinkUnavailable
+            );
+        }
+
+        /// The configured upgrade is still admitted, and the authority it yields is the one
+        /// the handshake transcript binds on both halves.
+        #[test]
+        fn an_admitted_endpoint_is_the_authority_the_handshake_binds() {
+            let route = state_bearing_route();
+            let mut sink = RecordingSink::default();
+            let admitted = route
+                .admit(&upgrade(), 7, &mut sink)
+                .expect("the configured upgrade is admitted");
+            assert_eq!(admitted.as_str(), ENDPOINT);
+            assert!(sink.events.is_empty());
+
+            let client_signer = RingSigner::generate();
+            let server_signer = RingSigner::generate();
+            let client_config = ClientHandshakeConfig::new(
+                admitted.clone(),
+                id(PRINCIPAL),
+                client_signer.public_key().clone(),
+                id(DAEMON),
+                server_signer.public_key().clone(),
+                EPOCH,
+                1,
+                3,
+            )
+            .expect("an admitted endpoint configures a client handshake");
+            let server_config = ServerHandshakeConfig::new(
+                admitted,
+                fixture_principal(client_signer.public_key().clone(), EPOCH),
+                id(DAEMON),
+                server_signer.public_key().clone(),
+                2,
+                4,
+                ConnectionId::new(Uuid::from_u128(CONNECTION)),
+            )
+            .expect("an admitted endpoint configures a daemon handshake");
+
+            let (client_pending, hello) = ClientHandshake::start(client_config).unwrap();
+            let (server_pending, proof) =
+                ServerHandshake::accept(server_config, &hello, &server_signer, &mut sink).unwrap();
+            let (client_session, client_proof) = client_pending
+                .finish(&proof, &client_signer, &mut sink)
+                .unwrap();
+            let daemon_session = server_pending.finish(&client_proof, &mut sink).unwrap();
+            assert_eq!(client_session.endpoint(), ENDPOINT);
+            assert_eq!(daemon_session.endpoint(), ENDPOINT);
+            assert!(client_session.is_open() && daemon_session.is_open());
+        }
+
+        /// A route that admits nothing, or one whose configured Origin set no browser can
+        /// ever match, is a configuration mistake and is refused at construction rather
+        /// than presenting later as a per-request rejection.
+        #[test]
+        fn a_state_bearing_route_refuses_unusable_configuration() {
+            for (route, subprotocol, port) in [
+                ("v1/session", SUBPROTOCOL, 7777),
+                ("/v1/session?upgrade=1", SUBPROTOCOL, 7777),
+                ("/v1/session#fragment", SUBPROTOCOL, 7777),
+                (ROUTE, "", 7777),
+                (ROUTE, "matinee secure channel", 7777),
+                (ROUTE, SUBPROTOCOL, 0),
+            ] {
+                assert_eq!(
+                    StateBearingRoute::new(
+                        LoopbackHost::Ipv4,
+                        port,
+                        route,
+                        subprotocol,
+                        [PAIRED_ORIGIN]
+                    )
+                    .expect_err("unusable route configuration")
+                    .code(),
+                    FailureCode::EndpointRejected,
+                    "{route:?} {subprotocol:?} {port}"
+                );
+            }
+            for origins in [
+                Vec::new(),
+                vec!["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"],
+                vec!["abcdefghijklmnopabcdefghijklmnop"],
+                vec![""],
+            ] {
+                assert_eq!(
+                    StateBearingRoute::new(LoopbackHost::Ipv4, 7777, ROUTE, SUBPROTOCOL, origins)
+                        .expect_err("unusable Origin configuration")
+                        .code(),
+                    FailureCode::OriginRejected
+                );
+            }
         }
     };
 }

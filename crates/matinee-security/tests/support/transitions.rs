@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::enrollment::{
     ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentChannel,
-    EnrollmentClock, EnrollmentCreation, EnrollmentProof,
+    EnrollmentClock, EnrollmentCreation, EnrollmentProof, SupportedExtensionVersions,
 };
 use crate::events::EventTime;
 use crate::identity::{
@@ -39,6 +39,14 @@ pub(crate) const ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijkl
 pub(crate) const STORE: &str = "Chrome Web Store";
 pub(crate) const UPDATE: &str = "https://updates.example.test/ext.xml";
 pub(crate) const INSTALL: &str = "normal";
+pub(crate) const VERSION: &str = "1.4.2";
+pub(crate) const MIN_VERSION: &str = "1.0";
+pub(crate) const MAX_VERSION: &str = "2.5.1";
+
+pub(crate) fn supported_versions() -> SupportedExtensionVersions {
+    SupportedExtensionVersions::parse(MIN_VERSION, MAX_VERSION)
+        .expect("a minimum-first supported extension version range")
+}
 
 pub(crate) fn key(value: u128) -> IdempotencyKey {
     IdempotencyKey::new(Uuid::from_u128(value))
@@ -227,6 +235,7 @@ pub(crate) fn binding() -> EnrollmentBinding<'static> {
         store_metadata: STORE,
         update_metadata: UPDATE,
         install_metadata: INSTALL,
+        version: VERSION,
         development_allowance: DevelopmentIdentityAllowance::None,
     }
 }
@@ -242,6 +251,7 @@ pub(crate) fn creation(enrollment: TransitionId, daemon: IdentityId) -> Enrollme
         STORE,
         UPDATE,
         INSTALL,
+        supported_versions(),
         daemon,
         ENDPOINT,
         ExpiryResult::valid(600_000).expect("bounded ten-minute expiry"),

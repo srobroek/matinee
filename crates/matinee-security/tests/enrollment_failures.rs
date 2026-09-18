@@ -5,6 +5,7 @@ macro_rules! enrollment_failure_tests {
             DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBindingError,
             EnrollmentBundle, EnrollmentChannel, EnrollmentChannelState, EnrollmentClock,
             EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreation,
+            SupportedExtensionVersions,
             EnrollmentCreateError, EnrollmentProof,
         };
         use crate::adapters::credential_store::{CredentialBinding, CredentialHandle, CredentialStore, CredentialStoreError};
@@ -22,6 +23,7 @@ macro_rules! enrollment_failure_tests {
                 "Chrome Web Store",
                 "https://updates.example.test/ext.xml",
                 "normal",
+                SupportedExtensionVersions::parse("1.0", "2.5.1").unwrap(),
                 IdentityId::new(Uuid::from_u128(2)),
                 "127.0.0.1:7777",
                 ExpiryResult::valid(600_000).unwrap(),
@@ -35,6 +37,7 @@ macro_rules! enrollment_failure_tests {
                 store_metadata: input.store_metadata.as_str(),
                 update_metadata: input.update_metadata.as_str(),
                 install_metadata: input.install_metadata.as_str(),
+                version: "1.4.2",
                 development_allowance: DevelopmentIdentityAllowance::None,
             }
         }
@@ -50,7 +53,7 @@ macro_rules! enrollment_failure_tests {
             let mut value = input(); value.enrollment = TransitionId::new(Uuid::from_u128(id)); EnrollmentBundle::create(value).unwrap()
         }
         fn bundle_binding(_bundle: &crate::enrollment::EnrollmentBundle) -> EnrollmentBinding<'static> {
-            EnrollmentBinding { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", endpoint: "127.0.0.1:7777", store_metadata: "Chrome Web Store", update_metadata: "https://updates.example.test/ext.xml", install_metadata: "normal", development_allowance: DevelopmentIdentityAllowance::None }
+            EnrollmentBinding { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", endpoint: "127.0.0.1:7777", store_metadata: "Chrome Web Store", update_metadata: "https://updates.example.test/ext.xml", install_metadata: "normal", version: "1.4.2", development_allowance: DevelopmentIdentityAllowance::None }
         }
         fn signed_proof(bundle: &mut crate::enrollment::EnrollmentBundle, identity: IdentityId) -> EnrollmentProof {
             let channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9000)), 1).unwrap();
