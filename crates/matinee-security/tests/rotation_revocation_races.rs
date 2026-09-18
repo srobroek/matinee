@@ -38,7 +38,7 @@ macro_rules! rotation_revocation_races_tests {
                 }
             }
 
-            fn authorize(&self, object: u64, epoch: u64) -> RaceDecision {
+            fn authorize(&self, epoch: u64) -> RaceDecision {
                 if epoch == self.epoch {
                     RaceDecision::Commit
                 } else {
@@ -47,7 +47,7 @@ macro_rules! rotation_revocation_races_tests {
             }
 
             fn mutate_object(&mut self, object: u64, epoch: u64) -> RaceDecision {
-                if self.authorize(object, epoch) == RaceDecision::Reject {
+                if self.authorize(epoch) == RaceDecision::Reject {
                     RaceDecision::Reject
                 } else {
                     self.authorized_objects.insert(object);
@@ -88,7 +88,7 @@ macro_rules! rotation_revocation_races_tests {
         fn authorization_is_rechecked_before_object_mutation() {
             let mut state = RotationRaceState::default();
             state.rotate();
-            assert_eq!(state.authorize(9, 0), RaceDecision::Reject);
+            assert_eq!(state.authorize(0), RaceDecision::Reject);
             assert_eq!(state.mutate_object(9, 0), RaceDecision::Reject);
             assert!(state.authorized_objects.is_empty());
             assert_eq!(state.mutate_object(9, 1), RaceDecision::Commit);
@@ -121,7 +121,7 @@ macro_rules! rotation_revocation_races_tests {
 
         #[test]
         fn unknown_transition_is_fail_closed_without_state_change() {
-            let mut state = RotationRaceState::default();
+            let state = RotationRaceState::default();
             let before = format!("{state:?}");
             let outcome = crate::identity::TransitionOutcome::Unknown;
             assert!(matches!(

@@ -1,6 +1,7 @@
 macro_rules! rotation_revocation_tests {
     () => {
-        use crate::events::{self, SecurityEventSink};
+        use crate::ChannelSigner;
+        use crate::events::{self};
         use crate::identity::{
             Capability, CapabilityAction, Connection, ConnectionId, ConnectionLifecycle,
             CredentialReference, Fingerprint, GrantLifecycle, IdempotencyKey, IdentityId,
@@ -8,6 +9,7 @@ macro_rules! rotation_revocation_tests {
             RotationTransition, TransitionId, TransitionInput, TransitionOperation,
             TransitionOutcome,
         };
+        use crate::test_support_channel::RingSigner;
         use crate::test_support_fakes::FakeEventSink;
         use uuid::Uuid;
 
@@ -19,31 +21,22 @@ macro_rules! rotation_revocation_tests {
             Fingerprint::new(ch.to_string().repeat(64)).unwrap()
         }
 
-        fn key() -> PublicKey {
-            let mut bytes = [0; crate::identity::UNCOMPRESSED_KEY_BYTES];
-            bytes[0] = 4;
-            PublicKey::from_uncompressed(bytes).unwrap()
-        }
-
-        /// The key a rotation installs. It differs from `key()` in every assertion below, so
-        /// a rotation that kept the retired key would be visible.
-        fn replacement_key() -> PublicKey {
-            let mut bytes = [0; crate::identity::UNCOMPRESSED_KEY_BYTES];
-            bytes[0] = 4;
-            bytes[1] = 9;
-            PublicKey::from_uncompressed(bytes).unwrap()
+        /// A real P-256 point. `PublicKey` validates the curve, so a rotation fixture has to
+        /// present material a signer could actually hold.
+        fn generated_key() -> PublicKey {
+            RingSigner::generate().public_key().clone()
         }
 
         fn credential(daemon: IdentityId, locator: &str) -> CredentialReference {
             CredentialReference::new("platform-store", locator, daemon, ids(99)).unwrap()
         }
 
-        fn principal() -> Principal {
+        fn principal(key: PublicKey) -> Principal {
             let daemon = ids(1);
             Principal::new(
                 ids(2),
                 PrincipalKind::BrowserExtension,
-                key(),
+                key,
                 fingerprint('a'),
                 daemon,
                 vec![Capability::new(CapabilityAction::Read, "status").unwrap()],
@@ -67,43 +60,52 @@ macro_rules! rotation_revocation_tests {
             connection
         }
 
-        #[derive(Debug, Eq, PartialEq)]
-        enum RotationStep {
-            ReplacementRegistered,
-            EpochAdvanced,
-        }
-
+        /// FR-024: the replacement credential is registered as part of the same transition
+        /// that advances the epoch, and the epoch is only reachable through it. The assertions
+        /// read the principal's own state rather than a local record of the steps taken.
         #[test]
         fn replacement_registration_precedes_epoch_transition() {
-            let mut principal = principal();
+            let retired = generated_key();
+            let replacement = generated_key();
+            let mut principal = principal(retired.clone());
             assert_eq!(principal.lifecycle(), PrincipalLifecycle::Pending);
-            principal.activate().unwrap();
-            principal.begin_rotation().unwrap();
 
-            let mut steps = Vec::new();
-            steps.push(RotationStep::ReplacementRegistered);
+            // The epoch cannot move before the principal is active and rotating.
+            assert!(principal.begin_rotation().is_err());
+            assert!(
+                principal
+                    .complete_rotation(
+                        replacement.clone(),
+                        fingerprint('b'),
+                        credential(ids(1), "key-new")
+                    )
+                    .is_err()
+            );
+            assert_eq!(principal.epoch(), 0);
+            assert_eq!(principal.public_key(), &retired);
+
+            principal.activate().unwrap();
+            assert_eq!(principal.epoch(), 0);
+            principal.begin_rotation().unwrap();
+            assert_eq!(principal.lifecycle(), PrincipalLifecycle::Rotating);
+            // Registration has begun and the epoch has still not moved.
+            assert_eq!(principal.epoch(), 0);
+            assert_eq!(principal.public_key(), &retired);
+
             principal
                 .complete_rotation(
-                    replacement_key(),
+                    replacement.clone(),
                     fingerprint('b'),
                     credential(ids(1), "key-new"),
                 )
                 .unwrap();
-            steps.push(RotationStep::EpochAdvanced);
-
-            assert_eq!(
-                steps,
-                [
-                    RotationStep::ReplacementRegistered,
-                    RotationStep::EpochAdvanced
-                ]
-            );
             assert_eq!(principal.epoch(), 1);
             assert_eq!(principal.lifecycle(), PrincipalLifecycle::Active);
             // One replacement: the key, the fingerprint that names it, and the locator that
-            // stores it all moved together.
+            // stores it all moved together, and the retired key is gone.
             assert_eq!(principal.fingerprint(), &fingerprint('b'));
-            assert_eq!(principal.public_key(), &replacement_key());
+            assert_eq!(principal.public_key(), &replacement);
+            assert_ne!(principal.public_key(), &retired);
             assert_eq!(principal.credential().key_locator(), "key-new");
 
             // A refused rotation leaves the whole prior credential intact.
@@ -111,7 +113,11 @@ macro_rules! rotation_revocation_tests {
             principal.begin_rotation().unwrap();
             assert!(
                 principal
-                    .complete_rotation(key(), fingerprint('c'), credential(ids(7), "key-foreign"))
+                    .complete_rotation(
+                        retired.clone(),
+                        fingerprint('c'),
+                        credential(ids(7), "key-foreign")
+                    )
                     .is_err()
             );
             assert_eq!(principal.public_key(), before.public_key());
@@ -132,19 +138,22 @@ macro_rules! rotation_revocation_tests {
 
         #[test]
         fn stale_key_grant_and_decision_are_rejected_after_rotation() {
-            let mut principal = principal();
+            let retired = generated_key();
+            let replacement = generated_key();
+            let mut principal = principal(retired.clone());
             principal.activate().unwrap();
             principal.begin_rotation().unwrap();
             principal
                 .complete_rotation(
-                    replacement_key(),
+                    replacement.clone(),
                     fingerprint('b'),
                     credential(ids(1), "key-new"),
                 )
                 .unwrap();
             assert_eq!(principal.epoch(), 1);
             assert_ne!(principal.fingerprint(), &fingerprint('a'));
-            assert_ne!(principal.public_key(), &key());
+            assert_eq!(principal.public_key(), &replacement);
+            assert_ne!(principal.public_key(), &retired);
 
             let capability = Capability::new(CapabilityAction::Read, "status").unwrap();
             let mut grant =
@@ -167,7 +176,7 @@ macro_rules! rotation_revocation_tests {
 
         #[test]
         fn revocation_is_terminal_and_idempotent() {
-            let mut principal = principal();
+            let mut principal = principal(generated_key());
             principal.activate().unwrap();
             principal.revoke();
             assert_eq!(principal.lifecycle(), PrincipalLifecycle::Revoked);

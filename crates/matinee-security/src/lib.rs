@@ -848,6 +848,16 @@ mod authorization_privacy {
     authorization_privacy_tests!();
 }
 #[cfg(test)]
+mod rotation_revocation_contract {
+    include!("../tests/rotation_revocation.rs");
+    rotation_revocation_tests!();
+}
+#[cfg(test)]
+mod rotation_revocation_races_contract {
+    include!("../tests/rotation_revocation_races.rs");
+    rotation_revocation_races_tests!();
+}
+#[cfg(test)]
 mod tests {
     use uuid::Uuid;
 

@@ -184,13 +184,18 @@ macro_rules! secure_channel_handshake_tests {
                 before.credential().key_locator()
             );
 
-            // The retired signer, presenting the key and the epoch it used to hold, no longer
-            // matches the rotated principal.
-            for epoch in [0, 1] {
+            // The key the registry holds is checked before the epoch, so each refusal below
+            // has exactly one cause. A retired signer is an authentication failure whichever
+            // epoch it claims; the replacement signer at the superseded epoch is a stale epoch.
+            for (signer, epoch, expected) in [
+                (&retired, 0, FailureCode::AuthenticationFailed),
+                (&retired, 1, FailureCode::AuthenticationFailed),
+                (&replacement, 0, FailureCode::StaleEpoch),
+            ] {
                 let client = ClientHandshakeConfig::new(
                     ENDPOINT,
                     id(PRINCIPAL),
-                    retired.public_key().clone(),
+                    signer.public_key().clone(),
                     id(DAEMON),
                     daemon_signer.public_key().clone(),
                     epoch,
@@ -211,11 +216,8 @@ macro_rules! secure_channel_handshake_tests {
                 let (_, hello) = ClientHandshake::start(client).unwrap();
                 let mut sink = RecordingSink::default();
                 let failure = ServerHandshake::accept(server, &hello, &daemon_signer, &mut sink)
-                    .expect_err("a retired signer never authenticates after rotation");
-                assert!(matches!(
-                    failure.code(),
-                    FailureCode::AuthenticationFailed | FailureCode::StaleEpoch
-                ));
+                    .expect_err("only the replacement signer at the current epoch authenticates");
+                assert_eq!(failure.code(), expected);
                 assert_eq!(sink.events.len(), 1);
             }
 
