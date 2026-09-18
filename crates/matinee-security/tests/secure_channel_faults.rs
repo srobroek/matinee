@@ -1,205 +1,266 @@
 macro_rules! secure_channel_faults_tests {
     () => {
         mod secure_channel_faults_inner {
-            use crate::failures::{FailureCode, SecurityFailure};
-            use crate::identity::{
-                Capability, CapabilityAction, Connection, ConnectionId, IdentityId,
+            use crate::identity::{Capability, CapabilityAction};
+            use crate::test_support_channel::{
+                CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner, establish_pair,
             };
             use crate::{
-                AuthorizedInput, AuthorizedOutput, ChannelSession, PayloadKind, SessionInput,
+                AuthorizedOutput, ChannelSigner, ClientHandshake, ClientHandshakeConfig,
+                ConnectionId, FailureCode, IdentityId, PayloadKind, SecurityCode, ServerHandshake,
+                ServerHandshakeConfig, SessionInput,
             };
             use uuid::Uuid;
 
-            const EPOCH: u64 = 7;
-            const CONNECTION: u128 = 0xabcdefabcdefabcdefabcdefabcd;
-
-            fn fault_connection(epoch: u64) -> Connection {
-                let mut connection = Connection::new(
-                    ConnectionId::new(Uuid::from_u128(CONNECTION)),
-                    IdentityId::new(Uuid::from_u128(2)),
-                    1,
-                    epoch,
-                    [0x10; 12],
-                    [0x20; 12],
-                    Uuid::from_u128(3),
-                    Uuid::from_u128(4),
-                );
-                connection
-                    .authenticate()
-                    .expect("authenticated fault fixture");
-                connection
-            }
-
-            fn fault_session(epoch: u64) -> ChannelSession {
-                ChannelSession::establish(fault_connection(epoch), 1, "127.0.0.1:7777")
-                    .expect("bound fault session")
-            }
-
-            fn fault_context(epoch: u64, kind: PayloadKind) -> SessionInput {
+            fn context(session: &crate::ChannelSession, epoch: u64) -> SessionInput {
                 SessionInput::new(
-                    ConnectionId::new(Uuid::from_u128(CONNECTION)),
-                    IdentityId::new(Uuid::from_u128(2)),
+                    session.connection_id(),
+                    session.principal(),
                     epoch,
-                    Capability::new(CapabilityAction::Read, "matinee/status")
-                        .expect("bounded capability"),
-                    kind,
+                    Capability::new(CapabilityAction::Read, "matinee/status").unwrap(),
+                    PayloadKind::Command,
                 )
             }
 
-            fn contract(minimum: u16, maximum: u16, selected: u16) -> Result<u16, FailureCode> {
-                if minimum > maximum {
-                    return Err(FailureCode::DowngradeRejected);
-                }
-                if selected < minimum || selected > maximum {
-                    return Err(FailureCode::CompatibilityUnsupported);
-                }
-                Ok(selected)
+            fn handshake_configs(
+                client: &RingSigner,
+                daemon: &RingSigner,
+            ) -> (ClientHandshakeConfig, ServerHandshakeConfig) {
+                let principal = IdentityId::new(Uuid::from_u128(PRINCIPAL));
+                let daemon_id = IdentityId::new(Uuid::from_u128(DAEMON));
+                (
+                    ClientHandshakeConfig::new(
+                        ENDPOINT,
+                        principal,
+                        client.public_key().clone(),
+                        daemon_id,
+                        daemon.public_key().clone(),
+                        7,
+                        1,
+                        3,
+                    )
+                    .unwrap(),
+                    ServerHandshakeConfig::new(
+                        ENDPOINT,
+                        principal,
+                        client.public_key().clone(),
+                        daemon_id,
+                        daemon.public_key().clone(),
+                        7,
+                        2,
+                        4,
+                        ConnectionId::new(Uuid::from_u128(CONNECTION)),
+                    )
+                    .unwrap(),
+                )
             }
 
-            fn sec1_key(bytes: &[u8]) -> bool {
-                (bytes.len() == 65 && bytes.first() == Some(&0x04))
-                    || (bytes.len() == 33 && matches!(bytes.first(), Some(0x02 | 0x03)))
+            #[test]
+            fn endpoint_epoch_nonce_key_and_length_mutations_reject_before_session() {
+                for mutation in 0..6 {
+                    let client_signer = RingSigner::generate();
+                    let daemon_signer = RingSigner::generate();
+                    let (client_config, server_config) =
+                        handshake_configs(&client_signer, &daemon_signer);
+                    let (_, mut hello) = ClientHandshake::start(client_config).unwrap();
+                    match mutation {
+                        0 => {
+                            let needle = ENDPOINT.as_bytes();
+                            let at = hello
+                                .windows(needle.len())
+                                .position(|part| part == needle)
+                                .unwrap();
+                            hello[at] = 0xff;
+                        }
+                        1 => {
+                            let epoch = 7u64.to_be_bytes();
+                            let at = hello.windows(8).position(|part| part == epoch).unwrap();
+                            hello[at + 7] ^= 1;
+                        }
+                        2 => hello[4] ^= 1,
+                        3 | 4 => {
+                            let marker = [0, 0, 0, 65, 4];
+                            let field = hello
+                                .windows(marker.len())
+                                .enumerate()
+                                .filter(|(_, part)| *part == marker)
+                                .nth((mutation - 3) as usize)
+                                .unwrap()
+                                .0;
+                            hello[field + 4] = 0x02;
+                        }
+                        _ => hello[..4].copy_from_slice(&(u32::MAX).to_be_bytes()),
+                    }
+                    let mut sink = RecordingSink::default();
+                    let failure =
+                        ServerHandshake::accept(server_config, &hello, &daemon_signer, &mut sink)
+                            .expect_err("mutated hello");
+                    assert!(matches!(
+                        failure.code(),
+                        FailureCode::AuthenticationFailed
+                            | FailureCode::MalformedInput
+                            | FailureCode::ResourceLimit
+                    ));
+                    assert_eq!(sink.events.len(), 1);
+                }
             }
 
-            fn reject_before_dispatch(
-                session: &mut ChannelSession,
-                context: &SessionInput,
-                payload: Vec<u8>,
-                expected: FailureCode,
-            ) {
-                let failure =
-                    AuthorizedInput::authorized(context, payload).expect_err("fault input");
-                assert_eq!(failure.code(), expected);
-                session.close();
+            #[test]
+            fn altered_nonce_downgrade_and_non_p1363_signatures_never_create_sessions() {
+                let client_signer = RingSigner::generate();
+                let daemon_signer = RingSigner::generate();
+                let (client_config, server_config) =
+                    handshake_configs(&client_signer, &daemon_signer);
+                let (client, hello) = ClientHandshake::start(client_config).unwrap();
+                let mut altered_hello = hello.clone();
+                let nonce_marker = [0, 0, 0, 32];
+                let nonce = altered_hello
+                    .windows(4)
+                    .position(|part| part == nonce_marker)
+                    .unwrap()
+                    + 4;
+                altered_hello[nonce] ^= 1;
+                let mut sink = RecordingSink::default();
+                let (_, proof) = ServerHandshake::accept(
+                    server_config,
+                    &altered_hello,
+                    &daemon_signer,
+                    &mut sink,
+                )
+                .unwrap();
                 assert_eq!(
-                    session
-                        .binds(context)
-                        .expect_err("closed before dispatch")
+                    client
+                        .finish(&proof, &client_signer, &mut sink)
+                        .unwrap_err()
                         .code(),
                     FailureCode::AuthenticationFailed
                 );
-            }
 
-            fn redacted<T: std::fmt::Debug>(value: T) -> String {
-                format!("{value:?}")
-            }
-
-            #[test]
-            fn faults_reject_disjoint_substituted_and_downgraded_contracts() {
-                assert_eq!(contract(1, 3, 2), Ok(2));
-                assert_eq!(contract(4, 3, 3), Err(FailureCode::DowngradeRejected));
+                let (client_config, server_config) =
+                    handshake_configs(&client_signer, &daemon_signer);
+                let (client, hello) = ClientHandshake::start(client_config).unwrap();
+                let (_, mut proof) =
+                    ServerHandshake::accept(server_config, &hello, &daemon_signer, &mut sink)
+                        .unwrap();
+                let selected = 4 + b"server-proof".len() + hello.len() + 4;
+                proof[selected] = b'2';
                 assert_eq!(
-                    contract(1, 1, 2),
-                    Err(FailureCode::CompatibilityUnsupported)
+                    client
+                        .finish(&proof, &client_signer, &mut sink)
+                        .unwrap_err()
+                        .code(),
+                    FailureCode::DowngradeRejected
+                );
+
+                let (client_config, server_config) =
+                    handshake_configs(&client_signer, &daemon_signer);
+                let (client, hello) = ClientHandshake::start(client_config).unwrap();
+                let (server, mut proof) =
+                    ServerHandshake::accept(server_config, &hello, &daemon_signer, &mut sink)
+                        .unwrap();
+                let signature_length = proof.len() - 68;
+                proof[signature_length..signature_length + 4].copy_from_slice(&63u32.to_be_bytes());
+                assert_eq!(
+                    client
+                        .finish(&proof, &client_signer, &mut sink)
+                        .unwrap_err()
+                        .code(),
+                    FailureCode::MalformedInput
                 );
                 assert_eq!(
-                    contract(1, 3, 0),
-                    Err(FailureCode::CompatibilityUnsupported)
+                    server.finish(&[0u8; 70], &mut sink).unwrap_err().code(),
+                    FailureCode::MalformedInput
                 );
             }
 
             #[test]
-            fn faults_accept_only_sec1_der_or_compressed_key_encodings() {
-                assert!(sec1_key(&[0x04; 65]));
-                assert!(sec1_key(&[0x02; 33]));
-                assert!(sec1_key(&[0x03; 33]));
-                assert!(!sec1_key(&[0x30; 65]));
-                assert!(!sec1_key(&[0x04; 64]));
-                assert!(!sec1_key(&[0x05; 33]));
-            }
-
-            #[test]
-            fn faults_reject_malformed_utf8_and_declared_lengths_before_allocation() {
-                let cases: Vec<_> = super::malformed_corpus_cases().collect();
-                assert_eq!(cases.len(), 100_000);
-                for case in cases.iter().step_by(257) {
-                    assert_eq!(case.bytes[4], 0xff);
-                    let declared = u32::from_be_bytes(case.bytes[..4].try_into().unwrap()) as usize;
-                    if declared <= case.bytes.len() - 4 {
-                        assert!(std::str::from_utf8(&case.bytes[4..4 + declared]).is_err());
-                    } else {
-                        assert!(declared > crate::MAX_PAYLOAD_BYTES);
-                    }
-                }
-                let invalid = [0xff, 0xfe];
-                assert!(std::str::from_utf8(&invalid).is_err());
-            }
-
-            #[test]
-            fn faults_close_before_dispatch_for_endpoint_epoch_nonce_signature_and_tag() {
-                let context = fault_context(EPOCH, PayloadKind::Command);
-                let mut session = fault_session(EPOCH);
-                for _fault in [
-                    FailureCode::EndpointRejected,
-                    FailureCode::StaleEpoch,
-                    FailureCode::CryptographicFailure,
-                    FailureCode::CryptographicFailure,
-                    FailureCode::CryptographicFailure,
-                ] {
-                    let failure = SecurityFailure::new(_fault);
-                    assert_eq!(failure.code(), _fault);
-                    assert!(failure.principal_id().is_none());
-                    assert!(failure.connection_id().is_none());
-                }
-                assert!(session.binds(&context).is_ok());
-                session.close();
-                assert_eq!(
-                    session.binds(&context).unwrap_err().code(),
-                    FailureCode::AuthenticationFailed
-                );
-            }
-
-            #[test]
-            fn faults_reject_replay_wrong_direction_duplicate_skipped_and_wrapped_counters() {
-                let mut session = fault_session(EPOCH);
-                assert_eq!(session.next_receive_counter().unwrap(), 0);
-                assert_eq!(session.next_receive_counter().unwrap(), 1);
-                assert_eq!(session.next_send_counter().unwrap(), 0);
-                assert_eq!(session.next_send_counter().unwrap(), 1);
-                assert_eq!(u64::MAX.checked_add(1), None);
-                for code in [
-                    FailureCode::ReplayDetected,
-                    FailureCode::CounterMismatch,
-                    FailureCode::CounterMismatch,
-                    FailureCode::CounterMismatch,
-                ] {
-                    assert_eq!(SecurityFailure::new(code).code(), code);
-                }
-                session.close();
-                assert!(!session.is_open());
-            }
-
-            #[test]
-            fn faults_reject_stale_epoch_and_oversized_payload_without_dispatch() {
-                let stale = fault_context(EPOCH - 1, PayloadKind::Command);
-                let mut session = fault_session(EPOCH);
-                assert_eq!(
-                    session.binds(&stale).expect_err("stale epoch").code(),
-                    FailureCode::StaleEpoch
-                );
-                let current = fault_context(EPOCH, PayloadKind::StreamChunk);
-                reject_before_dispatch(
-                    &mut session,
-                    &current,
-                    vec![0; current.kind().max_bytes() + 1],
-                    FailureCode::ResourceLimit,
-                );
-            }
-
-            #[test]
-            fn faults_redact_plaintext_and_failure_details() {
-                let context = fault_context(EPOCH, PayloadKind::Event);
-                let input = AuthorizedInput::authorized(&context, b"secret-plaintext".to_vec())
-                    .expect("bounded input");
+            fn replay_duplicate_and_skipped_counters_close_before_dispatch() {
+                let (mut client, mut daemon) = establish_pair(7);
                 let output =
-                    AuthorizedOutput::filtered(PayloadKind::Event, b"secret-plaintext".to_vec())
-                        .expect("bounded output");
-                assert!(!redacted(input).contains("secret-plaintext"));
-                assert!(!redacted(output).contains("secret-plaintext"));
-                let failure = SecurityFailure::new(FailureCode::CryptographicFailure);
-                let rendered = failure.to_string();
-                assert!(!rendered.contains("secret"));
-                assert!(!rendered.contains("payload"));
+                    AuthorizedOutput::filtered(PayloadKind::Command, b"one".to_vec()).unwrap();
+                let mut sink = RecordingSink::default();
+                let frame = client.send(&output, &mut sink).unwrap();
+                daemon
+                    .receive(&frame, &context(&daemon, 7), &mut sink)
+                    .unwrap();
+                let failure = daemon
+                    .receive(&frame, &context(&daemon, 7), &mut sink)
+                    .expect_err("replay");
+                assert_eq!(failure.code(), FailureCode::ReplayDetected);
+                assert_eq!(
+                    sink.events.last().unwrap().code(),
+                    SecurityCode::ReplayDetected
+                );
+                assert!(!daemon.is_open());
+
+                let (mut client, mut daemon) = establish_pair(7);
+                let mut skipped = client.send(&output, &mut sink).unwrap();
+                skipped[21..29].copy_from_slice(&1u64.to_be_bytes());
+                let failure = daemon
+                    .receive(&skipped, &context(&daemon, 7), &mut sink)
+                    .expect_err("skipped counter");
+                assert_eq!(failure.code(), FailureCode::CounterMismatch);
+                assert!(!daemon.is_open());
+            }
+
+            #[test]
+            fn wrong_direction_connection_tag_and_stale_epoch_fail_closed() {
+                let output =
+                    AuthorizedOutput::filtered(PayloadKind::Command, b"one".to_vec()).unwrap();
+                let mut sink = RecordingSink::default();
+
+                let (_, mut daemon) = establish_pair(7);
+                let wrong_direction = daemon.send(&output, &mut sink).unwrap();
+                let failure = daemon
+                    .receive(&wrong_direction, &context(&daemon, 7), &mut sink)
+                    .expect_err("wrong direction");
+                assert_eq!(failure.code(), FailureCode::CryptographicFailure);
+
+                let (mut client, mut daemon) = establish_pair(7);
+                let mut wrong_connection = client.send(&output, &mut sink).unwrap();
+                wrong_connection[5] ^= 1;
+                let failure = daemon
+                    .receive(&wrong_connection, &context(&daemon, 7), &mut sink)
+                    .expect_err("wrong connection");
+                assert_eq!(failure.code(), FailureCode::MalformedInput);
+
+                let (mut client, mut daemon) = establish_pair(7);
+                let mut wrong_tag = client.send(&output, &mut sink).unwrap();
+                *wrong_tag.last_mut().unwrap() ^= 1;
+                let failure = daemon
+                    .receive(&wrong_tag, &context(&daemon, 7), &mut sink)
+                    .expect_err("wrong tag");
+                assert_eq!(failure.code(), FailureCode::CryptographicFailure);
+
+                let (mut client, mut daemon) = establish_pair(7);
+                let valid = client.send(&output, &mut sink).unwrap();
+                let failure = daemon
+                    .receive(&valid, &context(&daemon, 6), &mut sink)
+                    .expect_err("stale epoch");
+                assert_eq!(failure.code(), FailureCode::StaleEpoch);
+                assert!(!daemon.is_open());
+            }
+
+            #[test]
+            fn malformed_and_oversized_frames_emit_required_event_before_close() {
+                let (_, mut daemon) = establish_pair(7);
+                let mut sink = RecordingSink::default();
+                let failure = daemon
+                    .receive(&[0, 0, 0, 1, 1], &context(&daemon, 7), &mut sink)
+                    .expect_err("short frame");
+                assert_eq!(failure.code(), FailureCode::MalformedInput);
+                assert_eq!(sink.events.len(), 1);
+                assert_eq!(sink.events[0].code(), SecurityCode::MalformedInput);
+                assert!(!daemon.is_open());
+
+                let (_, mut daemon) = establish_pair(7);
+                let mut oversized = vec![0u8; 4];
+                oversized.copy_from_slice(&(1_048_577u32).to_be_bytes());
+                let failure = daemon
+                    .receive(&oversized, &context(&daemon, 7), &mut sink)
+                    .expect_err("oversized declaration");
+                assert_eq!(failure.code(), FailureCode::ResourceLimit);
+                assert!(!daemon.is_open());
             }
         }
     };

@@ -15,7 +15,7 @@ const MAX_BUCKETS: usize = 64;
 const MAX_COUNT: u8 = u8::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum EventBoundary {
+pub enum EventBoundary {
     Bootstrap,
     Enrollment,
     Authentication,
@@ -27,7 +27,7 @@ pub(crate) enum EventBoundary {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum SecurityCode {
+pub enum SecurityCode {
     EnrollmentAccepted,
     AuthorizationAccepted,
     ProofRejected,
@@ -47,7 +47,7 @@ pub(crate) enum SecurityCode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum EventOutcome {
+pub enum EventOutcome {
     Accepted,
     Rejected,
     Failed,
@@ -57,7 +57,7 @@ pub(crate) enum EventOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum SafeNextAction {
+pub enum SafeNextAction {
     Retry,
     Reconnect,
     RePair,
@@ -68,7 +68,7 @@ pub(crate) enum SafeNextAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum EndpointClass {
+pub enum EndpointClass {
     Native,
     Extension,
     Loopback,
@@ -80,13 +80,21 @@ pub(crate) enum EndpointClass {
 pub(crate) struct EventTime(pub(crate) u64);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MetadataEntry {
+pub struct MetadataEntry {
     pub(crate) key: String,
     pub(crate) value: String,
 }
+impl MetadataEntry {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SecurityEvent {
+pub struct SecurityEvent {
     pub(crate) event_id: Uuid,
     pub(crate) boundary: EventBoundary,
     pub(crate) code: SecurityCode,
@@ -185,7 +193,25 @@ impl SecurityEvent {
                 .sum::<usize>()
     }
 
-    pub(crate) fn metadata(&self) -> &[MetadataEntry] {
+    pub fn boundary(&self) -> EventBoundary {
+        self.boundary
+    }
+    pub fn code(&self) -> SecurityCode {
+        self.code
+    }
+    pub fn outcome(&self) -> EventOutcome {
+        self.outcome
+    }
+    pub fn next_action(&self) -> SafeNextAction {
+        self.next_action
+    }
+    pub fn principal_id(&self) -> Option<Uuid> {
+        self.principal_id
+    }
+    pub fn connection_id(&self) -> Option<Uuid> {
+        self.connection_id
+    }
+    pub fn metadata(&self) -> &[MetadataEntry] {
         &self.metadata
     }
 }
@@ -216,7 +242,7 @@ fn contains_secret(s: &str) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SecurityEventSinkResult {
+pub enum SecurityEventSinkResult {
     Accepted,
     Aggregated,
     Unavailable,
@@ -235,7 +261,7 @@ pub(crate) fn emit_required<S>(
     event: SecurityEvent,
 ) -> Result<SecurityEventSinkResult, RequiredEventError>
 where
-    S: SecurityEventSink,
+    S: SecurityEventSink + ?Sized,
 {
     let Some(sink) = sink else {
         return Err(RequiredEventError::Unavailable);
@@ -246,7 +272,7 @@ where
     }
 }
 
-pub(crate) trait SecurityEventSink {
+pub trait SecurityEventSink {
     fn emit(&mut self, event: SecurityEvent) -> SecurityEventSinkResult;
 }
 

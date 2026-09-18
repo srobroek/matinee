@@ -13,21 +13,32 @@
 // defines them.
 mod adapters;
 mod authorization;
+mod channel;
 mod enrollment;
 mod events;
 mod failures;
 mod identity;
 mod transition;
-mod channel;
+pub use crate::channel::{
+    ChannelSigner, ChannelSigningError, ClientHandshake, ClientHandshakeConfig,
+    SECURE_CHANNEL_CONTEXT, ServerHandshake, ServerHandshakeConfig,
+};
+pub use crate::events::{
+    EndpointClass, EventBoundary, EventOutcome, MetadataEntry, SafeNextAction as EventNextAction,
+    SecurityCode, SecurityEvent, SecurityEventSink, SecurityEventSinkResult,
+};
+pub use crate::failures::{FailureBoundary, FailureCode, SafeNextAction, SecurityFailure};
 
+#[cfg(test)]
+#[path = "../tests/support/channel.rs"]
+mod test_support_channel;
 #[cfg(test)]
 #[path = "../tests/support/fakes.rs"]
 mod test_support_fakes;
 
 use core::fmt;
 
-use crate::failures::{FailureCode, SecurityFailure};
-use crate::identity::{Capability, Connection, ConnectionLifecycle, IdempotencyKey, TransitionOperation};
+use crate::identity::{IdempotencyKey, TransitionOperation};
 
 /// The enrollment lifecycle a host process drives: create a bounded one-time
 /// enrollment, seal its one-time key to one authenticated channel, consume the
@@ -41,21 +52,19 @@ pub use crate::enrollment::{
     EnrollmentCreateError, EnrollmentCreation, EnrollmentCustodyError, EnrollmentProof,
 };
 pub use crate::identity::{
-    ConnectionId, ExpiryResult, Fingerprint, IdentityId, PublicKey, TransitionId,
-    UNCOMPRESSED_KEY_BYTES,
+    Capability, CapabilityAction, ConnectionId, ExpiryResult, Fingerprint, IdentityId, PublicKey,
+    TransitionId, UNCOMPRESSED_KEY_BYTES,
 };
 
-/// v1 carries no secure-channel fragmentation, so one payload occupies one frame:
-/// 1 MiB minus the 25-byte header and the 16-byte tag.
-const MAX_PAYLOAD_BYTES: usize = 1_048_535;
+/// v1 plaintext includes one payload-kind byte. The largest application payload is
+/// therefore one byte below the 1,048,535-byte plaintext limit.
+const MAX_PAYLOAD_BYTES: usize = 1_048_534;
 /// A bounded artifact chunk carries at most this many content bytes.
 const MAX_CHUNK_BYTES: usize = 1_000_000;
-/// The endpoint binding is a bounded loopback locator, never a free-form label.
-const MAX_ENDPOINT_BYTES: usize = 256;
 
 /// The closed set of payload shapes the session carries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PayloadKind {
+pub enum PayloadKind {
     Command,
     Response,
     Event,
@@ -65,10 +74,29 @@ pub(crate) enum PayloadKind {
 impl PayloadKind {
     /// The declared bound for this shape. A chunk is bounded below the frame maximum
     /// so one stream chunk cannot consume the whole frame budget.
-    pub(crate) const fn max_bytes(self) -> usize {
+    pub const fn max_bytes(self) -> usize {
         match self {
             Self::Command | Self::Response | Self::Event => MAX_PAYLOAD_BYTES,
             Self::StreamChunk => MAX_CHUNK_BYTES,
+        }
+    }
+
+    pub(crate) const fn wire_code(self) -> u8 {
+        match self {
+            Self::Command => 1,
+            Self::Response => 2,
+            Self::Event => 3,
+            Self::StreamChunk => 4,
+        }
+    }
+
+    pub(crate) fn from_wire(code: u8) -> Result<Self, SecurityFailure> {
+        match code {
+            1 => Ok(Self::Command),
+            2 => Ok(Self::Response),
+            3 => Ok(Self::Event),
+            4 => Ok(Self::StreamChunk),
+            _ => Err(SecurityFailure::new(FailureCode::MalformedInput)),
         }
     }
 }
@@ -88,7 +116,7 @@ pub struct SessionInput {
 }
 
 impl SessionInput {
-    pub(crate) fn new(
+    pub fn new(
         connection: ConnectionId,
         principal: IdentityId,
         epoch: u64,
@@ -104,19 +132,19 @@ impl SessionInput {
         }
     }
 
-    pub(crate) fn connection(&self) -> ConnectionId {
+    pub fn connection(&self) -> ConnectionId {
         self.connection
     }
-    pub(crate) fn principal(&self) -> IdentityId {
+    pub fn principal(&self) -> IdentityId {
         self.principal
     }
-    pub(crate) fn epoch(&self) -> u64 {
+    pub fn epoch(&self) -> u64 {
         self.epoch
     }
-    pub(crate) fn requested(&self) -> &Capability {
+    pub fn requested(&self) -> &Capability {
         &self.requested
     }
-    pub(crate) fn kind(&self) -> PayloadKind {
+    pub fn kind(&self) -> PayloadKind {
         self.kind
     }
 }
@@ -135,6 +163,7 @@ pub struct AuthorizedInput {
     granted: Capability,
     kind: PayloadKind,
     payload: Vec<u8>,
+    payload_offset: u8,
 }
 
 impl AuthorizedInput {
@@ -148,6 +177,7 @@ impl AuthorizedInput {
             granted: context.requested().clone(),
             kind: context.kind(),
             payload,
+            payload_offset: 0,
         }
     }
 
@@ -162,24 +192,48 @@ impl AuthorizedInput {
         Ok(Self::from_prevalidated(context, payload))
     }
 
-    /// The authorized payload, borrowed. The session owns the only copy.
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
+    pub(crate) fn from_wire(
+        context: &SessionInput,
+        plaintext: Vec<u8>,
+    ) -> Result<Self, SecurityFailure> {
+        let (&code, payload) = plaintext
+            .split_first()
+            .ok_or(SecurityFailure::new(FailureCode::MalformedInput))?;
+        if PayloadKind::from_wire(code)? != context.kind() {
+            return Err(SecurityFailure::new(FailureCode::MalformedInput));
+        }
+        if payload.len() > context.kind().max_bytes() {
+            return Err(SecurityFailure::new(FailureCode::ResourceLimit));
+        }
+        Ok(Self {
+            connection: context.connection(),
+            principal: context.principal(),
+            epoch: context.epoch(),
+            granted: context.requested().clone(),
+            kind: context.kind(),
+            payload: plaintext,
+            payload_offset: 1,
+        })
     }
 
-    pub(crate) fn connection(&self) -> ConnectionId {
+    /// The authorized payload, borrowed. The session owns the only copy.
+    pub fn payload(&self) -> &[u8] {
+        &self.payload[self.payload_offset as usize..]
+    }
+
+    pub fn connection(&self) -> ConnectionId {
         self.connection
     }
-    pub(crate) fn principal(&self) -> IdentityId {
+    pub fn principal(&self) -> IdentityId {
         self.principal
     }
-    pub(crate) fn epoch(&self) -> u64 {
+    pub fn epoch(&self) -> u64 {
         self.epoch
     }
-    pub(crate) fn granted(&self) -> &Capability {
+    pub fn granted(&self) -> &Capability {
         &self.granted
     }
-    pub(crate) fn kind(&self) -> PayloadKind {
+    pub fn kind(&self) -> PayloadKind {
         self.kind
     }
 }
@@ -189,7 +243,7 @@ impl fmt::Debug for AuthorizedInput {
         formatter
             .debug_struct("AuthorizedInput")
             .field("kind", &self.kind)
-            .field("payload_bytes", &self.payload.len())
+            .field("payload_bytes", &self.payload().len())
             .finish_non_exhaustive()
     }
 }
@@ -208,17 +262,17 @@ pub struct AuthorizedOutput {
 impl AuthorizedOutput {
     /// Accept a filtered payload, rejecting anything past the declared bound before
     /// the session allocates a frame for it.
-    pub(crate) fn filtered(kind: PayloadKind, payload: Vec<u8>) -> Result<Self, SecurityFailure> {
+    pub fn filtered(kind: PayloadKind, payload: Vec<u8>) -> Result<Self, SecurityFailure> {
         if payload.len() > kind.max_bytes() {
             return Err(SecurityFailure::new(FailureCode::ResourceLimit));
         }
         Ok(Self { kind, payload })
     }
 
-    pub(crate) fn payload(&self) -> &[u8] {
+    pub fn payload(&self) -> &[u8] {
         &self.payload
     }
-    pub(crate) fn kind(&self) -> PayloadKind {
+    pub fn kind(&self) -> PayloadKind {
         self.kind
     }
 }
@@ -233,136 +287,154 @@ impl fmt::Debug for AuthorizedOutput {
     }
 }
 
-/// The stateful boundary over one authenticated connection.
-///
-/// The session owns the connection, its directional counters, the negotiated
-/// contract, and the transcript-bound endpoint. A caller can observe only whether
-/// the session is open and can close it; every counter, key handle, and nonce stays
-/// inside this crate, and raw framing, plaintext, transcript assembly, and
-/// authorization policy are never reachable from outside it.
+/// Stateful payload boundary created only by a mutually authenticated handshake.
+/// Raw transcript construction, traffic keys, framing values, and counters remain private.
 #[derive(Debug)]
 pub struct ChannelSession {
-    connection: Connection,
+    connection: ConnectionId,
+    principal: IdentityId,
+    epoch: u64,
     contract: u16,
     endpoint: String,
+    open: bool,
     channel: channel::ChannelState,
 }
 
 impl ChannelSession {
-    /// Establish a session over a connection whose handshake already completed.
-    ///
-    /// A connection that is not authenticated, a contract outside the negotiated
-    /// range, or an endpoint outside its bound fails closed with a bounded failure.
-    pub(crate) fn establish(
-        connection: Connection,
+    pub(crate) fn new(
+        connection: ConnectionId,
+        principal: IdentityId,
+        epoch: u64,
         contract: u16,
-        endpoint: impl Into<String>,
+        endpoint: String,
+        role: channel::Role,
+        keys: channel::TrafficKeys,
     ) -> Result<Self, SecurityFailure> {
-        if connection.lifecycle() != ConnectionLifecycle::Authenticated {
-            return Err(SecurityFailure::new(FailureCode::AuthenticationFailed));
-        }
-        if contract == 0 {
-            return Err(SecurityFailure::new(FailureCode::CompatibilityUnsupported));
-        }
-        let endpoint = endpoint.into();
-        if endpoint.is_empty() || endpoint.len() > MAX_ENDPOINT_BYTES {
-            return Err(SecurityFailure::new(FailureCode::EndpointRejected));
-        }
-        let channel = channel::ChannelState::derive(&connection, contract);
         Ok(Self {
             connection,
+            principal,
+            epoch,
             contract,
             endpoint,
-            channel,
+            open: true,
+            channel: channel::ChannelState::new(role, keys)?,
         })
     }
 
-    /// Whether the session still carries payloads.
     pub fn is_open(&self) -> bool {
-        self.connection.lifecycle() == ConnectionLifecycle::Authenticated
+        self.open
     }
 
-    /// Close the session. A closed session accepts no later payload.
     pub fn close(&mut self) {
-        self.connection.close();
+        self.open = false;
     }
 
-    pub(crate) fn connection_id(&self) -> ConnectionId {
-        self.connection.id()
+    pub fn connection_id(&self) -> ConnectionId {
+        self.connection
     }
-    pub(crate) fn principal(&self) -> IdentityId {
-        self.connection.principal()
+
+    pub fn principal(&self) -> IdentityId {
+        self.principal
     }
-    pub(crate) fn epoch(&self) -> u64 {
-        self.connection.epoch()
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
-    pub(crate) fn contract(&self) -> u16 {
+
+    pub fn contract(&self) -> u16 {
         self.contract
     }
-    pub(crate) fn endpoint(&self) -> &str {
+
+    pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
 
-    /// Check that a caller's context belongs to this session at the current epoch.
-    ///
-    /// A closed session, another connection, a different principal, or a stale epoch
-    /// each fails closed before any payload is considered.
-    pub(crate) fn binds(&self, context: &SessionInput) -> Result<(), SecurityFailure> {
-        if !self.is_open() {
+    fn binds(&self, context: &SessionInput) -> Result<(), SecurityFailure> {
+        if !self.open {
             return Err(SecurityFailure::new(FailureCode::AuthenticationFailed));
         }
-        if context.connection() != self.connection_id() || context.principal() != self.principal() {
+        if context.connection() != self.connection || context.principal() != self.principal {
             return Err(SecurityFailure::new(FailureCode::MalformedInput));
         }
-        if context.epoch() != self.epoch() {
+        if context.epoch() != self.epoch {
             return Err(SecurityFailure::new(FailureCode::StaleEpoch));
         }
         Ok(())
     }
 
-    /// The next counter for an outbound frame. Exhaustion refuses rather than wraps.
-    pub(crate) fn next_send_counter(&mut self) -> Result<u64, SecurityFailure> {
-        self.connection
-            .next_send()
-            .ok_or(SecurityFailure::new(FailureCode::CounterMismatch))
-    }
-
-    /// The next counter expected on an inbound frame.
-    pub(crate) fn next_receive_counter(&mut self) -> Result<u64, SecurityFailure> {
-        self.connection
-            .next_receive()
-            .ok_or(SecurityFailure::new(FailureCode::CounterMismatch))
-    }
-
-    /// Seal one already-filtered output into an authenticated v1 frame.
-    pub(crate) fn send(&mut self, output: &AuthorizedOutput) -> Result<Vec<u8>, SecurityFailure> {
-        if !self.is_open() {
-            return Err(SecurityFailure::new(FailureCode::AuthenticationFailed));
+    /// Seal an already-filtered payload. Callers cannot choose headers, nonces, or counters.
+    pub fn send(
+        &mut self,
+        output: &AuthorizedOutput,
+        sink: &mut dyn SecurityEventSink,
+    ) -> Result<Vec<u8>, SecurityFailure> {
+        if !self.open {
+            let failure = SecurityFailure::new(FailureCode::AuthenticationFailed);
+            return Err(self.fail(sink, failure));
         }
-        match self.channel.seal(self.connection_id(), self.epoch(), self.contract, output.payload()) {
+        match self.channel.seal(
+            self.connection,
+            self.epoch,
+            self.contract,
+            output.kind(),
+            output.payload(),
+        ) {
             Ok(frame) => Ok(frame),
-            Err(failure) => { self.close(); Err(failure) }
+            Err(failure) => Err(self.fail(sink, failure)),
         }
     }
 
-    /// Authenticate and decrypt one v1 frame, then bind it to the typed context.
-    pub(crate) fn receive(
+    /// Authenticate and decrypt one exact v1 frame before returning typed plaintext.
+    pub fn receive(
         &mut self,
         frame: &[u8],
         context: &SessionInput,
+        sink: &mut dyn SecurityEventSink,
     ) -> Result<AuthorizedInput, SecurityFailure> {
         if let Err(failure) = self.binds(context) {
-            self.close();
-            return Err(failure);
+            return Err(self.fail(sink, failure));
         }
-        let payload = match self.channel.open(frame, self.connection_id(), self.epoch(), self.contract) {
-            Ok(payload) => payload,
-            Err(failure) => { self.close(); return Err(failure); }
-        };
-        match AuthorizedInput::authorized(context, payload) {
-            Ok(input) => Ok(input),
-            Err(failure) => { self.close(); Err(failure) }
+        let (payload, counter) =
+            match self
+                .channel
+                .open(frame, self.connection, self.epoch, self.contract)
+            {
+                Ok(opened) => opened,
+                Err(failure) => return Err(self.fail(sink, failure)),
+            };
+        match AuthorizedInput::from_wire(context, payload) {
+            Ok(input) => {
+                self.channel.commit_receive(counter);
+                Ok(input)
+            }
+            Err(failure) => Err(self.fail(sink, failure)),
         }
+    }
+
+    fn fail(
+        &mut self,
+        sink: &mut dyn SecurityEventSink,
+        failure: SecurityFailure,
+    ) -> SecurityFailure {
+        let projected = channel::emit_session_failure(
+            sink,
+            failure,
+            self.principal,
+            self.connection,
+            self.epoch,
+        );
+        self.close();
+        projected
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_counters(&mut self, send: u64, receive: u64) {
+        self.channel.set_counters(send, receive);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn receive_counter(&self) -> u64 {
+        self.channel.receive_counter()
     }
 }
 
@@ -478,7 +550,6 @@ mod secure_channel_frames_contract {
 #[cfg(test)]
 mod secure_channel_faults_contract {
     include!("../tests/secure_channel_faults.rs");
-    use crate::malformed_corpus_contract::malformed_corpus_cases;
     secure_channel_faults_tests!();
 }
 #[cfg(test)]
@@ -487,25 +558,6 @@ mod tests {
 
     use super::*;
     use crate::identity::CapabilityAction;
-
-    fn connection(epoch: u64) -> Connection {
-        let mut connection = Connection::new(
-            ConnectionId::new(Uuid::from_u128(1)),
-            IdentityId::new(Uuid::from_u128(2)),
-            1,
-            epoch,
-            [0u8; 12],
-            [1u8; 12],
-            Uuid::from_u128(3),
-            Uuid::from_u128(4),
-        );
-        connection.authenticate().expect("fresh connection");
-        connection
-    }
-
-    fn session(epoch: u64) -> ChannelSession {
-        ChannelSession::establish(connection(epoch), 1, "127.0.0.1:7777").expect("bound session")
-    }
 
     fn context(epoch: u64, kind: PayloadKind) -> SessionInput {
         SessionInput::new(
@@ -548,93 +600,6 @@ mod tests {
                 idempotency: key(14),
             },
         ]
-    }
-
-    #[test]
-    fn establishment_requires_an_authenticated_connection_and_a_bound_endpoint() {
-        let handshaking = Connection::new(
-            ConnectionId::new(Uuid::from_u128(1)),
-            IdentityId::new(Uuid::from_u128(2)),
-            1,
-            0,
-            [0u8; 12],
-            [1u8; 12],
-            Uuid::from_u128(3),
-            Uuid::from_u128(4),
-        );
-        assert_eq!(
-            ChannelSession::establish(handshaking, 1, "127.0.0.1:7777")
-                .expect_err("handshaking connection")
-                .code(),
-            FailureCode::AuthenticationFailed
-        );
-        assert_eq!(
-            ChannelSession::establish(connection(0), 0, "127.0.0.1:7777")
-                .expect_err("unnegotiated contract")
-                .code(),
-            FailureCode::CompatibilityUnsupported
-        );
-        assert_eq!(
-            ChannelSession::establish(connection(0), 1, "")
-                .expect_err("unbound endpoint")
-                .code(),
-            FailureCode::EndpointRejected
-        );
-        assert_eq!(
-            ChannelSession::establish(connection(0), 1, "e".repeat(MAX_ENDPOINT_BYTES + 1))
-                .expect_err("oversize endpoint")
-                .code(),
-            FailureCode::EndpointRejected
-        );
-    }
-
-    #[test]
-    fn binding_rejects_a_stale_epoch_a_foreign_context_and_a_closed_session() {
-        let mut open = session(7);
-        assert!(open.binds(&context(7, PayloadKind::Command)).is_ok());
-        assert_eq!(
-            open.binds(&context(6, PayloadKind::Command))
-                .expect_err("stale epoch")
-                .code(),
-            FailureCode::StaleEpoch
-        );
-
-        let foreign = SessionInput::new(
-            ConnectionId::new(Uuid::from_u128(99)),
-            IdentityId::new(Uuid::from_u128(2)),
-            7,
-            Capability::new(CapabilityAction::Read, "matinee/status").expect("bounded scope"),
-            PayloadKind::Command,
-        );
-        assert_eq!(
-            open.binds(&foreign).expect_err("foreign connection").code(),
-            FailureCode::MalformedInput
-        );
-
-        open.close();
-        assert!(!open.is_open());
-        assert_eq!(
-            open.binds(&context(7, PayloadKind::Command))
-                .expect_err("closed session")
-                .code(),
-            FailureCode::AuthenticationFailed
-        );
-    }
-
-    #[test]
-    fn counters_start_at_zero_per_direction_and_refuse_after_close() {
-        let mut session = session(0);
-        assert_eq!(session.next_send_counter().expect("first send"), 0);
-        assert_eq!(session.next_send_counter().expect("second send"), 1);
-        assert_eq!(session.next_receive_counter().expect("first receive"), 0);
-        session.close();
-        assert_eq!(
-            session
-                .next_send_counter()
-                .expect_err("closed session")
-                .code(),
-            FailureCode::CounterMismatch
-        );
     }
 
     #[test]
@@ -689,8 +654,8 @@ mod tests {
 
     #[test]
     fn session_reports_its_negotiated_binding() {
-        let session = session(3);
-        assert_eq!(session.contract(), 1);
+        let (session, _) = crate::test_support_channel::establish_pair(3);
+        assert_eq!(session.contract(), 3);
         assert_eq!(session.endpoint(), "127.0.0.1:7777");
         assert_eq!(session.epoch(), 3);
         assert!(session.is_open());

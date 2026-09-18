@@ -171,9 +171,9 @@ macro_rules! authorization_contract_tests {
                 capability(CapabilityAction::Read, "owned"),
                 PayloadKind::Event,
             );
-            assert!(AuthorizedInput::authorized(&context, vec![0; 1_048_535]).is_ok());
+            assert!(AuthorizedInput::authorized(&context, vec![0; 1_048_534]).is_ok());
             assert_eq!(
-                AuthorizedInput::authorized(&context, vec![0; 1_048_536])
+                AuthorizedInput::authorized(&context, vec![0; 1_048_535])
                     .unwrap_err()
                     .code(),
                 crate::failures::FailureCode::ResourceLimit

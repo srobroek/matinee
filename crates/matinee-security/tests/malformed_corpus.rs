@@ -7,8 +7,8 @@ macro_rules! malformed_corpus_tests {
             SafeNextAction, SecurityCode, SecurityEvent,
         };
         use crate::failures::{FailureCode, SecurityFailure};
-        use crate::identity::{Capability, CapabilityAction, Connection, ConnectionId, IdentityId};
-        use crate::{AuthorizedInput, AuthorizedOutput, ChannelSession, PayloadKind, SessionInput};
+        use crate::identity::{Capability, CapabilityAction, ConnectionId, IdentityId};
+        use crate::{AuthorizedInput, AuthorizedOutput, PayloadKind, SessionInput};
         use uuid::Uuid;
 
         const MALFORMED_CASE_COUNT: usize = 100_000;
@@ -92,20 +92,6 @@ macro_rules! malformed_corpus_tests {
             .any(|word| value.to_ascii_lowercase().contains(word))
         }
 
-        fn connection(epoch: u64) -> Connection {
-            let mut connection = Connection::new(
-                ConnectionId::new(Uuid::from_u128(1)),
-                IdentityId::new(Uuid::from_u128(2)),
-                1,
-                epoch,
-                [0u8; 12],
-                [1u8; 12],
-                Uuid::from_u128(3),
-                Uuid::from_u128(4),
-            );
-            connection.authenticate().expect("authenticated fixture");
-            connection
-        }
 
         fn context(epoch: u64, kind: PayloadKind) -> SessionInput {
             SessionInput::new(
@@ -148,14 +134,6 @@ macro_rules! malformed_corpus_tests {
             .expect_err("oversized output");
             assert_eq!(output.code(), FailureCode::ResourceLimit);
 
-            let mut session = ChannelSession::establish(connection(7), 1, "127.0.0.1:7777")
-                .expect("bound session");
-            session.close();
-            assert!(!session.is_open());
-            assert_eq!(
-                session.binds(&context).unwrap_err().code(),
-                FailureCode::AuthenticationFailed
-            );
         }
 
         #[test]
@@ -222,17 +200,6 @@ macro_rules! malformed_corpus_tests {
                     assert!(failure.connection_id().is_none());
                 }
 
-                let mut session = ChannelSession::establish(connection(7), 1, "127.0.0.1:7777")
-                    .expect("bound session");
-                assert_eq!(session.next_receive_counter().unwrap(), 0);
-                let failure = AuthorizedInput::authorized(&context, vec![0; kind.max_bytes() + 1])
-                    .expect_err("rejection before channel mutation");
-                let event = projected_event(failure);
-                assert_eq!(event.code, SecurityCode::ResourceLimit);
-                assert!(session.is_open());
-                assert_eq!(session.next_receive_counter().unwrap(), 1);
-                session.close();
-                assert!(!session.is_open());
             }
         }
 

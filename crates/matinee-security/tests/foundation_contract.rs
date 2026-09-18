@@ -2,29 +2,15 @@ macro_rules! foundation_contract_tests {
     () => {
         use crate::adapters::credential_store::{CredentialBinding, CredentialStore};
         use crate::adapters::os_pipe::OsPipe;
-        use crate::events::{self, SecurityEventSink};
+        use crate::events;
         use crate::identity::CapabilityAction;
         use crate::test_support_fakes::{FakeCredentialStore, FakeEventSink, FakeOsPipe};
+        use crate::test_support_channel::{establish_pair, RecordingSink, CONNECTION};
         use uuid::Uuid;
-
-        fn connection(epoch: u64) -> crate::identity::Connection {
-            let mut c = crate::identity::Connection::new(
-                crate::identity::ConnectionId::new(Uuid::from_u128(1)),
-                crate::identity::IdentityId::new(Uuid::from_u128(2)),
-                1,
-                epoch,
-                [0; 12],
-                [1; 12],
-                Uuid::from_u128(3),
-                Uuid::from_u128(4),
-            );
-            c.authenticate().expect("authenticated fixture");
-            c
-        }
 
         fn context(epoch: u64, kind: crate::PayloadKind) -> crate::SessionInput {
             crate::SessionInput::new(
-                crate::identity::ConnectionId::new(Uuid::from_u128(1)),
+                crate::identity::ConnectionId::new(Uuid::from_u128(CONNECTION)),
                 crate::identity::IdentityId::new(Uuid::from_u128(2)),
                 epoch,
                 crate::identity::Capability::new(CapabilityAction::Read, "matinee/status").unwrap(),
@@ -34,28 +20,29 @@ macro_rules! foundation_contract_tests {
 
         #[test]
         fn foundational_boundary_accepts_valid_session_and_rejects_mutations() {
-            let mut session =
-                crate::ChannelSession::establish(connection(7), 1, "127.0.0.1:7777").unwrap();
-            assert!(session.is_open());
-            assert!(
-                session
-                    .binds(&context(7, crate::PayloadKind::Command))
-                    .is_ok()
-            );
+            let (mut client, mut daemon) = establish_pair(7);
+            let output = crate::AuthorizedOutput::filtered(
+                crate::PayloadKind::Command,
+                b"payload".to_vec(),
+            )
+            .unwrap();
+            let mut sink = RecordingSink::default();
+            let frame = client.send(&output, &mut sink).unwrap();
             assert_eq!(
-                session
-                    .binds(&context(6, crate::PayloadKind::Command))
-                    .unwrap_err()
-                    .code(),
-                crate::FailureCode::StaleEpoch
+                daemon
+                    .receive(&frame, &context(7, crate::PayloadKind::Command), &mut sink)
+                    .unwrap()
+                    .payload(),
+                b"payload"
             );
-            assert_eq!(session.next_send_counter().unwrap(), 0);
-            session.close();
-            assert!(!session.is_open());
-            assert_eq!(
-                session.next_send_counter().unwrap_err().code(),
-                crate::FailureCode::CounterMismatch
-            );
+
+            let (mut client, mut daemon) = establish_pair(7);
+            let frame = client.send(&output, &mut sink).unwrap();
+            let failure = daemon
+                .receive(&frame, &context(6, crate::PayloadKind::Command), &mut sink)
+                .expect_err("stale epoch");
+            assert_eq!(failure.code(), crate::FailureCode::StaleEpoch);
+            assert!(!daemon.is_open());
         }
 
         #[test]

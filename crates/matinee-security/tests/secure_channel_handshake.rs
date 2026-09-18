@@ -1,141 +1,274 @@
 macro_rules! secure_channel_handshake_tests {
     () => {
-        use std::fmt::Debug;
+        use crate::identity::{Capability, CapabilityAction};
+        use crate::test_support_channel::{
+            CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner, establish_pair,
+            establish_pair_with_ranges,
+        };
+        use crate::{
+            AuthorizedOutput, ChannelSigner, ClientHandshake, ClientHandshakeConfig, ConnectionId,
+            FailureCode, IdentityId, PayloadKind, ServerHandshake, ServerHandshakeConfig,
+            SessionInput,
+        };
         use uuid::Uuid;
 
-        const CONTEXT: &str = "matinee.secure-channel.v1";
-        const HELLO: &str = "matinee-secure-channel";
-        const ENDPOINT: &str = "daemon.local";
-        const CLIENT_NONCE: [u8; 32] = [0xaa; 32];
-        const SERVER_NONCE: [u8; 32] = [0xbb; 32];
-        const CLIENT_KEY: &str = "0411111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
-        const SERVER_KEY: &str = "0422222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222";
-        const SIGNATURE: [u8; 64] = [0x44; 64];
-
-        fn put_u16(value: u16) -> [u8; 2] { value.to_be_bytes() }
-        fn put_u32(value: u32) -> [u8; 4] { value.to_be_bytes() }
-        fn put_u64(value: u64) -> [u8; 8] { value.to_be_bytes() }
-
-        fn decode_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
-            if text.len() != N * 2 { return None; }
-            let mut out = [0u8; N];
-            for (i, pair) in text.as_bytes().chunks_exact(2).enumerate() {
-                let hi = (pair[0] as char).to_digit(16)? as u8;
-                let lo = (pair[1] as char).to_digit(16)? as u8;
-                out[i] = (hi << 4) | lo;
-            }
-            Some(out)
+        fn configs(
+            client_signer: &RingSigner,
+            server_signer: &RingSigner,
+            client_range: (u16, u16),
+            server_range: (u16, u16),
+        ) -> (ClientHandshakeConfig, ServerHandshakeConfig) {
+            let principal = IdentityId::new(Uuid::from_u128(PRINCIPAL));
+            let daemon = IdentityId::new(Uuid::from_u128(DAEMON));
+            let client = ClientHandshakeConfig::new(
+                ENDPOINT,
+                principal,
+                client_signer.public_key().clone(),
+                daemon,
+                server_signer.public_key().clone(),
+                7,
+                client_range.0,
+                client_range.1,
+            )
+            .unwrap();
+            let server = ServerHandshakeConfig::new(
+                ENDPOINT,
+                principal,
+                client_signer.public_key().clone(),
+                daemon,
+                server_signer.public_key().clone(),
+                7,
+                server_range.0,
+                server_range.1,
+                ConnectionId::new(Uuid::from_u128(CONNECTION)),
+            )
+            .unwrap();
+            (client, server)
         }
 
-        fn validate_handshake(
-            context: &str,
-            hello: &str,
-            endpoint: &str,
-            minimum: u16,
-            maximum: u16,
-            selected: u16,
-            epoch: u64,
-            client_nonce: &[u8],
-            server_nonce: &[u8],
-            client_key: &str,
-            server_key: &str,
-            signature: &[u8],
-        ) -> Result<(), &'static str> {
-            if context != CONTEXT || hello != HELLO || endpoint != ENDPOINT || endpoint.is_empty() || endpoint.len() > 256 {
-                return Err("authentication.failed");
-            }
-            if minimum > maximum || selected < minimum || selected > maximum || epoch == 0 {
-                return Err("authentication.failed");
-            }
-            if client_nonce.len() != 32 || server_nonce.len() != 32
-                || decode_hex::<65>(client_key).map_or(true, |k| k[0] != 4)
-                || decode_hex::<65>(server_key).map_or(true, |k| k[0] != 4)
-                || signature.len() != 64
-            {
-                return Err("authentication.failed");
-            }
-            Ok(())
+        fn decode_hex(value: &str) -> Vec<u8> {
+            assert_eq!(value.len() % 2, 0);
+            value
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| {
+                    let text = core::str::from_utf8(pair).unwrap();
+                    u8::from_str_radix(text, 16).unwrap()
+                })
+                .collect()
         }
 
-        fn redacted_debug<T: Debug>(_value: T) -> String {
-            "authentication.failed boundary=channel outcome=rejected".to_owned()
+        fn fixed_hex<const N: usize>(value: &str) -> [u8; N] {
+            decode_hex(value)
+                .try_into()
+                .ok()
+                .expect("fixed vector length")
         }
 
-        #[test]
-        fn handshake_accepts_context_endpoint_identity_epoch_and_contract_intersection() {
-            let connection = Uuid::parse_str("abcdefabcdefabcdefabcdefabcdefab").unwrap();
-            let daemon = Uuid::parse_str("1234567890abcdef1234567890abcdef").unwrap();
-            assert_eq!(connection.as_bytes().len(), 16);
-            assert_eq!(daemon.as_bytes().len(), 16);
-            assert_eq!(put_u16(2), [0, 2]);
-            assert_eq!(validate_handshake(CONTEXT, HELLO, ENDPOINT, 1, 3, 2, 7, &CLIENT_NONCE, &SERVER_NONCE, CLIENT_KEY, SERVER_KEY, &SIGNATURE), Ok(()));
-            assert_eq!("matinee.secure-channel.v1\0daemon.local\0principal.synthetic\0".as_bytes()[..6], *b"matine");
+        fn json_string<'a>(corpus: &'a str, name: &str) -> &'a str {
+            let marker = format!("\"{name}\": \"");
+            let start = corpus.find(&marker).expect("vector field") + marker.len();
+            let remainder = &corpus[start..];
+            &remainder[..remainder.find('"').expect("vector string terminator")]
         }
-
-        #[test]
-        fn handshake_encoding_preserves_unsigned_big_endian_utf8_uuid_sec1_and_p1363_shapes() {
-            assert_eq!(put_u32(0x0102_0304), [1, 2, 3, 4]);
-            assert_eq!(put_u64(u64::MAX), [255; 8]);
-            assert_eq!("π-secure".as_bytes(), [0xcf, 0x80, b'-', b's', b'e', b'c', b'u', b'r', b'e']);
-            assert_eq!(decode_hex::<65>(CLIENT_KEY).unwrap().len(), 65);
-            assert_eq!(decode_hex::<65>(SERVER_KEY).unwrap()[0], 4);
-            assert_eq!(SIGNATURE.len(), 64);
-            assert_eq!(Uuid::from_bytes([0xab; 16]).as_bytes(), &[0xab; 16]);
-            assert!(decode_hex::<65>(&CLIENT_KEY[..128]).is_none());
-            assert!(decode_hex::<65>("02".to_owned().as_str()).is_none());
+        fn context(session: &crate::ChannelSession) -> SessionInput {
+            SessionInput::new(
+                session.connection_id(),
+                session.principal(),
+                session.epoch(),
+                Capability::new(CapabilityAction::Read, "matinee/status").unwrap(),
+                PayloadKind::Command,
+            )
         }
 
         #[test]
-        fn handshake_nonce_and_key_direction_are_distinct_and_transcript_bound() {
-            let nonce0 = [0u8; 12];
-            let mut nonce1 = nonce0;
-            nonce1[11] = 1;
-            assert_ne!(nonce0, nonce1);
-            let client_label = b"client-to-daemon";
-            let daemon_label = b"daemon-to-client";
-            assert_ne!(client_label, daemon_label);
-            let transcript = format!("{CONTEXT}|{HELLO}|{ENDPOINT}|7|2");
-            assert_ne!(transcript, transcript.replace(ENDPOINT, "other.local"));
-            assert_eq!(nonce0, [0; 12]);
+        fn production_handshake_negotiates_and_reaches_bidirectional_sessions() {
+            let (mut client, mut daemon) = establish_pair(7);
+            assert_eq!(client.contract(), 3);
+            assert_eq!(daemon.contract(), 3);
+            assert_eq!(client.connection_id(), daemon.connection_id());
+            assert_eq!(client.endpoint(), ENDPOINT);
+
+            let output =
+                AuthorizedOutput::filtered(PayloadKind::Command, b"request".to_vec()).unwrap();
+            let mut sink = RecordingSink::default();
+            let frame = client.send(&output, &mut sink).unwrap();
+            let input = daemon
+                .receive(&frame, &context(&daemon), &mut sink)
+                .unwrap();
+            assert_eq!(input.payload(), b"request");
         }
 
         #[test]
-        fn handshake_mutations_reject_replay_encoding_and_boundaries_fail_closed() {
-            let cases = [
-                ("context.empty", "", HELLO, ENDPOINT, 1, 3, 2, 7, &CLIENT_NONCE[..], &SERVER_NONCE[..], CLIENT_KEY, SERVER_KEY, &SIGNATURE[..]),
-                ("endpoint.substitution", CONTEXT, HELLO, "other.local", 1, 3, 2, 7, &CLIENT_NONCE[..], &SERVER_NONCE[..], CLIENT_KEY, SERVER_KEY, &SIGNATURE[..]),
-                ("epoch.stale", CONTEXT, HELLO, ENDPOINT, 1, 3, 2, 0, &CLIENT_NONCE[..], &SERVER_NONCE[..], CLIENT_KEY, SERVER_KEY, &SIGNATURE[..]),
-                ("contract.disjoint", CONTEXT, HELLO, ENDPOINT, 4, 2, 2, 7, &CLIENT_NONCE[..], &SERVER_NONCE[..], CLIENT_KEY, SERVER_KEY, &SIGNATURE[..]),
-                ("nonce.short", CONTEXT, HELLO, ENDPOINT, 1, 3, 2, 7, &CLIENT_NONCE[..31], &SERVER_NONCE[..], CLIENT_KEY, SERVER_KEY, &SIGNATURE[..]),
-                ("key.compressed", CONTEXT, HELLO, ENDPOINT, 1, 3, 2, 7, &CLIENT_NONCE[..], &SERVER_NONCE[..], &SERVER_KEY[2..], SERVER_KEY, &SIGNATURE[..]),
-                ("signature.short", CONTEXT, HELLO, ENDPOINT, 1, 3, 2, 7, &CLIENT_NONCE[..], &SERVER_NONCE[..], CLIENT_KEY, SERVER_KEY, &SIGNATURE[..63]),
-            ];
-            for (name, context, hello, endpoint, min, max, selected, epoch, client_nonce, server_nonce, client_key, server_key, signature) in cases {
-                assert_eq!(validate_handshake(context, hello, endpoint, min, max, selected, epoch, client_nonce, server_nonce, client_key, server_key, signature), Err("authentication.failed"), "{name}");
-                let dispatch_count = 0u8;
-                let channel_closed = true;
-                assert_eq!(dispatch_count, 0);
-                assert!(channel_closed);
-            }
-            let projection = redacted_debug(("authentication.failed", CLIENT_KEY, SERVER_KEY));
-            assert!(!projection.contains(CLIENT_KEY));
-            assert!(!projection.contains(SERVER_KEY));
+        fn public_metadata_cannot_recompute_traffic_keys() {
+            let (mut first_client, first_daemon) = establish_pair(7);
+            let (mut second_client, mut second_daemon) = establish_pair(7);
+            let output =
+                AuthorizedOutput::filtered(PayloadKind::Command, b"same".to_vec()).unwrap();
+            let mut sink = RecordingSink::default();
+            let first = first_client.send(&output, &mut sink).unwrap();
+            let second = second_client.send(&output, &mut sink).unwrap();
+            assert_ne!(
+                first, second,
+                "independent ECDH secrets produced the same frame"
+            );
+            let failure = second_daemon
+                .receive(&first, &context(&second_daemon), &mut sink)
+                .expect_err("an observed frame cannot be opened with another private ECDH secret");
+            assert_eq!(failure.code(), FailureCode::CryptographicFailure);
+            assert!(!second_daemon.is_open());
+            assert!(first_daemon.is_open());
         }
 
         #[test]
-        fn handshake_vector_corpus_contains_required_replay_and_fail_closed_observations() {
+        fn exact_negotiation_rejects_disjoint_ranges_before_session_creation() {
+            let failure =
+                establish_pair_with_ranges(7, (1, 2), (3, 4)).expect_err("disjoint contracts");
+            assert_eq!(failure.code(), FailureCode::CompatibilityUnsupported);
+        }
+
+        #[test]
+        fn server_proof_requires_the_bound_daemon_signer() {
+            let client_signer = RingSigner::generate();
+            let server_signer = RingSigner::generate();
+            let wrong_signer = RingSigner::generate();
+            let (client_config, server_config) =
+                configs(&client_signer, &server_signer, (1, 3), (2, 4));
+            let (_, hello) = ClientHandshake::start(client_config).unwrap();
+            let mut sink = RecordingSink::default();
+            let failure = ServerHandshake::accept(server_config, &hello, &wrong_signer, &mut sink)
+                .expect_err("wrong daemon signer");
+            assert_eq!(failure.code(), FailureCode::AuthenticationFailed);
+            assert_eq!(sink.events.len(), 1);
+        }
+
+        #[test]
+        fn signature_and_transcript_mutations_fail_before_traffic_keys_exist() {
+            let client_signer = RingSigner::generate();
+            let server_signer = RingSigner::generate();
+            let (client_config, server_config) =
+                configs(&client_signer, &server_signer, (1, 3), (2, 4));
+            let (client, hello) = ClientHandshake::start(client_config).unwrap();
+            let mut sink = RecordingSink::default();
+            let (_, mut proof) =
+                ServerHandshake::accept(server_config, &hello, &server_signer, &mut sink).unwrap();
+            let index = proof.len() - 1;
+            proof[index] ^= 1;
+            let failure = client
+                .finish(&proof, &client_signer, &mut sink)
+                .expect_err("mutated server signature");
+            assert_eq!(failure.code(), FailureCode::AuthenticationFailed);
+            assert_eq!(sink.events.len(), 1);
+        }
+
+        #[test]
+        fn client_hello_uses_four_byte_lengths_utf8_uuid_and_valid_sec1_points() {
+            let client_signer = RingSigner::generate();
+            let server_signer = RingSigner::generate();
+            let (client_config, _) = configs(&client_signer, &server_signer, (1, 3), (2, 4));
+            let (_, hello) = ClientHandshake::start(client_config).unwrap();
+            let context_len = u32::from_be_bytes(hello[..4].try_into().unwrap()) as usize;
+            assert_eq!(&hello[4..4 + context_len], b"matinee.secure-channel.v1");
+            assert!(
+                hello
+                    .windows(ENDPOINT.len())
+                    .any(|part| part == ENDPOINT.as_bytes())
+            );
+            assert!(
+                hello
+                    .windows(39)
+                    .any(|part| part == b"id:00000000-0000-0000-0000-000000000002")
+            );
+            assert!(hello.windows(65).any(|part| part[0] == 0x04));
+            assert_eq!(client_signer.public_key().as_bytes().len(), 65);
+        }
+
+        #[test]
+        fn fixed_webcrypto_peer_matches_ring_transcripts_signatures_hkdf_and_frame() {
             let corpus = include_str!("../vectors/secure-channel-v1.json");
-            for id in [
-                "valid.handshake", "mutate.handshake.context.empty", "mutate.handshake.endpoint.substitution",
-                "mutate.handshake.epoch.stale", "mutate.handshake.contract_range.disjoint",
-                "mutate.handshake.client_nonce.short", "mutate.handshake.client_key.der",
-                "mutate.handshake.server_key.compressed", "mutate.handshake.signature.short",
-                "mutate.handshake.connection_id.invalid-uuid", "mutate.handshake.principal_selector.malformed-utf8",
-            ] {
-                assert!(corpus.contains(id), "missing vector {id}");
-            }
-            assert!(corpus.contains("\"dispatch_count\": 0"));
-            assert!(corpus.contains("\"secret_scan\": \"pass\""));
+            let text = |name: &str| json_string(corpus, name);
+            let client_hello = decode_hex(text("client_hello_hex"));
+            let daemon_key =
+                crate::PublicKey::from_uncompressed(fixed_hex(text("daemon_identity_public_hex")))
+                    .unwrap();
+            let server_signature = fixed_hex(text("server_signature_p1363_hex"));
+            let client_signature = fixed_hex(text("client_signature_p1363_hex"));
+            let daemon = IdentityId::new(Uuid::from_bytes(fixed_hex(text("daemon_id_hex"))));
+            let connection =
+                ConnectionId::new(Uuid::from_bytes(fixed_hex(text("connection_id_hex"))));
+            let (server, client, salt) =
+                crate::channel::vector_transcripts(crate::channel::VectorTranscriptInput {
+                    client_hello: &client_hello,
+                    selected: 3,
+                    server_min: 2,
+                    server_max: 4,
+                    daemon,
+                    daemon_key: &daemon_key,
+                    server_nonce: &fixed_hex(text("server_nonce_hex")),
+                    server_ephemeral: &fixed_hex(text("server_ephemeral_public_hex")),
+                    connection,
+                    server_signature: &server_signature,
+                    client_signature: &client_signature,
+                });
+            assert_eq!(server, decode_hex(text("server_proof_input_hex")));
+            assert_eq!(client, decode_hex(text("client_proof_input_hex")));
+            assert_eq!(salt, fixed_hex(text("hkdf_salt_hex")));
+            crate::channel::vector_verify_signature(&daemon_key, &server, &server_signature)
+                .unwrap();
+            let client_key =
+                crate::PublicKey::from_uncompressed(fixed_hex(text("client_identity_public_hex")))
+                    .unwrap();
+            crate::channel::vector_verify_signature(&client_key, &client, &client_signature)
+                .unwrap();
+            let (client_to_daemon, daemon_to_client) = crate::channel::vector_material(
+                &decode_hex(text("ecdh_shared_secret_hex")),
+                &salt,
+                3,
+            )
+            .unwrap();
+            assert_eq!(
+                client_to_daemon,
+                fixed_hex(text("client_to_daemon_key_hex"))
+            );
+            assert_eq!(
+                daemon_to_client,
+                fixed_hex(text("daemon_to_client_key_hex"))
+            );
+
+            let principal = IdentityId::new(Uuid::from_bytes(fixed_hex(text("principal_id_hex"))));
+            let mut daemon_session = crate::channel::vector_daemon_session(
+                connection,
+                principal,
+                7,
+                3,
+                client_to_daemon,
+                daemon_to_client,
+            )
+            .unwrap();
+            let input_context = context(&daemon_session);
+            let frame = decode_hex(text("framed_hex"));
+            let mut sink = RecordingSink::default();
+            let opened = daemon_session
+                .receive(&frame, &input_context, &mut sink)
+                .unwrap();
+            assert_eq!(
+                opened.payload(),
+                decode_hex(text("application_payload_hex"))
+            );
+
+            let output = std::process::Command::new("node")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/fixtures/webcrypto/secure-channel-vectors.mjs"
+                ))
+                .output()
+                .expect("Node.js WebCrypto peer");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("\"result\":\"pass\""));
         }
     };
 }

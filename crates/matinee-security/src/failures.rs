@@ -12,7 +12,7 @@ use uuid::Uuid;
 /// The security boundary at which a failure was classified.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[allow(clippy::enum_variant_names)]
-pub(crate) enum FailureBoundary {
+pub enum FailureBoundary {
     Authentication,
     Authorization,
     Compatibility,
@@ -30,7 +30,7 @@ pub(crate) enum FailureBoundary {
 }
 
 impl FailureBoundary {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Authentication => "authentication",
             Self::Authorization => "authorization",
@@ -52,7 +52,7 @@ impl FailureBoundary {
 
 /// Stable, bounded reason classes.  The string values are the wire/event names.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum FailureCode {
+pub enum FailureCode {
     AuthenticationFailed,
     AuthorizationDenied,
     ObjectNotFound,
@@ -75,7 +75,7 @@ pub(crate) enum FailureCode {
 }
 
 impl FailureCode {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::AuthenticationFailed => "authentication.failed",
             Self::AuthorizationDenied => "authorization.denied",
@@ -153,7 +153,7 @@ impl FailureCode {
 
 /// A closed value describing what a caller may safely do next.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum SafeNextAction {
+pub enum SafeNextAction {
     VerifyCredentialAndReconnect,
     RequestAdministratorGrant,
     DoNotInferObjectExistence,
@@ -172,7 +172,7 @@ pub(crate) enum SafeNextAction {
 }
 
 impl SafeNextAction {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::VerifyCredentialAndReconnect => "verify-credential-and-reconnect",
             Self::RequestAdministratorGrant => "request-administrator-grant",
@@ -195,7 +195,7 @@ impl SafeNextAction {
 
 /// A safe failure projection.  No constructor accepts untrusted text or secret data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SecurityFailure {
+pub struct SecurityFailure {
     boundary: FailureBoundary,
     code: FailureCode,
     principal_id: Option<Uuid>,
@@ -225,19 +225,19 @@ impl SecurityFailure {
         }
     }
 
-    pub(crate) const fn boundary(self) -> FailureBoundary {
+    pub const fn boundary(self) -> FailureBoundary {
         self.boundary
     }
-    pub(crate) const fn code(self) -> FailureCode {
+    pub const fn code(self) -> FailureCode {
         self.code
     }
-    pub(crate) const fn safe_next_action(self) -> SafeNextAction {
+    pub const fn safe_next_action(self) -> SafeNextAction {
         self.code.safe_next_action()
     }
-    pub(crate) const fn principal_id(self) -> Option<Uuid> {
+    pub const fn principal_id(self) -> Option<Uuid> {
         self.principal_id
     }
-    pub(crate) const fn connection_id(self) -> Option<Uuid> {
+    pub const fn connection_id(self) -> Option<Uuid> {
         self.connection_id
     }
 
