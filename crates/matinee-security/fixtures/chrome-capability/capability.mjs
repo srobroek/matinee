@@ -139,15 +139,18 @@ async function writeStoredKey(record) {
 }
 
 async function clearStoredKey() {
+  const database = await openKeyDatabase();
   try {
-    const database = await openKeyDatabase();
-    try {
-      await idbRequest(database.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).delete(KEY_REFERENCE));
-    } finally {
-      database.close();
-    }
-  } catch {
-    // Cleanup is best-effort; the probe remains fail-closed.
+    const transaction = database.transaction(IDB_STORE, "readwrite");
+    const request = transaction.objectStore(IDB_STORE).delete(KEY_REFERENCE);
+    await new Promise((resolve, reject) => {
+      request.onerror = () => reject(request.error ?? new Error("indexeddb.delete"));
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error ?? new Error("indexeddb.transaction"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("indexeddb.abort"));
+    });
+  } finally {
+    database.close();
   }
 }
 async function publicKeyFingerprint(subtle, publicKey) {
