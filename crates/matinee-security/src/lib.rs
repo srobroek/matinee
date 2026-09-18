@@ -244,7 +244,6 @@ pub struct ChannelSession {
     connection: Connection,
     contract: u16,
     endpoint: String,
-    open: bool,
 }
 
 impl ChannelSession {
@@ -271,18 +270,16 @@ impl ChannelSession {
             connection,
             contract,
             endpoint,
-            open: true,
         })
     }
 
     /// Whether the session still carries payloads.
     pub fn is_open(&self) -> bool {
-        self.open && self.connection.lifecycle() == ConnectionLifecycle::Authenticated
+        self.connection.lifecycle() == ConnectionLifecycle::Authenticated
     }
 
     /// Close the session. A closed session accepts no later payload.
     pub fn close(&mut self) {
-        self.open = false;
         self.connection.close();
     }
 

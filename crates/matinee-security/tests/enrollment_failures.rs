@@ -74,7 +74,7 @@ macro_rules! enrollment_failure_tests {
         }
         fn invalid_proof(identity: IdentityId) -> EnrollmentProof {
             EnrollmentProof { identity, signature: vec![0; 8], long_term_public_key: fresh_public_key() }
-        } 
+        }
 
         #[test]
         fn malformed_creation_and_uncertain_clock_fail_closed_before_key_generation() {
