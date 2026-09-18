@@ -107,7 +107,7 @@ impl os_pipe::OsPipe for FakeOsPipe {
     fn acquire(&self) -> Result<os_pipe::InheritedPipe, os_pipe::OsPipeError> {
         match self.outcome {
             PipeOutcome::Present(0) => Ok(os_pipe::InheritedPipe::from_handle(0)),
-            PipeOutcome::Present(handle) => os_pipe::InheritedPipe::from_inherited_handle(handle),
+            PipeOutcome::Present(handle) => Ok(os_pipe::InheritedPipe::from_handle(handle)),
             PipeOutcome::Missing => Err(os_pipe::OsPipeError::Missing),
             PipeOutcome::Mismatch => Err(os_pipe::OsPipeError::Mismatch),
             PipeOutcome::Duplicate => Err(os_pipe::OsPipeError::Duplicate),

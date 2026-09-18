@@ -52,7 +52,7 @@ macro_rules! bootstrap_recovery_tests {
                     EventTime(42),
                     b"native://bootstrap",
                 ),
-                None => state.bootstrap_encoded(
+                None => state.bootstrap_encoded_with_store_for_test(
                     &pipe,
                     &envelope.encode(),
                     store,

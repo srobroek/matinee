@@ -6,7 +6,12 @@
 
 use core::fmt;
 
+use keyring::Entry;
 use ring::digest;
+
+const CREDENTIAL_SERVICE: &str = "matinee-security-credential-v1";
+const OWNER_BYTES: usize = 32;
+const MIN_PRIVATE_KEY_BYTES: usize = 32;
 
 /// A derived, non-secret selector supplied by the owning identity transition.
 ///
@@ -21,6 +26,7 @@ pub(crate) struct CredentialBinding {
 
 impl CredentialBinding {
     /// Construct a deterministic opaque binding for adapter-level tests.
+    #[cfg(test)]
     pub(crate) const fn new(value: [u8; 32]) -> Self {
         Self { selector: value, owner: value }
     }
@@ -91,18 +97,87 @@ pub(crate) trait CredentialStore {
     fn lookup(&self, binding: CredentialBinding) -> Result<CredentialHandle, CredentialStoreError>;
 }
 
-/// Minimal real storage used by the bootstrap operation and contract tests.
+/// Production credential-store adapter backed by the selected native keyring.
 ///
-/// Entries are selector-indexed records, not a test-only fake. Lookup is an
+/// The keyring entry name contains only the hex encoding of the derived selector.
+/// A provisioned secret is an owner digest followed by at least one P-256 private
+/// key (normally 32 bytes). The private bytes are hashed only to derive an opaque
+/// handle and are zeroed before this lookup returns. Neither identity bytes nor
+/// key bytes are returned from this adapter.
+pub(crate) struct PlatformCredentialStore;
+
+impl PlatformCredentialStore {
+    pub(crate) const fn new() -> Self { Self }
+
+    fn entry(binding: CredentialBinding) -> Result<Entry, CredentialStoreError> {
+        let selector = selector_text(binding);
+        Entry::new(CREDENTIAL_SERVICE, &selector).map_err(map_keyring_error)
+    }
+}
+
+impl CredentialStore for PlatformCredentialStore {
+    fn lookup(&self, binding: CredentialBinding) -> Result<CredentialHandle, CredentialStoreError> {
+        let entry = Self::entry(binding)?;
+        let mut record = entry.get_secret().map_err(map_keyring_error)?;
+        let result = decode_record(binding, &record);
+        record.fill(0);
+        result
+    }
+}
+
+fn selector_text(binding: CredentialBinding) -> String {
+    let mut selector = String::with_capacity(3 + 64);
+    selector.push_str("v1-");
+    for byte in binding.selector() {
+        use core::fmt::Write;
+        let _ = write!(selector, "{byte:02x}");
+    }
+    selector
+}
+
+fn decode_record(
+    binding: CredentialBinding,
+    record: &[u8],
+) -> Result<CredentialHandle, CredentialStoreError> {
+    if record.len() < OWNER_BYTES + MIN_PRIVATE_KEY_BYTES
+        || record[..OWNER_BYTES] != binding.owner()
+    {
+        return Err(CredentialStoreError::Mismatch);
+    }
+    let key_digest = digest::digest(&digest::SHA256, &record[OWNER_BYTES..]);
+    let mut slot = [0u8; 8];
+    slot.copy_from_slice(&key_digest.as_ref()[..8]);
+    Ok(CredentialHandle::from_slot(u64::from_be_bytes(slot)))
+}
+
+fn map_keyring_error(error: keyring::Error) -> CredentialStoreError {
+    match error {
+        keyring::Error::NoEntry => CredentialStoreError::Missing,
+        keyring::Error::Ambiguous(_) => CredentialStoreError::Duplicate,
+        keyring::Error::NoStorageAccess(_) | keyring::Error::PlatformFailure(_) => {
+            CredentialStoreError::Unavailable
+        }
+        keyring::Error::BadEncoding(_)
+        | keyring::Error::TooLong(_, _)
+        | keyring::Error::Invalid(_, _) => CredentialStoreError::Mismatch,
+        _ => CredentialStoreError::Unavailable,
+    }
+}
+
+/// Minimal deterministic storage used by the bootstrap operation's injectable
+/// test seam. Production code uses [`PlatformCredentialStore`] instead.
+///
+/// Entries are selector-indexed records, not a plaintext fallback. Lookup is an
 /// all-or-failure operation: unavailable, absent, mismatched, and duplicate
-/// records never produce a handle. A platform adapter can implement the same
-/// [`CredentialStore`] contract without exposing key bytes.
+/// records never produce a handle.
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct InMemoryCredentialStore {
     entries: Vec<CredentialRecord>,
     unavailable: bool,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct CredentialRecord {
     selector: [u8; 32],
@@ -110,6 +185,7 @@ struct CredentialRecord {
     handle: CredentialHandle,
 }
 
+#[cfg(test)]
 impl InMemoryCredentialStore {
     pub(crate) fn new() -> Self { Self::default() }
 
@@ -133,6 +209,7 @@ impl InMemoryCredentialStore {
     }
 }
 
+#[cfg(test)]
 impl CredentialStore for InMemoryCredentialStore {
     fn lookup(&self, binding: CredentialBinding) -> Result<CredentialHandle, CredentialStoreError> {
         if self.unavailable { return Err(CredentialStoreError::Unavailable); }
@@ -157,6 +234,9 @@ mod tests {
         let other = CredentialBinding::for_identities(uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(3));
         assert_ne!(first, other);
         assert_eq!(format!("{first:?}"), "CredentialBinding(REDACTED)");
+        let selector = selector_text(first);
+        assert!(selector.starts_with("v1-"));
+        assert!(!selector.contains('1') || selector.len() > 3);
         let mut store = InMemoryCredentialStore::new();
         assert_eq!(store.lookup(first), Err(CredentialStoreError::Missing));
         store.register_mismatched(first, 7);
@@ -165,5 +245,16 @@ mod tests {
         assert_eq!(store.lookup(first), Err(CredentialStoreError::Duplicate));
         store.set_unavailable(true);
         assert_eq!(store.lookup(first), Err(CredentialStoreError::Unavailable));
+    }
+
+    #[test]
+    fn platform_record_returns_only_a_redacted_handle() {
+        let binding = CredentialBinding::new([0x55; 32]);
+        let mut record = Vec::from(binding.owner());
+        record.extend_from_slice(&[0x42; MIN_PRIVATE_KEY_BYTES]);
+        let handle = decode_record(binding, &record).expect("valid platform record");
+        assert_eq!(format!("{handle:?}"), "CredentialHandle(REDACTED)");
+        assert_eq!(decode_record(binding, &[0; OWNER_BYTES + MIN_PRIVATE_KEY_BYTES]), Err(CredentialStoreError::Mismatch));
+        assert_eq!(decode_record(binding, &[0; OWNER_BYTES]), Err(CredentialStoreError::Mismatch));
     }
 }

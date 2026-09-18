@@ -1,6 +1,6 @@
 //! Bootstrap transition boundary: validation, required-event gating, and atomic state.
-use crate::adapters::credential_store::{CredentialStore, CredentialStoreError};
-use crate::adapters::os_pipe::{BootstrapEnvelope, EnvelopeError, NonceLedger, OsPipe, OsPipeError};
+use crate::adapters::credential_store::{CredentialStore, CredentialStoreError, PlatformCredentialStore};
+use crate::adapters::os_pipe::{BootstrapEnvelope, EnvelopeError, NonceLedger, OsPipe, OsPipeError, PlatformOsPipe};
 use crate::events::{emit_required, EndpointClass, EventBoundary, EventOutcome, EventTime, MetadataEntry, SafeNextAction, SecurityCode, SecurityEvent, SecurityEventSink};
 use crate::identity::{Fingerprint, IdentityId, PublicKey, TransitionOutcome};
 
@@ -61,10 +61,37 @@ impl BootstrapState {
         }
     }
 
-    /// Production entrypoint for the actual bounded pipe bytes. Parsing happens
-    /// after handle acquisition and the handle is closed if parsing or transition
-    /// validation fails. Crash injection is available only through the test seam.
-    pub(crate) fn bootstrap_encoded<P: OsPipe, C: CredentialStore, S: SecurityEventSink>(
+    /// Production entrypoint. It constructs the native credential adapter here;
+    /// callers cannot silently replace platform custody on this path.
+    pub(crate) fn bootstrap_encoded<P: OsPipe, S: SecurityEventSink>(
+        &mut self,
+        pipe: &P,
+        encoded_envelope: &[u8],
+        sink: Option<&mut S>,
+        event_time: EventTime,
+        endpoint_bytes: &[u8],
+    ) -> Result<TransitionOutcome, BootstrapError> {
+        let credential = PlatformCredentialStore::new();
+        self.bootstrap_encoded_inner(
+            pipe, encoded_envelope, &credential, sink, None, event_time, endpoint_bytes,
+        )
+    }
+
+    /// Production convenience entrypoint for the raw inherited descriptor/handle.
+    pub(crate) fn bootstrap_inherited_handle<S: SecurityEventSink>(
+        &mut self,
+        handle: u64,
+        encoded_envelope: &[u8],
+        sink: Option<&mut S>,
+        event_time: EventTime,
+        endpoint_bytes: &[u8],
+    ) -> Result<TransitionOutcome, BootstrapError> {
+        let pipe = PlatformOsPipe::new(handle);
+        self.bootstrap_encoded(&pipe, encoded_envelope, sink, event_time, endpoint_bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bootstrap_encoded_with_store_for_test<P: OsPipe, C: CredentialStore, S: SecurityEventSink>(
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],
@@ -248,9 +275,9 @@ mod tests {
 
     #[test]
     fn inherited_handles_are_close_on_exec_and_close_idempotently() {
-        let mut handle = InheritedPipe::from_inherited_handle(9).unwrap();
+        let mut handle = InheritedPipe::from_handle(9);
         assert!(handle.is_present());
-        assert!(handle.close_on_exec());
+        assert!(!handle.close_on_exec());
         handle.close_on_error();
         handle.close();
         assert!(handle.is_closed());

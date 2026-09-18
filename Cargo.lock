@@ -746,6 +746,7 @@ name = "matinee-security"
 version = "0.0.2"
 dependencies = [
  "keyring",
+ "libc",
  "p256",
  "ring",
  "serde",

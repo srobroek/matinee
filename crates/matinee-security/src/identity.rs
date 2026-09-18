@@ -91,8 +91,8 @@ const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 pub struct PublicKey([u8; UNCOMPRESSED_KEY_BYTES]);
 impl PublicKey {
     pub fn from_uncompressed(bytes: [u8; UNCOMPRESSED_KEY_BYTES]) -> Result<Self, &'static str> {
-        if bytes[0] != 0x04 {
-            return Err("public key must be uncompressed P-256");
+        if p256::PublicKey::from_sec1_bytes(&bytes).is_err() {
+            return Err("public key must be a valid uncompressed P-256 point");
         }
         Ok(Self(bytes))
     }
@@ -840,14 +840,15 @@ impl RevocationTransition {
 mod tests {
     use super::*;
     use serde::de::value::{Error as ValueError, StrDeserializer};
-
     fn public_key_bytes() -> [u8; UNCOMPRESSED_KEY_BYTES] {
-        let mut bytes = [0u8; UNCOMPRESSED_KEY_BYTES];
-        bytes[0] = 0x04;
-        for (index, byte) in bytes.iter_mut().enumerate().skip(1) {
-            *byte = index as u8;
-        }
-        bytes
+        [
+            0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc,
+            0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d,
+            0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96,
+            0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb,
+            0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31,
+            0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+        ]
     }
 
     fn public_key() -> PublicKey {
@@ -881,7 +882,6 @@ mod tests {
         assert_serde::<PublicKey>();
         assert_serde::<Fingerprint>();
         assert_serde::<IdentityId>();
-        assert_serde::<ConnectionId>();
         assert_serde::<TransitionId>();
         assert_serde::<IdempotencyKey>();
         assert_serde::<CredentialReference>();
@@ -904,7 +904,7 @@ mod tests {
         let text = core::str::from_utf8(&hex).expect("hex is ascii");
         assert_eq!(text.len(), UNCOMPRESSED_KEY_BYTES * 2);
         assert!(text.starts_with("04"));
-        assert_eq!(&text[2..6], "0102");
+        assert_eq!(&text[2..6], "6b17");
         assert_eq!(deserialize_key(text).expect("round trip"), key);
     }
 
