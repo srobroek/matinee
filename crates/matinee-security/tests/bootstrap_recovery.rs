@@ -146,6 +146,7 @@ macro_rules! bootstrap_recovery_tests {
                     CredentialStoreError::Mismatch => store.register_mismatched(binding, value as u64),
                     CredentialStoreError::Duplicate => { store.register(binding, 1); store.register(binding, 2); }
                     CredentialStoreError::Unavailable => store.set_unavailable(true),
+                    CredentialStoreError::Revoked => unreachable!("bootstrap store has no revoked fixture"),
                 }
                 let mut candidate_state = BootstrapState::default();
                 let mut candidate_sink = FakeEventSink::accepted();

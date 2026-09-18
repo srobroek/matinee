@@ -64,9 +64,17 @@ macro_rules! enrollment_failure_tests {
             let signature = signer.sign(&rng, &enrollment_proof_message(bundle, &public)).unwrap().as_ref().to_vec();
             EnrollmentProof { identity, signature, long_term_public_key: public }
         }
-        fn invalid_proof(identity: IdentityId) -> EnrollmentProof {
-            EnrollmentProof { identity, signature: vec![0; 8], long_term_public_key: PublicKey::from_uncompressed([0x04; crate::identity::UNCOMPRESSED_KEY_BYTES]).unwrap() }
+        fn fresh_public_key() -> PublicKey {
+            let rng = SystemRandom::new();
+            let private = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+            let signer = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, private.as_ref(), &rng).unwrap();
+            let mut bytes = [0u8; crate::identity::UNCOMPRESSED_KEY_BYTES];
+            bytes.copy_from_slice(signer.public_key().as_ref());
+            PublicKey::from_uncompressed(bytes).unwrap()
         }
+        fn invalid_proof(identity: IdentityId) -> EnrollmentProof {
+            EnrollmentProof { identity, signature: vec![0; 8], long_term_public_key: fresh_public_key() }
+        } 
 
         #[test]
         fn malformed_creation_and_uncertain_clock_fail_closed_before_key_generation() {
@@ -226,7 +234,7 @@ macro_rules! enrollment_failure_tests {
             assert_eq!(service.reconnect(identity, &old_fp, &capability), crate::enrollment::ChromeReconnectOutcome::Reconnected);
             let unsupported = ChromeCapability::reported(&binding, false, true).unwrap();
             assert_eq!(service.reconnect(identity, &old_fp, &unsupported), crate::enrollment::ChromeReconnectOutcome::Mismatch);
-            let new_key = PublicKey::from_uncompressed([0x04; crate::identity::UNCOMPRESSED_KEY_BYTES]).unwrap();
+            let new_key = fresh_public_key();
             assert_eq!(service.update_custody(identity, &new_key, &unsupported), Err(EnrollmentConsumeError::CapabilityRejected));
             let new_fp = service.update_custody(identity, &new_key, &capability).unwrap();
             assert!(service.is_quarantined(&old_fp));

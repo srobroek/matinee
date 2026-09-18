@@ -86,17 +86,15 @@ impl fmt::Debug for CredentialHandle {
 /// Closed, redacted credential lookup outcomes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CredentialStoreError {
-    Missing,
-    Mismatch,
     /// No credential is registered for the selected binding.
     Missing,
     /// A credential exists, but is bound to a different identity.
     Mismatch,
+    /// The selected credential was revoked and cannot authenticate.
+    Revoked,
     /// More than one credential claims the selected binding.
     Duplicate,
     /// The platform service could not be queried. Callers must fail closed.
-    Unavailable,
-    Duplicate,
     Unavailable,
 }
 
