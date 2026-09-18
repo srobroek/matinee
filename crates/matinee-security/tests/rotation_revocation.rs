@@ -14,8 +14,9 @@ macro_rules! rotation_revocation_tests {
         };
         use crate::test_support_fakes::{FakeCredentialStore, FakeOsPipe};
         use crate::test_support_transitions::{
-            browser_capability, ceiling, commit_mutation, connection, consume_enrollment,
-            create_enrollment, credential, grant, input, key, live_channel, paired_proof, receive,
+            admit, browser_capability, ceiling, commit_mutation, connection, consume_enrollment,
+            create_enrollment, create_enrollment_with_default_expiry, credential, grant, input,
+            key, live_channel, paired_proof, receive,
             registered, request, revoke, rotate, transition, ADMINISTRATOR, EXTENSION,
         };
         use crate::transition::{
@@ -173,8 +174,7 @@ macro_rules! rotation_revocation_tests {
             let (_, stale_daemon) = establish_pair_for(&principal, &signer, connection(3))
                 .expect("two peers can still agree on a retired snapshot between themselves");
             assert_eq!(
-                transitions
-                    .register_channel(stale_daemon)
+                admit(&transitions, stale_daemon)
                     .expect_err("a channel from the retired epoch is refused")
                     .code(),
                 FailureCode::StaleEpoch
@@ -1032,6 +1032,167 @@ macro_rules! rotation_revocation_tests {
                 .expect_err("a retired daemon session emits no protected projection");
             assert_eq!(failure.code(), FailureCode::StaleEpoch);
         }
+        /// A refused admission that cannot be recorded is reported as the sink failure,
+        /// and an admission is never the fallback: the registry stays empty either way.
+        /// The positive control is the same snapshot against a sink that accepts.
+        #[test]
+        fn an_unrecordable_admission_refusal_fails_closed_and_admits_nothing() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            let forged = registered_principal(
+                EXTENSION,
+                PrincipalKind::NativeAdmin,
+                signer.public_key().clone(),
+                ceiling(),
+                0,
+            );
+            let (_, forged_daemon) = establish_pair_for(&forged, &signer, connection(120))
+                .expect("two peers can agree on a snapshot the registry never held");
+            let mut unavailable = RecordingSink {
+                events: Vec::new(),
+                unavailable: true,
+            };
+            let rejection = transitions
+                .register_channel(forged_daemon, &mut unavailable)
+                .expect_err("a refusal nobody can record is still a refusal");
+            assert_eq!(rejection.code(), FailureCode::EventSinkUnavailable);
+            assert!(!transitions.channel_is_open(connection(120)));
+            assert_eq!(transitions.open_channels(), 0);
+
+            // The positive control: a sink that accepts admits the registered snapshot.
+            let (_, honest) = establish_pair_for(&principal, &signer, connection(121))
+                .expect("production handshake fixture");
+            let mut accepting = RecordingSink::default();
+            assert_eq!(
+                transitions.register_channel(honest, &mut accepting),
+                Ok(connection(121))
+            );
+            assert!(transitions.channel_is_open(connection(121)));
+            assert!(
+                accepting.events.is_empty(),
+                "an admitted channel is not one of the facts the contract enumerates"
+            );
+        }
+
+
+        /// FR-007: "enrollment expiry MUST be ten minutes by default". The default is
+        /// not observable as a number a caller passed in, so it is proved by what a
+        /// pairing peer must present: the extension pairs only when it carries exactly
+        /// the ten-minute deadline the administrator never named.
+        #[test]
+        fn an_unnamed_enrollment_deadline_defaults_to_ten_minutes() {
+            let transitions = SecurityTransitions::default();
+            let administrator_signer = RingSigner::generate();
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &administrator_signer,
+            );
+            let mut sink = RecordingSink::default();
+            let enrollment = transition(110);
+            assert_eq!(
+                create_enrollment_with_default_expiry(
+                    &transitions,
+                    enrollment,
+                    administrator.id(),
+                    110,
+                    0,
+                    Some(&mut sink),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            assert_eq!(
+                transitions.enrollment_lifecycle(enrollment),
+                Some(EnrollmentLifecycle::Pending)
+            );
+
+            // Ten minutes is what the peer must present. `EnrollmentClock` refuses a
+            // deadline that is not the bundle's own, so a default of any other length
+            // would refuse this pairing.
+            let mut channel = EnrollmentChannel::open(connection(110), 1).expect("native channel");
+            let proof = paired_proof(&transitions, enrollment, &mut channel, id(EXTENSION));
+            assert_eq!(
+                consume_enrollment(
+                    &transitions,
+                    enrollment,
+                    id(EXTENSION),
+                    &proof,
+                    &EnrollmentClock::new(
+                        0,
+                        ExpiryResult::valid(10 * 60 * 1_000).expect("bounded deadline")
+                    ),
+                    &mut channel,
+                    111,
+                    0,
+                    Some(&mut sink),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            assert_eq!(
+                transitions.enrollment_lifecycle(enrollment),
+                Some(EnrollmentLifecycle::Consumed)
+            );
+        }
+
+        /// FR-007: "an administrator MUST be able to create" one. Only an
+        /// administrator: a principal of any other kind opens nothing, and the
+        /// administrator's own creation still succeeds beside it.
+        #[test]
+        fn only_a_native_administrator_opens_an_enrollment() {
+            let transitions = SecurityTransitions::default();
+            let client_signer = RingSigner::generate();
+            let client = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &client_signer);
+            let mut sink = RecordingSink::default();
+            let refused = transition(112);
+            let rejection = create_enrollment_with_default_expiry(
+                &transitions,
+                refused,
+                client.id(),
+                112,
+                0,
+                Some(&mut sink),
+            )
+            .expect_err("a client principal is not an administrator");
+            assert_eq!(rejection.outcome(), TransitionOutcome::Rejected);
+            assert_eq!(rejection.code(), FailureCode::AuthorizationDenied);
+            assert_eq!(
+                rejection.code().safe_next_action(),
+                SafeNextAction::RequestAdministratorGrant
+            );
+            assert_eq!(transitions.enrollment_lifecycle(refused), None);
+            assert!(
+                sink.events.is_empty(),
+                "a transition that did not happen emits nothing"
+            );
+
+            // The positive control: the administrator still opens one.
+            let administrator_signer = RingSigner::generate();
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &administrator_signer,
+            );
+            let allowed = transition(113);
+            assert_eq!(
+                create_enrollment_with_default_expiry(
+                    &transitions,
+                    allowed,
+                    administrator.id(),
+                    113,
+                    0,
+                    Some(&mut sink),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            assert_eq!(
+                transitions.enrollment_lifecycle(allowed),
+                Some(EnrollmentLifecycle::Pending)
+            );
+            assert_eq!(sink.events.last().expect("a committed enrollment emits").code(), SecurityCode::EnrollmentAccepted);
+        }
 
         #[test]
         fn custody_validation_failure_cannot_follow_an_accepted_event() {
@@ -1238,7 +1399,7 @@ macro_rules! rotation_revocation_tests {
             );
             let (_, honest) = establish_pair_for(&honest_snapshot, &signer, connection(1))
                 .expect("production handshake fixture");
-            assert_eq!(transitions.register_channel(honest), Ok(connection(1)));
+            assert_eq!(admit(&transitions, honest), Ok(connection(1)));
             assert!(transitions.channel_is_open(connection(1)));
 
             // A forged kind is indistinguishable to the handshake: the same identity, the
@@ -1252,8 +1413,7 @@ macro_rules! rotation_revocation_tests {
             );
             let (_, daemon) = establish_pair_for(&forged, &signer, connection(2))
                 .expect("two peers can agree on a snapshot the registry never held");
-            let rejection = transitions
-                .register_channel(daemon)
+            let rejection = admit(&transitions, daemon)
                 .expect_err("a self-built snapshot is not the registered snapshot");
             assert_eq!(rejection.outcome(), TransitionOutcome::Rejected);
             assert_eq!(rejection.code(), FailureCode::CredentialStoreMismatch);
@@ -1271,7 +1431,7 @@ macro_rules! rotation_revocation_tests {
             // honest session takes it instead of colliding with a recorded replay.
             let (_, retry) = establish_pair_for(&principal, &signer, connection(2))
                 .expect("production handshake fixture");
-            assert_eq!(transitions.register_channel(retry), Ok(connection(2)));
+            assert_eq!(admit(&transitions, retry), Ok(connection(2)));
             assert_eq!(transitions.open_channels(), 2);
         }
 
@@ -1299,8 +1459,7 @@ macro_rules! rotation_revocation_tests {
             let (_, wide) = establish_pair_for(&widened, &signer, connection(1))
                 .expect("two peers can agree on a widened ceiling between themselves");
             assert_eq!(
-                transitions
-                    .register_channel(wide)
+                admit(&transitions, wide)
                     .expect_err("a widened ceiling is not the registered ceiling")
                     .code(),
                 FailureCode::CredentialStoreMismatch
@@ -1320,8 +1479,7 @@ macro_rules! rotation_revocation_tests {
             let (_, named) = establish_pair_for(&renamed, &signer, connection(2))
                 .expect("two peers can agree on a recomputed fingerprint between themselves");
             assert_eq!(
-                transitions
-                    .register_channel(named)
+                admit(&transitions, named)
                     .expect_err("a recomputed fingerprint is not the registered fingerprint")
                     .code(),
                 FailureCode::CredentialStoreMismatch
@@ -1379,7 +1537,7 @@ macro_rules! rotation_revocation_tests {
                 let (_, daemon) = establish_pair_for(&forged, &signer, slot)
                     .expect("two peers can agree on a forged locator between themselves");
                 assert_eq!(
-                    transitions.register_channel(daemon).expect_err(what).code(),
+                    admit(&transitions, daemon).expect_err(what).code(),
                     FailureCode::CredentialStoreMismatch,
                     "{what} is not the registered credential reference"
                 );
@@ -1410,8 +1568,7 @@ macro_rules! rotation_revocation_tests {
             let (_, early) = establish_pair_for(&at_epoch_one, &signer, connection(1))
                 .expect("two peers can agree on an epoch the registry never reached");
             assert_eq!(
-                transitions
-                    .register_channel(early)
+                admit(&transitions, early)
                     .expect_err("an epoch the registry does not hold is refused")
                     .code(),
                 FailureCode::StaleEpoch
@@ -1443,8 +1600,7 @@ macro_rules! rotation_revocation_tests {
             let (_, retired) = establish_pair_for(&at_epoch_one, &signer, connection(2))
                 .expect("two peers can still agree on the retired key between themselves");
             assert_eq!(
-                transitions
-                    .register_channel(retired)
+                admit(&transitions, retired)
                     .expect_err("the retired key is not the registered credential at epoch 1")
                     .code(),
                 FailureCode::CredentialStoreMismatch

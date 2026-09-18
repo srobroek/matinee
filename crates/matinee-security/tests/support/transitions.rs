@@ -104,6 +104,16 @@ pub(crate) fn grant(extension: IdentityId, epoch: u64) -> ExtensionGrant {
     .expect("bounded grant")
 }
 
+/// Admit one channel through the production registry with a sink that accepts and is
+/// then discarded. A test that asserts what admission recorded passes its own sink to
+/// `register_channel` instead.
+pub(crate) fn admit(
+    transitions: &SecurityTransitions,
+    session: ChannelSession,
+) -> Result<ConnectionId, TransitionRejection> {
+    transitions.register_channel(session, &mut RecordingSink::default())
+}
+
 /// One live daemon channel in the registry, with the client half kept by the caller.
 pub(crate) fn live_channel(
     transitions: &SecurityTransitions,
@@ -113,9 +123,7 @@ pub(crate) fn live_channel(
 ) -> ChannelSession {
     let (client, daemon) = establish_pair_for(principal, signer, connection(value))
         .expect("production handshake fixture");
-    transitions
-        .register_channel(daemon)
-        .expect("channel at the registered epoch");
+    admit(transitions, daemon).expect("channel at the registered epoch");
     client
 }
 
@@ -248,7 +256,7 @@ pub(crate) fn creation(enrollment: TransitionId, daemon: IdentityId) -> Enrollme
     )
 }
 
-/// Open one bounded enrollment through the command boundary.
+/// Open one bounded enrollment through the command boundary, naming its deadline.
 pub(crate) fn create_enrollment(
     transitions: &SecurityTransitions,
     enrollment: TransitionId,
@@ -258,13 +266,57 @@ pub(crate) fn create_enrollment(
     expiry: ExpiryResult,
     sink: Option<&mut RecordingSink>,
 ) -> Result<TransitionOutcome, TransitionRejection> {
+    let mut creation = creation(enrollment, daemon);
+    creation.expiry = expiry;
+    apply_creation(
+        transitions,
+        creation,
+        enrollment,
+        daemon,
+        idempotency,
+        prior_epoch,
+        sink,
+    )
+}
+
+/// Open one enrollment the way FR-007 lets an administrator open it: without naming a
+/// deadline, so the creation path resolves the ten-minute default itself.
+pub(crate) fn create_enrollment_with_default_expiry(
+    transitions: &SecurityTransitions,
+    enrollment: TransitionId,
+    daemon: IdentityId,
+    idempotency: u128,
+    prior_epoch: u64,
+    sink: Option<&mut RecordingSink>,
+) -> Result<TransitionOutcome, TransitionRejection> {
+    apply_creation(
+        transitions,
+        EnrollmentCreation::with_default_expiry(
+            enrollment, ORIGIN, STORE, UPDATE, INSTALL, daemon, ENDPOINT,
+        ),
+        enrollment,
+        daemon,
+        idempotency,
+        prior_epoch,
+        sink,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_creation(
+    transitions: &SecurityTransitions,
+    creation: EnrollmentCreation,
+    enrollment: TransitionId,
+    daemon: IdentityId,
+    idempotency: u128,
+    prior_epoch: u64,
+    sink: Option<&mut RecordingSink>,
+) -> Result<TransitionOutcome, TransitionRejection> {
     let command = SecurityCommand::CreateEnrollment {
         enrollment,
         daemon,
         idempotency: key(idempotency),
     };
-    let mut creation = creation(enrollment, daemon);
-    creation.expiry = expiry;
     transitions.apply(
         &command,
         &input(

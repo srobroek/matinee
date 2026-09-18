@@ -5,7 +5,7 @@ macro_rules! secure_channel_handshake_tests {
             establish_pair_for, establish_pair_with_ranges, fixture_principal, id, owned_operation,
             registered_principal,
         };
-        use crate::test_support_transitions::{EXTENSION, ceiling, connection, registered};
+        use crate::test_support_transitions::{EXTENSION, admit, ceiling, connection, registered};
         use crate::{
             AuthorizedOutput, ChannelSigner, ClientHandshake, ClientHandshakeConfig, ConnectionId,
             FailureCode, IdentityId, PayloadKind, PrincipalKind, SecurityTransitions,
@@ -400,8 +400,7 @@ macro_rules! secure_channel_handshake_tests {
             assert_eq!(client.connection_id(), daemon.connection_id());
 
             assert_eq!(
-                transitions
-                    .register_channel(daemon)
+                admit(&transitions, daemon)
                     .expect_err("a forged principal kind is never accepted")
                     .code(),
                 FailureCode::CredentialStoreMismatch

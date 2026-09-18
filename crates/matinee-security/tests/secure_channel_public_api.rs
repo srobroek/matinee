@@ -152,7 +152,7 @@ fn establish() -> Pair {
         .finish(&proof, &client_signer, &mut sink)
         .unwrap();
     let daemon = server_pending.finish(&client_proof, &mut sink).unwrap();
-    transitions.register_channel(daemon).unwrap();
+    transitions.register_channel(daemon, &mut sink).unwrap();
     Pair {
         client,
         transitions,

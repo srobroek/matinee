@@ -9,7 +9,7 @@ macro_rules! rotation_revocation_races_tests {
         };
         use crate::test_support_channel::{RecordingSink, RingSigner, establish_pair_for, id};
         use crate::test_support_transitions::{
-            ADMINISTRATOR, EXTENSION, commit_mutation, connection, consume_enrollment,
+            ADMINISTRATOR, EXTENSION, admit, commit_mutation, connection, consume_enrollment,
             create_enrollment, credential, grant, input, key, live_channel, paired_proof, receive,
             registered, request, revoke, rotate, transition,
         };
@@ -117,7 +117,7 @@ macro_rules! rotation_revocation_races_tests {
                     let attempted_ref = &attempted;
                     let registering = scope.spawn(move || {
                         attempted_ref.store(true, std::sync::atomic::Ordering::SeqCst);
-                        shared.register_channel(stale)
+                        admit(&shared, stale)
                     });
                     while !attempted.load(std::sync::atomic::Ordering::SeqCst) {
                         std::thread::yield_now();

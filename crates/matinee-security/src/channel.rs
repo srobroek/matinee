@@ -1025,7 +1025,10 @@ pub(crate) fn emit_session_failure(
     emit_handshake_failure(sink, failure, principal, Some(connection), epoch)
 }
 
-fn event_code(code: FailureCode) -> SecurityCode {
+/// The one mapping from a failure class to the redacted fact it must be reported as.
+/// Both the handshake and channel admission read it, so one class never becomes two
+/// different facts depending on where the channel died.
+pub(crate) fn event_code(code: FailureCode) -> SecurityCode {
     match code {
         FailureCode::ReplayDetected => SecurityCode::ReplayDetected,
         FailureCode::CounterMismatch => SecurityCode::CounterRejected,

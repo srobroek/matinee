@@ -22,7 +22,11 @@ use crate::identity::{
 };
 
 const SEALED_KEY_AAD_PREFIX: &[u8; 26] = b"matinee.enrollment.key.v1\0";
-const MAX_EXPIRY_MS: u64 = 10 * 60 * 1_000;
+/// FR-007 fixes one ten-minute figure for an enrollment deadline: it is both the
+/// default an administrator gets by naming none and the ceiling a named one may not
+/// exceed, so a caller can neither widen the window nor be handed a wider one.
+const TEN_MINUTE_EXPIRY_MS: u64 = 10 * 60 * 1_000;
+const MAX_EXPIRY_MS: u64 = TEN_MINUTE_EXPIRY_MS;
 const MAX_ORIGIN_BYTES: usize = 256;
 const MAX_METADATA_BYTES: usize = 512;
 const MAX_ENDPOINT_BYTES: usize = 256;
@@ -60,6 +64,34 @@ impl EnrollmentCreation {
             daemon_endpoint: daemon_endpoint.into(),
             expiry,
         }
+    }
+
+    /// The same enrollment an administrator opens without naming a deadline.
+    ///
+    /// FR-007 requires the expiry to be ten minutes by default, so the default is
+    /// resolved here rather than left to a caller: there is no way to reach the
+    /// creation path with an absent deadline and no way to reach it with a deadline
+    /// nobody chose.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_default_expiry(
+        enrollment: TransitionId,
+        origin: impl Into<String>,
+        store_metadata: impl Into<String>,
+        update_metadata: impl Into<String>,
+        install_metadata: impl Into<String>,
+        daemon: IdentityId,
+        daemon_endpoint: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            enrollment,
+            origin,
+            store_metadata,
+            update_metadata,
+            install_metadata,
+            daemon,
+            daemon_endpoint,
+            default_expiry(),
+        )
     }
 }
 
@@ -803,8 +835,8 @@ impl EnrollmentConsumptionService {
             bundle.daemon_endpoint.clone(),
             clock.expiry().clone(),
         );
-        let failure = validate_enrollment_binding(&expected, binding)
-            .err()
+        let binding_error = validate_enrollment_binding(&expected, binding).err();
+        let failure = binding_error
             .map(|_| EnrollmentConsumeError::InvalidProof)
             .or_else(|| {
                 (proof.identity != expected_identity)
@@ -836,7 +868,14 @@ impl EnrollmentConsumptionService {
             let event = SecurityEvent::new(
                 bundle.enrollment_id.get(),
                 EventBoundary::Enrollment,
-                SecurityCode::ProofRejected,
+                // `contracts/failures-events.md` requires a rejected Origin to be its own
+                // fact. Only the emitted fact distinguishes it: the returned error stays
+                // `InvalidProof`, so a caller still cannot tell which bound it missed.
+                if binding_error == Some(EnrollmentBindingError::Origin) {
+                    SecurityCode::OriginRejected
+                } else {
+                    SecurityCode::ProofRejected
+                },
                 EventOutcome::Rejected,
                 SafeNextAction::Reconnect,
                 Some(expected_identity.get()),
@@ -1354,6 +1393,16 @@ fn validate_creation(input: &EnrollmentCreation) -> Result<(), EnrollmentCreateE
         return Err(EnrollmentCreateError::InvalidExpiry);
     }
     Ok(())
+}
+
+/// The ten-minute deadline FR-007 applies when an administrator names none.
+///
+/// `ExpiryResult::valid` refuses exactly one value, zero, and the constant is checked
+/// against it at compile time, so the default cannot degrade into an uncertain or
+/// rejected deadline at runtime.
+fn default_expiry() -> ExpiryResult {
+    const { assert!(TEN_MINUTE_EXPIRY_MS != 0) }
+    ExpiryResult::valid(TEN_MINUTE_EXPIRY_MS).expect("a nonzero deadline is a valid expiry")
 }
 
 fn bounded(

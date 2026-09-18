@@ -1280,49 +1280,64 @@ impl SecurityTransitions {
     /// locator the registry does not hold for that identity. Every later decision reads
     /// the registry, so binding here is what makes the snapshot the session carries for
     /// life the same one the registry committed.
+    ///
+    /// Admission is a decision at the channel boundary, so every refusal owes the
+    /// redacted fact `contracts/failures-events.md` names for it: a forged snapshot and
+    /// every other credential refusal are an authentication failure, and a duplicate or
+    /// closed connection is a replay. The sink is required rather than optional for the
+    /// same reason a handshake requires one: a refusal nobody can record is itself a
+    /// failure, reported as `EventSinkUnavailable`, and it admits nothing.
     pub fn register_channel(
         &self,
         session: ChannelSession,
+        sink: &mut dyn SecurityEventSink,
     ) -> Result<ConnectionId, TransitionRejection> {
         let mut state = self.lock()?;
         let connection = session.connection_id();
         let id = session.principal();
-        let principal = state.principals.get(&id).ok_or_else(|| {
-            TransitionRejection::rejected(FailureCode::AuthenticationFailed, Some(id))
-        })?;
-        match principal.lifecycle() {
-            PrincipalLifecycle::Active => {}
-            PrincipalLifecycle::Revoked => {
-                return Err(TransitionRejection::rejected(
-                    FailureCode::Revoked,
-                    Some(id),
-                ));
+        let Some(principal) = state.principals.get(&id) else {
+            // An unregistered identity names no state directory and no endpoint class,
+            // so the fact carries neither rather than guessing one.
+            return Err(refuse_admission(
+                sink,
+                FailureCode::AuthenticationFailed,
+                id,
+                connection,
+                IdentityId::new(uuid::Uuid::nil()),
+                EndpointClass::Unknown,
+                session.epoch(),
+            ));
+        };
+        let directory = principal.credential().state_directory();
+        let endpoint = endpoint_class(principal.kind());
+        let refusal = match principal.lifecycle() {
+            PrincipalLifecycle::Revoked => Some(FailureCode::Revoked),
+            PrincipalLifecycle::Active => {
+                if session.epoch() != principal.epoch() {
+                    Some(FailureCode::StaleEpoch)
+                } else if session.authenticated_principal_snapshot() != Some(principal) {
+                    Some(FailureCode::CredentialStoreMismatch)
+                } else if !session.is_open() || state.channels.contains_key(&connection) {
+                    Some(FailureCode::ReplayDetected)
+                } else {
+                    None
+                }
             }
-            _ => {
-                return Err(TransitionRejection::rejected(
-                    FailureCode::AuthenticationFailed,
-                    Some(id),
-                ));
-            }
-        }
-        if session.epoch() != principal.epoch() {
-            return Err(TransitionRejection::rejected(
-                FailureCode::StaleEpoch,
-                Some(id),
+            _ => Some(FailureCode::AuthenticationFailed),
+        };
+        if let Some(code) = refusal {
+            return Err(refuse_admission(
+                sink,
+                code,
+                id,
+                connection,
+                directory,
+                endpoint,
+                session.epoch(),
             ));
         }
-        if session.authenticated_principal_snapshot() != Some(principal) {
-            return Err(TransitionRejection::rejected(
-                FailureCode::CredentialStoreMismatch,
-                Some(id),
-            ));
-        }
-        if !session.is_open() || state.channels.contains_key(&connection) {
-            return Err(TransitionRejection::rejected(
-                FailureCode::ReplayDetected,
-                Some(id),
-            ));
-        }
+        // The one mutation, reached only after every check and after the refusal path
+        // could no longer be taken, so no admission outlives an unrecorded refusal.
         state.channels.insert(connection, session);
         Ok(connection)
     }
@@ -1877,6 +1892,17 @@ impl TransitionState {
         time: EventTime,
     ) -> Result<TransitionOutcome, TransitionRejection> {
         let owner = self.active_principal(daemon)?.clone();
+        // FR-007: an enrollment is an administrator's act. The owning principal is the
+        // one this command names, so a daemon, an MCP client, or a paired extension
+        // that reached the command boundary still opens nothing. The refusal precedes
+        // every bound check and the one-time key generation, so a principal that may
+        // not enroll cannot learn which of its other fields would have been accepted.
+        if owner.kind() != PrincipalKind::NativeAdmin {
+            return Err(TransitionRejection::rejected(
+                FailureCode::AuthorizationDenied,
+                Some(daemon),
+            ));
+        }
         if input.prior_epoch() != owner.epoch() {
             return Err(TransitionRejection::rejected(
                 FailureCode::StaleEpoch,
@@ -2397,6 +2423,46 @@ fn require_event<S: SecurityEventSink + ?Sized>(
     .map_err(|_| unavailable())?;
     emit_required(sink, event).map_err(|_| unavailable())?;
     Ok(())
+}
+
+/// Emit the fact one refused channel admission owes, and return the refusal itself.
+///
+/// The failure class decides the fact through the one mapping the handshake already
+/// uses, so an authentication failure and a replay are named identically whether the
+/// channel died during the handshake or at admission. An unavailable sink replaces the
+/// refusal with `EventSinkUnavailable`: admission is refused either way, and the caller
+/// learns the sink, not the channel, is what needs repair.
+#[allow(clippy::too_many_arguments)]
+fn refuse_admission(
+    sink: &mut dyn SecurityEventSink,
+    code: FailureCode,
+    principal: IdentityId,
+    connection: ConnectionId,
+    state_directory: IdentityId,
+    endpoint: EndpointClass,
+    epoch: u64,
+) -> TransitionRejection {
+    let recorded = SecurityEvent::new(
+        uuid::Uuid::now_v7(),
+        EventBoundary::Channel,
+        crate::channel::event_code(code),
+        EventOutcome::Rejected,
+        SafeNextAction::FailClosed,
+        Some(principal.get()),
+        Some(connection.get()),
+        endpoint,
+        EventTime(epoch),
+        state_directory.get(),
+        Vec::new(),
+    )
+    .ok()
+    .and_then(|event| emit_required(Some(sink), event).ok())
+    .is_some();
+    if recorded {
+        TransitionRejection::rejected(code, Some(principal))
+    } else {
+        TransitionRejection::rejected(FailureCode::EventSinkUnavailable, Some(principal))
+    }
 }
 
 fn bootstrap_rejection(error: BootstrapError) -> TransitionRejection {

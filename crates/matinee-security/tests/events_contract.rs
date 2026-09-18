@@ -22,34 +22,508 @@ macro_rules! events_contract_tests {
             .expect("valid event fixture")
         }
 
+        /// Every required fact, and the production operation that owes it.
+        ///
+        /// `contracts/failures-events.md` says "the security module emits one typed
+        /// redacted fact for each of these outcomes" and then lists them, so the
+        /// obligation is per outcome, not per enum value: constructing a `SecurityCode`
+        /// proves nothing about whether any code path ever reaches it. Each entry below
+        /// is therefore driven through a real operation, and the fact is read back off
+        /// the sink that operation was given.
+        const REQUIRED_FACTS: [events::SecurityCode; 13] = [
+            events::SecurityCode::EnrollmentAccepted,
+            events::SecurityCode::AuthorizationAccepted,
+            events::SecurityCode::ProofRejected,
+            events::SecurityCode::OriginRejected,
+            events::SecurityCode::AuthenticationFailed,
+            events::SecurityCode::AuthorizationDenied,
+            events::SecurityCode::Rotation,
+            events::SecurityCode::Revocation,
+            events::SecurityCode::ReplayDetected,
+            events::SecurityCode::Downgrade,
+            events::SecurityCode::MalformedInput,
+            events::SecurityCode::ResourceLimit,
+            events::SecurityCode::RateLimited,
+        ];
+
         #[test]
-        fn every_cross_story_security_code_is_constructible_and_sink_emits_it() {
-            let codes = [
-                events::SecurityCode::EnrollmentAccepted,
-                events::SecurityCode::AuthorizationAccepted,
-                events::SecurityCode::ProofRejected,
-                events::SecurityCode::OriginRejected,
-                events::SecurityCode::AuthenticationFailed,
-                events::SecurityCode::AuthorizationDenied,
-                events::SecurityCode::Rotation,
-                events::SecurityCode::Revocation,
-                events::SecurityCode::ReplayDetected,
-                events::SecurityCode::Downgrade,
-                events::SecurityCode::CounterRejected,
-                events::SecurityCode::CryptographicFailure,
-                events::SecurityCode::MalformedInput,
-                events::SecurityCode::ResourceLimit,
-                events::SecurityCode::RateLimited,
-                events::SecurityCode::EventSinkUnavailable,
-            ];
-            let mut sink = FakeEventSink::accepted();
-            for code in codes {
-                assert_eq!(
-                    events::emit_required(Some(&mut sink), event(code)),
-                    Ok(events::SecurityEventSinkResult::Accepted)
+        fn every_required_security_fact_is_emitted_by_the_production_path_that_owes_it() {
+            let observed = [
+                transition_facts(),
+                channel_admission_facts(),
+                channel_frame_facts(),
+                pairing_facts(),
+            ]
+            .concat();
+            for required in REQUIRED_FACTS {
+                assert!(
+                    observed.contains(&required),
+                    "no production operation emitted {required:?}; \
+                     contracts/failures-events.md requires one for it"
                 );
             }
-            assert_eq!(sink.received().len(), 16);
+        }
+
+        /// A committed enrollment, rotation, and revocation, and the authorization
+        /// decision a live channel reaches on the way.
+        fn transition_facts() -> Vec<events::SecurityCode> {
+            use crate::identity::{ExpiryResult, PrincipalKind, TransitionOutcome};
+            use crate::test_support_channel::{RecordingSink, RingSigner, capability, id};
+            use crate::test_support_transitions::{
+                ADMINISTRATOR, EXTENSION, connection, create_enrollment, live_channel, receive,
+                registered, request, revoke, rotate, transition,
+            };
+            use crate::transition::SecurityTransitions;
+
+            let transitions = SecurityTransitions::default();
+            let admin_signer = RingSigner::generate();
+            let admin = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &admin_signer,
+            );
+            let mut sink = RecordingSink::default();
+            assert_eq!(
+                create_enrollment(
+                    &transitions,
+                    transition(90),
+                    admin.id(),
+                    900,
+                    0,
+                    ExpiryResult::valid(600_000).expect("bounded ten-minute deadline"),
+                    Some(&mut sink),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            assert_eq!(
+                sink.events
+                    .last()
+                    .expect("a committed enrollment emits")
+                    .code(),
+                events::SecurityCode::EnrollmentAccepted
+            );
+
+            // An authorized operation on a live channel is the accepted-decision fact.
+            let client_signer = RingSigner::generate();
+            let client = registered(
+                &transitions,
+                EXTENSION,
+                PrincipalKind::McpClient,
+                &client_signer,
+            );
+            let mut session = live_channel(&transitions, &client, &client_signer, 90);
+            let frame = request(&mut session, &mut sink);
+            receive(&transitions, connection(90), &frame, &mut sink)
+                .expect("an operation inside the ceiling is authorized");
+            assert_eq!(
+                sink.events
+                    .last()
+                    .expect("an authorized operation emits")
+                    .code(),
+                events::SecurityCode::AuthorizationAccepted
+            );
+
+            // The same live channel, asked for an action above its ceiling.
+            let denied_frame = request(&mut session, &mut sink);
+            assert_eq!(
+                transitions
+                    .receive(
+                        connection(90),
+                        &denied_frame,
+                        capability(crate::CapabilityAction::ManagePrincipals, "matinee"),
+                        crate::PayloadKind::Command,
+                        crate::ObjectOwner::Owned(id(ADMINISTRATOR)),
+                        &mut sink,
+                    )
+                    .expect_err("an action above the ceiling is denied")
+                    .code(),
+                crate::FailureCode::AuthorizationDenied
+            );
+            assert_eq!(
+                sink.events.last().expect("a denied operation emits").code(),
+                events::SecurityCode::AuthorizationDenied
+            );
+
+            assert_eq!(
+                rotate(
+                    &transitions,
+                    client.id(),
+                    &RingSigner::generate(),
+                    "principal-key-1",
+                    901,
+                    0,
+                    None,
+                    Some(&mut sink),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            assert_eq!(
+                sink.events
+                    .last()
+                    .expect("a committed rotation emits")
+                    .code(),
+                events::SecurityCode::Rotation
+            );
+            assert_eq!(
+                revoke(
+                    &transitions,
+                    client.id(),
+                    "operator",
+                    902,
+                    1,
+                    Some(&mut sink)
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            assert_eq!(
+                sink.events
+                    .last()
+                    .expect("a committed revocation emits")
+                    .code(),
+                events::SecurityCode::Revocation
+            );
+            sink.events
+                .iter()
+                .map(events::SecurityEvent::code)
+                .collect()
+        }
+
+        /// Channel admission: a forged snapshot is an authentication failure and a
+        /// duplicate connection is a replay. Both rejections registered nothing before
+        /// this contract required them to be recorded.
+        fn channel_admission_facts() -> Vec<events::SecurityCode> {
+            use crate::identity::PrincipalKind;
+            use crate::test_support_channel::{
+                RecordingSink, RingSigner, establish_pair_for, id, registered_principal,
+            };
+            use crate::test_support_transitions::{EXTENSION, ceiling, connection, registered};
+            use crate::transition::SecurityTransitions;
+
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            let mut sink = RecordingSink::default();
+
+            // A snapshot two peers agreed on between themselves, which the registry does
+            // not hold: the handshake cannot tell, so admission is the only check left.
+            let forged = registered_principal(
+                EXTENSION,
+                PrincipalKind::NativeAdmin,
+                signer.public_key().clone(),
+                ceiling(),
+                0,
+            );
+            let (_, forged_daemon) = establish_pair_for(&forged, &signer, connection(91))
+                .expect("two peers can agree on a snapshot the registry never held");
+            assert_eq!(
+                transitions
+                    .register_channel(forged_daemon, &mut sink)
+                    .expect_err("a forged snapshot is never admitted")
+                    .code(),
+                crate::FailureCode::CredentialStoreMismatch
+            );
+            assert_eq!(
+                sink.events
+                    .last()
+                    .expect("a refused admission emits")
+                    .code(),
+                events::SecurityCode::AuthenticationFailed
+            );
+            // The fact names the connection it refused, so a reader can correlate it
+            // without the refused snapshot itself being disclosed.
+            assert_eq!(
+                sink.events
+                    .last()
+                    .expect("a refused admission emits")
+                    .connection_id(),
+                Some(connection(91).get())
+            );
+
+            // The positive control: the registered snapshot is still admitted.
+            let (_, honest) = establish_pair_for(&principal, &signer, connection(92))
+                .expect("production handshake fixture");
+            assert_eq!(
+                transitions.register_channel(honest, &mut sink),
+                Ok(connection(92))
+            );
+            assert!(transitions.channel_is_open(connection(92)));
+
+            // The same connection a second time is a replay.
+            let (_, duplicate) = establish_pair_for(&principal, &signer, connection(92))
+                .expect("production handshake fixture");
+            assert_eq!(
+                transitions
+                    .register_channel(duplicate, &mut sink)
+                    .expect_err("one connection is admitted once")
+                    .code(),
+                crate::FailureCode::ReplayDetected
+            );
+            assert_eq!(
+                sink.events
+                    .last()
+                    .expect("a refused admission emits")
+                    .code(),
+                events::SecurityCode::ReplayDetected
+            );
+            assert_eq!(transitions.open_channels(), 1);
+            sink.events
+                .iter()
+                .map(events::SecurityEvent::code)
+                .collect()
+        }
+
+        /// Frame-boundary facts: a downgraded contract, a malformed frame, and a frame
+        /// whose declared length exceeds the production bound.
+        fn channel_frame_facts() -> Vec<events::SecurityCode> {
+            use crate::test_support_channel::{
+                CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner, establish_pair,
+                fixture_principal, id, owned_operation,
+            };
+
+            let mut sink = RecordingSink::default();
+            let client_signer = RingSigner::generate();
+            let daemon_signer = RingSigner::generate();
+            let client = crate::ClientHandshakeConfig::new(
+                ENDPOINT,
+                id(PRINCIPAL),
+                client_signer.public_key().clone(),
+                id(DAEMON),
+                daemon_signer.public_key().clone(),
+                7,
+                1,
+                3,
+            )
+            .expect("bounded client configuration");
+            let server = crate::ServerHandshakeConfig::new(
+                ENDPOINT,
+                fixture_principal(client_signer.public_key().clone(), 7),
+                id(DAEMON),
+                daemon_signer.public_key().clone(),
+                2,
+                4,
+                crate::ConnectionId::new(Uuid::from_u128(CONNECTION)),
+            )
+            .expect("bounded server configuration");
+            let (client_pending, hello) =
+                crate::ClientHandshake::start(client).expect("production client hello");
+            let (_, mut proof) =
+                crate::ServerHandshake::accept(server, &hello, &daemon_signer, &mut sink)
+                    .expect("production server proof");
+            // The selected-contract byte inside the server proof, moved below the range
+            // the client offered.
+            proof[4 + b"server-proof".len() + hello.len() + 4] = b'2';
+            assert_eq!(
+                client_pending
+                    .finish(&proof, &client_signer, &mut sink)
+                    .expect_err("a downgraded contract is refused")
+                    .code(),
+                crate::FailureCode::DowngradeRejected
+            );
+            assert_eq!(
+                sink.events.last().expect("a downgrade emits").code(),
+                events::SecurityCode::Downgrade
+            );
+
+            let (_, mut daemon) = establish_pair(0);
+            assert_eq!(
+                daemon
+                    .receive(
+                        &[0, 0, 0, 1, 1],
+                        &owned_operation(crate::PayloadKind::Command),
+                        &mut sink,
+                    )
+                    .expect_err("a frame shorter than its header is refused")
+                    .code(),
+                crate::FailureCode::MalformedInput
+            );
+            assert_eq!(
+                sink.events.last().expect("a malformed frame emits").code(),
+                events::SecurityCode::MalformedInput
+            );
+
+            let (_, mut oversized_peer) = establish_pair(0);
+            assert_eq!(
+                oversized_peer
+                    .receive(
+                        &1_048_577u32.to_be_bytes(),
+                        &owned_operation(crate::PayloadKind::Command),
+                        &mut sink,
+                    )
+                    .expect_err("a declared length above the bound is refused")
+                    .code(),
+                crate::FailureCode::ResourceLimit
+            );
+            assert_eq!(
+                sink.events.last().expect("a resource limit emits").code(),
+                events::SecurityCode::ResourceLimit
+            );
+            sink.events
+                .iter()
+                .map(events::SecurityEvent::code)
+                .collect()
+        }
+
+        /// Pairing facts: a rejected proof, a rejected Origin, and a rate limit, all
+        /// through the enrollment host's own proof consumption.
+        fn pairing_facts() -> Vec<events::SecurityCode> {
+            use crate::enrollment::{
+                ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding,
+                EnrollmentBundle, EnrollmentChannel, EnrollmentChannelState, EnrollmentClock,
+                EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreation,
+                EnrollmentProof,
+            };
+            use crate::identity::{ExpiryResult, IdentityId, TransitionId};
+            use crate::test_support_channel::{ENDPOINT, RecordingSink};
+            use crate::test_support_transitions::{
+                INSTALL, ORIGIN, STORE, UPDATE, binding, long_term_key,
+            };
+
+            fn bundle(value: u128) -> EnrollmentBundle {
+                EnrollmentBundle::create(EnrollmentCreation::with_default_expiry(
+                    TransitionId::new(Uuid::from_u128(value)),
+                    ORIGIN,
+                    STORE,
+                    UPDATE,
+                    INSTALL,
+                    IdentityId::new(Uuid::from_u128(0x2f)),
+                    ENDPOINT,
+                ))
+                .expect("the ten-minute default is inside the creation bounds")
+            }
+
+            /// A proof no one-time key ever signed. Every consumption below is meant to
+            /// be refused, so the signature never has to be the valid one.
+            fn unsigned_proof(identity: IdentityId) -> EnrollmentProof {
+                EnrollmentProof {
+                    identity,
+                    signature: vec![0; 8],
+                    long_term_public_key: long_term_key(),
+                }
+            }
+
+            fn channel() -> EnrollmentChannel {
+                EnrollmentChannel::open(crate::ConnectionId::new(Uuid::from_u128(0x9100)), 1)
+                    .expect("native pairing channel")
+            }
+
+            fn clock(occurrence_ms: u64) -> EnrollmentClock {
+                EnrollmentClock::new(
+                    occurrence_ms,
+                    ExpiryResult::valid(600_000).expect("bounded ten-minute deadline"),
+                )
+            }
+
+            let identity = IdentityId::new(Uuid::from_u128(0x790));
+            // One host budget per drive: a refusal recorded by an earlier drive would
+            // otherwise count towards the rate limit the last drive measures.
+            let service = EnrollmentConsumptionService::default();
+            let capability = ChromeCapability::reported(&binding(), true, true)
+                .expect("reported browser capability");
+            let mut observed = Vec::new();
+
+            // A proof that misses no bound but carries no valid signature.
+            let mut sink = RecordingSink::default();
+            let mut rejected = bundle(0x790);
+            let mut open = channel();
+            assert_eq!(
+                service.consume_proof(
+                    &mut rejected,
+                    &unsigned_proof(identity),
+                    identity,
+                    &clock(1_000),
+                    &binding(),
+                    &capability,
+                    &mut open,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::InvalidProof)
+            );
+            assert_eq!(
+                sink.events.last().expect("a rejected proof emits").code(),
+                events::SecurityCode::ProofRejected
+            );
+            assert_eq!(open.state(), EnrollmentChannelState::Closed);
+            observed.extend(sink.events.iter().map(events::SecurityEvent::code));
+
+            // The same proof against a binding whose Origin is not the enrolled one. The
+            // returned error is unchanged, so only the fact tells the two apart.
+            let mut sink = RecordingSink::default();
+            let service = EnrollmentConsumptionService::default();
+            let mut wrong_origin_bundle = bundle(0x791);
+            let wrong_origin = EnrollmentBinding {
+                origin: "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba",
+                endpoint: ENDPOINT,
+                store_metadata: STORE,
+                update_metadata: UPDATE,
+                install_metadata: INSTALL,
+                development_allowance: DevelopmentIdentityAllowance::None,
+            };
+            let capability_for_origin = ChromeCapability::reported(&wrong_origin, true, true)
+                .expect("a browser reports whatever origin it loaded");
+            let mut open = channel();
+            assert_eq!(
+                service.consume_proof(
+                    &mut wrong_origin_bundle,
+                    &unsigned_proof(identity),
+                    identity,
+                    &clock(2_000),
+                    &wrong_origin,
+                    &capability_for_origin,
+                    &mut open,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::InvalidProof)
+            );
+            assert_eq!(
+                sink.events.last().expect("a rejected Origin emits").code(),
+                events::SecurityCode::OriginRejected
+            );
+            observed.extend(sink.events.iter().map(events::SecurityEvent::code));
+
+            // The host budget: ten refusals in one window, and the eleventh is the
+            // rate limit rather than another proof rejection.
+            let mut sink = RecordingSink::default();
+            let service = EnrollmentConsumptionService::default();
+            for attempt in 0..10 {
+                let mut current = bundle(0x7a0 + attempt);
+                let mut open = channel();
+                assert_eq!(
+                    service.consume_proof(
+                        &mut current,
+                        &unsigned_proof(identity),
+                        identity,
+                        &clock(5_000),
+                        &binding(),
+                        &capability,
+                        &mut open,
+                        Some(&mut sink),
+                    ),
+                    Err(EnrollmentConsumeError::InvalidProof)
+                );
+            }
+            let mut limited = bundle(0x7b0);
+            let mut open = channel();
+            assert_eq!(
+                service.consume_proof(
+                    &mut limited,
+                    &unsigned_proof(identity),
+                    identity,
+                    &clock(5_001),
+                    &binding(),
+                    &capability,
+                    &mut open,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::RateLimited)
+            );
+            assert_eq!(
+                sink.events.last().expect("a rate limit emits").code(),
+                events::SecurityCode::RateLimited
+            );
+            observed.extend(sink.events.iter().map(events::SecurityEvent::code));
+
+            observed
         }
 
         #[test]
