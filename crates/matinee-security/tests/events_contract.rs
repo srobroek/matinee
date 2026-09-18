@@ -25,7 +25,9 @@ macro_rules! events_contract_tests {
         /// One pending enrollment at the ten-minute default, as an administrator opens it.
         fn pairing_bundle(value: u128) -> crate::enrollment::EnrollmentBundle {
             use crate::test_support_channel::ENDPOINT;
-            use crate::test_support_transitions::{INSTALL, ORIGIN, STORE, UPDATE};
+            use crate::test_support_transitions::{
+                INSTALL, ORIGIN, STORE, UPDATE, supported_versions,
+            };
             crate::enrollment::EnrollmentBundle::create(
                 crate::enrollment::EnrollmentCreation::with_default_expiry(
                     crate::identity::TransitionId::new(Uuid::from_u128(value)),
@@ -33,6 +35,7 @@ macro_rules! events_contract_tests {
                     STORE,
                     UPDATE,
                     INSTALL,
+                    supported_versions(),
                     crate::identity::IdentityId::new(Uuid::from_u128(0x2f)),
                     ENDPOINT,
                 ),
@@ -72,13 +75,14 @@ macro_rules! events_contract_tests {
         /// reported capability is built from this binding too.
         fn wrong_origin_binding() -> crate::enrollment::EnrollmentBinding<'static> {
             use crate::test_support_channel::ENDPOINT;
-            use crate::test_support_transitions::{INSTALL, STORE, UPDATE};
+            use crate::test_support_transitions::{INSTALL, STORE, UPDATE, VERSION};
             crate::enrollment::EnrollmentBinding {
                 origin: "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba",
                 endpoint: ENDPOINT,
                 store_metadata: STORE,
                 update_metadata: UPDATE,
                 install_metadata: INSTALL,
+                version: VERSION,
                 development_allowance: crate::enrollment::DevelopmentIdentityAllowance::None,
             }
         }

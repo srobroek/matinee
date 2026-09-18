@@ -302,7 +302,14 @@ pub(crate) fn create_enrollment_with_default_expiry(
     apply_creation(
         transitions,
         EnrollmentCreation::with_default_expiry(
-            enrollment, ORIGIN, STORE, UPDATE, INSTALL, daemon, ENDPOINT,
+            enrollment,
+            ORIGIN,
+            STORE,
+            UPDATE,
+            INSTALL,
+            supported_versions(),
+            daemon,
+            ENDPOINT,
         ),
         enrollment,
         daemon,

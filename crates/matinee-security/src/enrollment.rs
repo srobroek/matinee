@@ -185,6 +185,7 @@ impl EnrollmentCreation {
         store_metadata: impl Into<String>,
         update_metadata: impl Into<String>,
         install_metadata: impl Into<String>,
+        supported_versions: SupportedExtensionVersions,
         daemon: IdentityId,
         daemon_endpoint: impl Into<String>,
     ) -> Self {
@@ -194,6 +195,7 @@ impl EnrollmentCreation {
             store_metadata,
             update_metadata,
             install_metadata,
+            supported_versions,
             daemon,
             daemon_endpoint,
             default_expiry(),
