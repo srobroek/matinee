@@ -2,10 +2,6 @@ macro_rules! events_contract_tests {
     () => {
         use crate::ChannelSigner;
         use crate::events;
-        use crate::test_support_channel::{
-            establish_pair, fixture_principal, id, owned_operation, RingSigner, ENDPOINT, DAEMON,
-            PRINCIPAL,
-        };
         use crate::test_support_fakes::FakeEventSink;
         use uuid::Uuid;
 
@@ -256,9 +252,22 @@ macro_rules! events_contract_tests {
         #[test]
         fn production_channel_and_authorization_failures_feed_bounded_aggregation() {
             use crate::test_support_channel::{
-                establish_pair, fixture_principal, id, owned_operation, RingSigner, DAEMON,
-                ENDPOINT, PRINCIPAL,
+                capability, establish_pair, fixture_principal, id, RingSigner, DAEMON, ENDPOINT,
+                PRINCIPAL,
             };
+            struct CapturingAggregation {
+                state: events::AggregationState,
+                events: Vec<events::SecurityEvent>,
+            }
+            impl events::SecurityEventSink for CapturingAggregation {
+                fn emit(
+                    &mut self,
+                    event: events::SecurityEvent,
+                ) -> events::SecurityEventSinkResult {
+                    self.events.push(event.clone());
+                    self.state.emit(event)
+                }
+            }
             let client_signer = RingSigner::generate();
             let server_signer = RingSigner::generate();
             let client = crate::ClientHandshakeConfig::new(
@@ -284,7 +293,10 @@ macro_rules! events_contract_tests {
             .unwrap();
             let (_client_pending, hello) = crate::ClientHandshake::start(client).unwrap();
             let wrong_signer = RingSigner::generate();
-            let mut aggregate = events::AggregationState::default();
+            let mut aggregate = CapturingAggregation {
+                state: events::AggregationState::default(),
+                events: Vec::new(),
+            };
             let failure = crate::ServerHandshake::accept(
                 server,
                 &hello,
@@ -293,8 +305,7 @@ macro_rules! events_contract_tests {
             )
             .expect_err("the wrong server signer must fail authentication");
             assert_eq!(failure.code(), crate::FailureCode::AuthenticationFailed);
-            assert_eq!(aggregate.bucket_count(), 1);
-
+            assert_eq!(aggregate.state.bucket_count(), 1);
             let (mut client_session, mut daemon_session) = establish_pair(0);
             let output = crate::AuthorizedOutput::filtered(
                 crate::PayloadKind::Command,
@@ -304,10 +315,20 @@ macro_rules! events_contract_tests {
             let frame = client_session
                 .send(&output, &mut aggregate)
                 .expect("production client seals the request");
+            let denied_operation = crate::SessionInput::new(
+                capability(crate::CapabilityAction::ManagePrincipals, "matinee"),
+                crate::PayloadKind::Command,
+                crate::ObjectOwner::Owned(id(DAEMON)),
+                None,
+            );
             let denied = daemon_session
-                .receive(&frame, &owned_operation(crate::PayloadKind::Event), &mut aggregate)
-                .expect_err("mismatched operation must fail closed");
-            assert_eq!(aggregate.bucket_count(), 2);
+                .receive(&frame, &denied_operation, &mut aggregate)
+                .expect_err("authorization must reject the out-of-ceiling action");
+            assert_eq!(denied.code(), crate::FailureCode::AuthorizationDenied);
+            assert_eq!(aggregate.events.len(), 2);
+            assert_eq!(aggregate.events[1].boundary(), events::EventBoundary::Authorization);
+            assert_eq!(aggregate.events[1].code(), events::SecurityCode::AuthorizationDenied);
+            assert_eq!(aggregate.state.bucket_count(), 2);
         }
      };
 }

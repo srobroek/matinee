@@ -394,10 +394,10 @@ impl fmt::Debug for SessionPeer {
 /// Stateful payload boundary created only by a mutually authenticated handshake.
 /// Raw transcript construction, traffic keys, framing values, and counters remain private.
 ///
-/// Public methods are client-side only. A completed daemon session is a
-/// coordinator-owned server operation and must move into [`SecurityTransitions`]
-/// before it can receive, disclose, or commit protected work; rotation and
-/// revocation invalidate those operations under the same lock.
+/// Public methods are client-side only. A completed daemon session is
+/// coordinator-owned state used for server operations and must move into
+/// [`SecurityTransitions`] before it can receive, disclose, or commit protected
+/// work; rotation and revocation invalidate those operations under the same lock.
 #[derive(Debug)]
 pub struct ChannelSession {
     connection: ConnectionId,
