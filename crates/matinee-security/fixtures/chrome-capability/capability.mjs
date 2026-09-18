@@ -5,6 +5,9 @@
  */
 
 const STORAGE_KEY = "matinee.fixture.long_term_key.v1";
+const IDB_NAME = "matinee.fixture.capability.v1";
+const IDB_STORE = "keys";
+const KEY_REFERENCE = "fixture-long-term-key";
 const FIXTURE_MESSAGE = new TextEncoder().encode("matinee.chrome-capability.fixture.v1");
 const MAX_U64 = (1n << 64n) - 1n;
 
@@ -67,50 +70,123 @@ function parseCounter(value) {
   }
 }
 
+function openKeyDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(IDB_NAME, 1);
+    request.onerror = () => reject(request.error ?? new Error("indexeddb.open"));
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(IDB_STORE)) request.result.createObjectStore(IDB_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("indexeddb.request"));
+  });
+}
+
+async function readStoredKey() {
+  const database = await openKeyDatabase();
+  try {
+    return await idbRequest(database.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(KEY_REFERENCE));
+  } finally {
+    database.close();
+  }
+}
+
+async function writeStoredKey(record) {
+  const database = await openKeyDatabase();
+  try {
+    await idbRequest(database.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).put(record, KEY_REFERENCE));
+  } finally {
+    database.close();
+  }
+}
+
+async function clearStoredKey() {
+  try {
+    const database = await openKeyDatabase();
+    try {
+      await idbRequest(database.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).delete(KEY_REFERENCE));
+    } finally {
+      database.close();
+    }
+  } catch {
+    // Cleanup is best-effort; the probe remains fail-closed.
+  }
+}
+
 async function probeKeyPersistence() {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle || !globalThis.TextEncoder) return unsupported("capability.unsupported");
-  if (!globalThis.chrome?.storage?.local) return unsupported("capability.unsupported");
+  if (!globalThis.chrome?.storage?.local || !globalThis.indexedDB) return unsupported("capability.unsupported");
 
-  let privateKey;
+  let metadata;
   try {
-    const pair = await subtle.generateKey(
-      { name: "ECDSA", namedCurve: "P-256" },
-      false,
-      ["sign", "verify"]
-    );
-    privateKey = pair.privateKey;
-    if (privateKey.extractable !== false || !privateKey.usages.includes("sign")) {
-      return unsupported("capability.non_exportable");
-    }
-    await chrome.storage.local.set({
-      [STORAGE_KEY]: {
-        version: 1,
-        key: privateKey,
-        daemon_identity: "daemon.synthetic",
-        epoch: 7
-      }
-    });
     const stored = await chrome.storage.local.get(STORAGE_KEY);
-    const record = stored[STORAGE_KEY];
-    const restored = record?.key;
-    if (!restored || restored.extractable !== false || !restored.usages.includes("sign")) {
+    metadata = stored[STORAGE_KEY];
+    if (metadata !== undefined && (metadata?.version !== 1 || metadata.key_reference !== KEY_REFERENCE)) {
+      await chrome.storage.local.remove(STORAGE_KEY);
+      await clearStoredKey();
+      return unsupported("capability.persistence");
+    }
+
+    let record = await readStoredKey();
+    if (metadata === undefined && record !== undefined) {
+      await clearStoredKey();
+      return unsupported("capability.persistence");
+    }
+    if (metadata === undefined) {
+      const pair = await subtle.generateKey(
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["sign", "verify"]
+      );
+      if (pair.privateKey.extractable !== false || !pair.privateKey.usages.includes("sign")) {
+        return unsupported("capability.non_exportable");
+      }
+      record = { privateKey: pair.privateKey, publicKey: pair.publicKey, version: 1 };
+      await writeStoredKey(record);
+      await chrome.storage.local.set({
+        [STORAGE_KEY]: {
+          version: 1,
+          key_reference: KEY_REFERENCE,
+          daemon_identity: "daemon.synthetic",
+          epoch: 7
+        }
+      });
+      metadata = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
+    }
+
+    if (!record || record.version !== 1 || !record.privateKey || !record.publicKey ||
+        metadata?.key_reference !== KEY_REFERENCE || metadata?.version !== 1 ||
+        record.privateKey.extractable !== false || !record.privateKey.usages.includes("sign") ||
+        !record.publicKey.usages.includes("verify")) {
+      await chrome.storage.local.remove(STORAGE_KEY);
+      await clearStoredKey();
       return unsupported("capability.persistence");
     }
     const signature = await subtle.sign(
       { name: "ECDSA", hash: "SHA-256" },
-      restored,
+      record.privateKey,
       FIXTURE_MESSAGE
     );
     const verified = await subtle.verify(
       { name: "ECDSA", hash: "SHA-256" },
-      pair.publicKey,
+      record.publicKey,
       signature,
       FIXTURE_MESSAGE
     );
-    if (!verified) return unsupported("capability.persistence");
+    if (!verified) {
+      await chrome.storage.local.remove(STORAGE_KEY);
+      await clearStoredKey();
+      return unsupported("capability.persistence");
+    }
     try {
-      await subtle.exportKey("pkcs8", restored);
+      await subtle.exportKey("pkcs8", record.privateKey);
       return unsupported("capability.exportable");
     } catch {
       // The required non-exportability assertion passed.
@@ -125,10 +201,9 @@ async function probeKeyPersistence() {
       event("authentication.accepted", "accepted", "continue")
     );
   } catch {
-    // Storage structured-clone or WebCrypto failures are not a downgrade path.
+    await chrome.storage.local.remove(STORAGE_KEY).catch(() => {});
+    await clearStoredKey();
     return unsupported("capability.persistence");
-  } finally {
-    try { await chrome.storage.local.remove(STORAGE_KEY); } catch { /* fail-closed probe cleanup */ }
   }
 }
 
