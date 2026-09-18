@@ -6,6 +6,7 @@ enum CredentialOutcome {
     Handle(u64),
     Missing,
     Mismatch,
+    Revoked,
     Duplicate,
     Unavailable,
 }
@@ -36,6 +37,7 @@ impl FakeCredentialStore {
         let outcome = match error {
             credential_store::CredentialStoreError::Missing => CredentialOutcome::Missing,
             credential_store::CredentialStoreError::Mismatch => CredentialOutcome::Mismatch,
+            credential_store::CredentialStoreError::Revoked => CredentialOutcome::Revoked,
             credential_store::CredentialStoreError::Duplicate => CredentialOutcome::Duplicate,
             credential_store::CredentialStoreError::Unavailable => CredentialOutcome::Unavailable,
         };
@@ -62,6 +64,9 @@ impl credential_store::CredentialStore for FakeCredentialStore {
             }
             Some(CredentialOutcome::Mismatch) => {
                 Err(credential_store::CredentialStoreError::Mismatch)
+            }
+            Some(CredentialOutcome::Revoked) => {
+                Err(credential_store::CredentialStoreError::Revoked)
             }
             Some(CredentialOutcome::Duplicate) => {
                 Err(credential_store::CredentialStoreError::Duplicate)

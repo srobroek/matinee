@@ -5,8 +5,8 @@ macro_rules! enrollment_contract_tests {
             EnrollmentBinding, EnrollmentBindingError, EnrollmentCreation, EnrollmentCreateError,
         };
         use crate::identity::{
-            EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment, Fingerprint,
-            IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
+            ConnectionId, EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment,
+            Fingerprint, IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
         };
         use uuid::Uuid;
 
@@ -93,13 +93,21 @@ macro_rules! enrollment_contract_tests {
         }
 
         #[test]
-        fn one_time_private_key_is_owned_by_bundle_and_consumed_once() {
+        fn one_time_private_key_is_owned_by_authenticated_encrypted_output() {
             let mut bundle = create_enrollment(creation()).expect("valid enrollment creation");
-            let debug = format!("{bundle:?}");
-            assert!(debug.contains("<redacted>"));
-            let key = bundle.take_one_time_private_key().expect("first transfer owns key");
-            assert!(!key.is_empty());
-            assert!(bundle.take_one_time_private_key().is_none(), "PKCS#8 is one-use");
+            let mut connection = crate::identity::Connection::new(
+                ConnectionId::new(Uuid::from_u128(0x30)),
+                IdentityId::new(Uuid::from_u128(0x31)),
+                1, 1, [0; 12], [1; 12], Uuid::from_u128(0x32), Uuid::from_u128(0x33),
+            );
+            connection.authenticate().unwrap();
+            let session = crate::ChannelSession::establish(connection, 1, "127.0.0.1:7777").unwrap();
+            let capability = session.enrollment_output_capability().unwrap();
+            let output = bundle.encrypted_private_key_output(&capability).unwrap();
+            assert!(!output.ciphertext().is_empty());
+            assert!(bundle.encrypted_private_key_output(&capability).is_err(), "PKCS#8 transfer is one-use");
+            let plain = output.decrypt_for_channel(&capability).unwrap();
+            assert!(!plain.is_empty());
             assert!(!format!("{bundle:?}").contains("PKCS#8"));
         }
 

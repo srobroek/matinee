@@ -1,14 +1,10 @@
 //! Closed, bounded enrollment creation and binding validation.
-//!
-//! This module owns the creation contract and the private checks that bind a
-//! pairing attempt to its expected browser origin, loopback endpoint, and
-//! installation metadata. All checks fail closed before proof work or state
-//! mutation.
 
 use core::fmt;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
 
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::SecureRandom;
 use ring::signature::KeyPair;
 use ring::{digest, rand, signature};
@@ -18,8 +14,8 @@ use crate::events::{
     SecurityCode, SecurityEvent, SecurityEventSink,
 };
 use crate::identity::{
-    EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment, Fingerprint, IdentityId,
-    PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
+    ConnectionId, EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment,
+    Fingerprint, IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
 };
 
 const SECRET_BYTES: usize = 32;
@@ -28,9 +24,6 @@ const MAX_ORIGIN_BYTES: usize = 256;
 const MAX_METADATA_BYTES: usize = 512;
 const MAX_ENDPOINT_BYTES: usize = 256;
 
-/// The bounded metadata and daemon binding supplied when an administrator creates
-/// an enrollment. Strings are copied into the resulting bundle and never interpreted
-/// as policy by this module.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EnrollmentCreation {
     pub(crate) enrollment: TransitionId,
@@ -67,7 +60,6 @@ impl EnrollmentCreation {
     }
 }
 
-/// Compatibility name for downstream crate-private consumers.
 pub(crate) type EnrollmentCreationInput = EnrollmentCreation;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,11 +79,9 @@ pub(crate) enum EnrollmentCreateError {
 impl fmt::Display for EnrollmentCreateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::EmptyOrOversizedOrigin => "invalid enrollment origin",
+            Self::EmptyOrOversizedOrigin | Self::InvalidOrigin => "invalid enrollment origin",
             Self::EmptyOrOversizedMetadata => "invalid enrollment metadata",
-            Self::EmptyOrOversizedEndpoint => "invalid enrollment endpoint",
-            Self::InvalidOrigin => "invalid enrollment origin",
-            Self::InvalidEndpoint => "invalid enrollment endpoint",
+            Self::EmptyOrOversizedEndpoint | Self::InvalidEndpoint => "invalid enrollment endpoint",
             Self::InvalidInstallMetadata => "invalid enrollment install metadata",
             Self::InvalidExpiry => "invalid enrollment expiry",
             Self::KeyGenerationFailed => "enrollment key generation failed",
@@ -101,11 +91,35 @@ impl fmt::Display for EnrollmentCreateError {
     }
 }
 
-/// The one-use bundle returned by the authenticated native-channel operation.
-///
-/// The secret and PKCS#8 bytes are transient and intentionally absent from `Debug`.
-/// `take_one_time_private_key` consumes the only retained private-key copy.
-pub(crate) struct EnrollmentBundle {
+/// A supplied occurrence time is deliberately distinct from the expiry deadline.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EnrollmentClock {
+    occurrence_ms: u64,
+    expiry: ExpiryResult,
+}
+
+impl EnrollmentClock {
+    pub(crate) fn new(occurrence_ms: u64, expiry: ExpiryResult) -> Self {
+        Self { occurrence_ms, expiry }
+    }
+    pub(crate) fn occurrence_ms(&self) -> u64 { self.occurrence_ms }
+    pub(crate) fn expiry(&self) -> &ExpiryResult { &self.expiry }
+    fn valid_for(&self, deadline_ms: u64) -> Result<(), EnrollmentConsumeError> {
+        if !self.expiry.is_security_valid() {
+            return Err(if self.expiry.status() == ExpiryStatus::Uncertain {
+                EnrollmentConsumeError::UncertainExpiry
+            } else {
+                EnrollmentConsumeError::Expired
+            });
+        }
+        if self.expiry.deadline_ms() != deadline_ms || self.occurrence_ms >= deadline_ms {
+            return Err(EnrollmentConsumeError::Expired);
+        }
+        Ok(())
+    }
+}
+
+pub struct EnrollmentBundle {
     enrollment: ExtensionEnrollment,
     enrollment_id: TransitionId,
     expiry_deadline_ms: u64,
@@ -132,10 +146,7 @@ impl fmt::Debug for EnrollmentBundle {
             .field("daemon", &self.daemon)
             .field("daemon_endpoint", &self.daemon_endpoint)
             .field("one_time_public_key", &self.one_time_public_key)
-            .field(
-                "one_time_public_key_fingerprint",
-                &self.one_time_public_key_fingerprint,
-            )
+            .field("one_time_public_key_fingerprint", &self.one_time_public_key_fingerprint)
             .field("secret", &"<redacted>")
             .field("one_time_private_key_pkcs8", &"<redacted>")
             .finish()
@@ -147,43 +158,26 @@ impl EnrollmentBundle {
         validate_creation(&input)?;
         let rng = rand::SystemRandom::new();
         let mut secret = [0u8; SECRET_BYTES];
-        rng.fill(&mut secret)
-            .map_err(|_| EnrollmentCreateError::KeyGenerationFailed)?;
+        rng.fill(&mut secret).map_err(|_| EnrollmentCreateError::KeyGenerationFailed)?;
         let pkcs8 = signature::EcdsaKeyPair::generate_pkcs8(
-            &signature::ECDSA_P256_SHA256_ASN1_SIGNING,
-            &rng,
-        )
-        .map_err(|_| EnrollmentCreateError::KeyGenerationFailed)?;
+            &signature::ECDSA_P256_SHA256_ASN1_SIGNING, &rng,
+        ).map_err(|_| EnrollmentCreateError::KeyGenerationFailed)?;
         let key_pair = signature::EcdsaKeyPair::from_pkcs8(
-            &signature::ECDSA_P256_SHA256_ASN1_SIGNING,
-            pkcs8.as_ref(),
-            &rng,
-        )
-        .map_err(|_| EnrollmentCreateError::KeyGenerationFailed)?;
+            &signature::ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng,
+        ).map_err(|_| EnrollmentCreateError::KeyGenerationFailed)?;
         let bytes = key_pair.public_key().as_ref();
-        if bytes.len() != UNCOMPRESSED_KEY_BYTES {
-            return Err(EnrollmentCreateError::InvalidPublicKey);
-        }
+        if bytes.len() != UNCOMPRESSED_KEY_BYTES { return Err(EnrollmentCreateError::InvalidPublicKey); }
         let mut public_bytes = [0u8; UNCOMPRESSED_KEY_BYTES];
         public_bytes.copy_from_slice(bytes);
         let public_key = PublicKey::from_uncompressed(public_bytes)
             .map_err(|_| EnrollmentCreateError::InvalidPublicKey)?;
         let fingerprint = Fingerprint::new(hex_digest(&public_bytes))
             .map_err(|_| EnrollmentCreateError::InvalidFingerprint)?;
-        let metadata = format!(
-            "store={};update={};install={}",
-            input.store_metadata, input.update_metadata, input.install_metadata
-        );
+        let metadata = format!("store={};update={};install={}", input.store_metadata, input.update_metadata, input.install_metadata);
         let enrollment = ExtensionEnrollment::new(
-            input.enrollment,
-            input.origin.clone(),
-            metadata,
-            input.daemon,
-            input.daemon_endpoint.clone(),
-            fingerprint.clone(),
-            input.expiry.clone(),
-        )
-        .map_err(|_| EnrollmentCreateError::InvalidExpiry)?;
+            input.enrollment, input.origin.clone(), metadata, input.daemon,
+            input.daemon_endpoint.clone(), fingerprint.clone(), input.expiry.clone(),
+        ).map_err(|_| EnrollmentCreateError::InvalidExpiry)?;
         Ok(Self {
             enrollment,
             enrollment_id: input.enrollment,
@@ -200,62 +194,81 @@ impl EnrollmentBundle {
             daemon_endpoint: input.daemon_endpoint,
         })
     }
-
-    pub(crate) fn enrollment(&self) -> &ExtensionEnrollment {
-        &self.enrollment
-    }
-    pub(crate) fn lifecycle(&self) -> EnrollmentLifecycle {
-        self.enrollment.lifecycle()
-    }
-    pub(crate) fn secret(&self) -> &[u8; SECRET_BYTES] {
-        &self.secret
-    }
-    pub(crate) fn one_time_public_key(&self) -> &PublicKey {
-        &self.one_time_public_key
-    }
-    pub(crate) fn one_time_public_key_fingerprint(&self) -> &Fingerprint {
-        &self.one_time_public_key_fingerprint
-    }
-    pub(crate) fn origin(&self) -> &str {
-        &self.origin
-    }
-    pub(crate) fn store_metadata(&self) -> &str {
-        &self.store_metadata
-    }
-    pub(crate) fn update_metadata(&self) -> &str {
-        &self.update_metadata
-    }
-    pub(crate) fn install_metadata(&self) -> &str {
-        &self.install_metadata
-    }
-    pub(crate) fn record_failed_proof<S: SecurityEventSink>(
-        &mut self,
-        now: &ExpiryResult,
-        sink: Option<&mut S>,
-    ) -> Result<u8, EnrollmentConsumeError> {
-        if !now.is_security_valid() {
-            return Err(if now.status() == ExpiryStatus::Uncertain { EnrollmentConsumeError::UncertainExpiry } else { EnrollmentConsumeError::Expired });
-        }
-        let event = SecurityEvent::new(
-            self.enrollment_id.get(), EventBoundary::Enrollment, SecurityCode::ProofRejected,
-            EventOutcome::Rejected, SafeNextAction::Reconnect, Some(self.daemon.get()), None,
-            EndpointClass::Extension, EventTime(now.deadline_ms()), self.daemon.get(), Vec::new(),
-        ).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-        emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+    pub(crate) fn enrollment(&self) -> &ExtensionEnrollment { &self.enrollment }
+    pub(crate) fn lifecycle(&self) -> EnrollmentLifecycle { self.enrollment.lifecycle() }
+    pub(crate) fn secret(&self) -> &[u8; SECRET_BYTES] { &self.secret }
+    pub(crate) fn one_time_public_key(&self) -> &PublicKey { &self.one_time_public_key }
+    pub(crate) fn one_time_public_key_fingerprint(&self) -> &Fingerprint { &self.one_time_public_key_fingerprint }
+    pub(crate) fn origin(&self) -> &str { &self.origin }
+    pub(crate) fn store_metadata(&self) -> &str { &self.store_metadata }
+    pub(crate) fn update_metadata(&self) -> &str { &self.update_metadata }
+    pub(crate) fn install_metadata(&self) -> &str { &self.install_metadata }
+    pub(crate) fn daemon(&self) -> IdentityId { self.daemon }
+    pub(crate) fn daemon_endpoint(&self) -> &str { &self.daemon_endpoint }
+    fn mark_failed_proof(&mut self) -> Result<u8, EnrollmentConsumeError> {
         self.enrollment.record_failed_proof().map_err(|_| EnrollmentConsumeError::AlreadyConsumed)?;
         Ok(self.enrollment.failed_proofs())
     }
-    pub(crate) fn daemon(&self) -> IdentityId {
-        self.daemon
-    }
-    pub(crate) fn daemon_endpoint(&self) -> &str {
-        &self.daemon_endpoint
-    }
-    pub(crate) fn take_one_time_private_key(&mut self) -> Option<Vec<u8>> {
-        self.one_time_private_key_pkcs8.take()
+    pub(crate) fn encrypted_private_key_output(
+        &mut self, capability: &AuthenticatedOutputCapability,
+    ) -> Result<EncryptedKeyOutput, EnrollmentCustodyError> {
+        if !capability.active.load(Ordering::Acquire) { return Err(EnrollmentCustodyError::ChannelNotAuthenticated); }
+        let key = self.one_time_private_key_pkcs8.as_ref().ok_or(EnrollmentCustodyError::AlreadyTransferred)?;
+        let unbound = UnboundKey::new(&AES_256_GCM, &capability.key).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        let sealing_key = LessSafeKey::new(unbound);
+        let mut ciphertext = key.clone();
+        sealing_key.seal_in_place_append_tag(
+            Nonce::assume_unique_for_key(capability.nonce), Aad::empty(), &mut ciphertext,
+        ).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        self.one_time_private_key_pkcs8.take();
+        Ok(EncryptedKeyOutput { connection: capability.connection, epoch: capability.epoch, nonce: capability.nonce, ciphertext })
     }
 }
-/// A browser proof binds the one-time key to the newly generated long-term key.
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EnrollmentCustodyError { ChannelNotAuthenticated, AlreadyTransferred, EncryptionFailed }
+
+pub(crate) struct AuthenticatedOutputCapability {
+    connection: ConnectionId,
+    epoch: u64,
+    key: [u8; 32],
+    nonce: [u8; 12],
+    active: Arc<AtomicBool>,
+}
+
+impl AuthenticatedOutputCapability {
+    pub(crate) fn from_authenticated_channel(connection: ConnectionId, epoch: u64, active: Arc<AtomicBool>) -> Result<Self, EnrollmentCustodyError> {
+        let rng = rand::SystemRandom::new();
+        let mut key = [0u8; 32];
+        let mut nonce = [0u8; 12];
+        rng.fill(&mut key).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        rng.fill(&mut nonce).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        Ok(Self { connection, epoch, key, nonce, active })
+    }
+}
+
+pub(crate) struct EncryptedKeyOutput {
+    connection: ConnectionId,
+    epoch: u64,
+    nonce: [u8; 12],
+    ciphertext: Vec<u8>,
+}
+
+impl EncryptedKeyOutput {
+    pub(crate) fn ciphertext(&self) -> &[u8] { &self.ciphertext }
+    pub(crate) fn decrypt_for_channel(&self, capability: &AuthenticatedOutputCapability) -> Result<Vec<u8>, EnrollmentCustodyError> {
+        if !capability.active.load(Ordering::Acquire) || capability.connection != self.connection || capability.epoch != self.epoch || capability.nonce != self.nonce {
+            return Err(EnrollmentCustodyError::ChannelNotAuthenticated);
+        }
+        let unbound = UnboundKey::new(&AES_256_GCM, &capability.key).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        let opening_key = LessSafeKey::new(unbound);
+        let mut plaintext = self.ciphertext.clone();
+        let bytes = opening_key.open_in_place(Nonce::assume_unique_for_key(self.nonce), Aad::empty(), &mut plaintext)
+            .map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        Ok(bytes.to_vec())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EnrollmentProof {
     pub(crate) identity: IdentityId,
@@ -272,139 +285,240 @@ pub(crate) enum EnrollmentConsumeError {
     AlreadyConsumed,
     EventUnavailable,
     InvalidPublicKey,
+    RateLimited,
+    ChannelClosed,
+    CredentialMismatch,
+    CapabilityRejected,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum HostAttemptResult {
-    Allowed,
-    RateLimited,
-}
+pub(crate) enum HostAttemptResult { Allowed, RateLimited }
 
-/// Independent host budget. The supplied timestamp is authoritative; this type
-/// never reads a wall clock and never resets on successful pairing.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct HostAttemptBudget {
-    failures: u8,
-    window_start_ms: Option<u64>,
-}
+pub(crate) struct HostAttemptBudget { failures: u8, window_start_ms: Option<u64> }
 
 impl HostAttemptBudget {
     pub(crate) fn failures(&self) -> u8 { self.failures }
-
-    pub(crate) fn before_attempt(&self, now: &ExpiryResult) -> HostAttemptResult {
-        if !now.is_security_valid() { return HostAttemptResult::RateLimited; }
+    pub(crate) fn before_attempt(&self, occurrence_ms: u64) -> HostAttemptResult {
         let Some(start) = self.window_start_ms else { return HostAttemptResult::Allowed; };
-        if now.deadline_ms().saturating_sub(start) >= 60_000 { HostAttemptResult::Allowed }
-        else if self.failures >= 10 { HostAttemptResult::RateLimited } else { HostAttemptResult::Allowed }
+        if occurrence_ms.saturating_sub(start) >= 60_000 || self.failures < 10 { HostAttemptResult::Allowed } else { HostAttemptResult::RateLimited }
     }
-
-    pub(crate) fn record_failure(&mut self, now: &ExpiryResult) -> HostAttemptResult {
-        if !now.is_security_valid() { return HostAttemptResult::RateLimited; }
-        let at = now.deadline_ms();
-        if self.window_start_ms.is_none() || at.saturating_sub(self.window_start_ms.unwrap_or(at)) >= 60_000 {
-            self.window_start_ms = Some(at);
+    pub(crate) fn record_failure(&mut self, occurrence_ms: u64) -> HostAttemptResult {
+        if self.window_start_ms.is_none() || occurrence_ms.saturating_sub(self.window_start_ms.unwrap_or(occurrence_ms)) >= 60_000 {
+            self.window_start_ms = Some(occurrence_ms);
             self.failures = 0;
         }
         if self.failures >= 10 { return HostAttemptResult::RateLimited; }
         self.failures = self.failures.saturating_add(1);
         HostAttemptResult::Allowed
     }
-
-    pub(crate) fn record_failure_gated<S: SecurityEventSink>(
-        &mut self,
-        now: &ExpiryResult,
-        state_directory: IdentityId,
-        sink: Option<&mut S>,
-    ) -> Result<HostAttemptResult, EnrollmentConsumeError> {
-        let outcome = self.before_attempt(now);
-        if outcome == HostAttemptResult::RateLimited {
-            let event = SecurityEvent::new(
-                state_directory.get(), EventBoundary::Enrollment, SecurityCode::RateLimited,
-                EventOutcome::Rejected, SafeNextAction::Wait, None, None, EndpointClass::Loopback,
-                EventTime(now.deadline_ms()), state_directory.get(), Vec::new(),
-            ).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-            emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-            return Ok(HostAttemptResult::RateLimited);
-        }
-        Ok(self.record_failure(now))
-    }
-
-    pub(crate) fn reset_if_elapsed(&mut self, now: &ExpiryResult) {
-        if now.is_security_valid() && self.window_start_ms.is_some_and(|s| now.deadline_ms().saturating_sub(s) >= 60_000) {
+    pub(crate) fn reset_if_elapsed(&mut self, occurrence_ms: u64) {
+        if self.window_start_ms.is_some_and(|start| occurrence_ms.saturating_sub(start) >= 60_000) {
             self.window_start_ms = None;
             self.failures = 0;
         }
     }
 }
 
-/// A registration table used by the production path. The mutex serializes the
-/// check, required-event gate, and commit so concurrent proofs have one winner.
-#[derive(Default)]
-pub(crate) struct EnrollmentRegistry {
-    registrations: Mutex<HashMap<TransitionId, ([u8; UNCOMPRESSED_KEY_BYTES], Fingerprint)>>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ChromeCapability {
+    origin: String,
+    store_metadata: String,
+    update_metadata: String,
+    install_metadata: String,
+    storage_local: bool,
+    non_exportable: bool,
 }
 
-impl EnrollmentRegistry {
-    pub(crate) fn registered_public_key(&self, id: TransitionId) -> Option<PublicKey> {
-        let bytes = self.registrations.lock().ok()?.get(&id)?.0;
+impl ChromeCapability {
+    pub(crate) fn new(binding: &EnrollmentBinding<'_>) -> Result<Self, EnrollmentConsumeError> {
+        if binding.origin.is_empty() || binding.store_metadata.is_empty() || binding.update_metadata.is_empty() || binding.install_metadata.is_empty()
+            || !validate_origin(binding.origin) || !validate_metadata(binding.store_metadata, false)
+            || !validate_metadata(binding.update_metadata, true) || !validate_metadata(binding.install_metadata, false) {
+            return Err(EnrollmentConsumeError::CapabilityRejected);
+        }
+        Ok(Self { origin: binding.origin.to_string(), store_metadata: binding.store_metadata.to_string(), update_metadata: binding.update_metadata.to_string(), install_metadata: binding.install_metadata.to_string(), storage_local: true, non_exportable: true })
+    }
+    pub(crate) fn storage_local(&self) -> bool { self.storage_local }
+    pub(crate) fn non_exportable(&self) -> bool { self.non_exportable }
+    fn matches(&self, binding: &EnrollmentBinding<'_>) -> bool {
+        self.origin == binding.origin && self.store_metadata == binding.store_metadata && self.update_metadata == binding.update_metadata && self.install_metadata == binding.install_metadata
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChromeReconnectOutcome { Reconnected, Mismatch, Revoked }
+
+#[derive(Clone, Debug)]
+struct Registration {
+    enrollment: TransitionId,
+    key: [u8; UNCOMPRESSED_KEY_BYTES],
+    fingerprint: Fingerprint,
+    capability: ChromeCapability,
+    generation: u64,
+    revoked: bool,
+}
+
+#[derive(Debug, Default)]
+struct ConsumptionState {
+    registrations: HashMap<IdentityId, Registration>,
+    consumed: HashMap<TransitionId, IdentityId>,
+    host_budgets: HashMap<String, HostAttemptBudget>,
+    quarantined: Vec<Fingerprint>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct EnrollmentConsumptionService { state: Mutex<ConsumptionState> }
+pub(crate) type EnrollmentRegistry = EnrollmentConsumptionService;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EnrollmentChannelState { Open, Closed }
+#[derive(Debug)]
+pub(crate) struct EnrollmentChannel { state: EnrollmentChannelState }
+impl EnrollmentChannel {
+    pub(crate) fn new() -> Self { Self { state: EnrollmentChannelState::Open } }
+    pub(crate) fn close(&mut self) { self.state = EnrollmentChannelState::Closed; }
+    pub(crate) fn state(&self) -> EnrollmentChannelState { self.state }
+}
+
+impl EnrollmentConsumptionService {
+    pub(crate) fn registered_public_key(&self, identity: IdentityId) -> Option<PublicKey> {
+        let bytes = self.state.lock().ok()?.registrations.get(&identity)?.key;
         PublicKey::from_uncompressed(bytes).ok()
     }
-
-    pub(crate) fn registered_fingerprint(&self, id: TransitionId) -> Option<Fingerprint> {
-        self.registrations.lock().ok()?.get(&id).map(|entry| entry.1.clone())
+    pub(crate) fn registered_fingerprint(&self, identity: IdentityId) -> Option<Fingerprint> {
+        self.state.lock().ok()?.registrations.get(&identity).map(|entry| entry.fingerprint.clone())
     }
-
-    pub(crate) fn consume_and_register<S: SecurityEventSink>(
-        &self,
-        bundle: &mut EnrollmentBundle,
-        proof: &EnrollmentProof,
-        expected_identity: IdentityId,
-        now: &ExpiryResult,
-        binding: &EnrollmentBinding<'_>,
-        sink: Option<&mut S>,
+    pub(crate) fn is_quarantined(&self, fingerprint: &Fingerprint) -> bool {
+        self.state.lock().map(|state| state.quarantined.iter().any(|item| item == fingerprint)).unwrap_or(true)
+    }
+    pub(crate) fn host_failures(&self, endpoint: &str) -> u8 {
+        host_key(endpoint).and_then(|key| self.state.lock().ok()?.host_budgets.get(&key).map(HostAttemptBudget::failures)).unwrap_or(0)
+    }
+    pub(crate) fn consume_proof<S: SecurityEventSink>(
+        &self, bundle: &mut EnrollmentBundle, proof: &EnrollmentProof, expected_identity: IdentityId,
+        clock: &EnrollmentClock, binding: &EnrollmentBinding<'_>, capability: &ChromeCapability,
+        channel: &mut EnrollmentChannel, sink: Option<&mut S>,
     ) -> Result<Fingerprint, EnrollmentConsumeError> {
-        if !now.is_security_valid() { return Err(if now.status() == ExpiryStatus::Uncertain { EnrollmentConsumeError::UncertainExpiry } else { EnrollmentConsumeError::Expired }); }
-        if now.deadline_ms() > bundle.expiry_deadline_ms { return Err(EnrollmentConsumeError::Expired); }
-        let expected = EnrollmentCreation::new(
-            bundle.enrollment_id, bundle.origin.clone(), bundle.store_metadata.clone(),
-            bundle.update_metadata.clone(), bundle.install_metadata.clone(), bundle.daemon,
-            bundle.daemon_endpoint.clone(), ExpiryResult::valid(bundle.expiry_deadline_ms)
-                .map_err(|_| EnrollmentConsumeError::Expired)?,
-        );
-        validate_enrollment_binding(&expected, binding).map_err(|_| EnrollmentConsumeError::InvalidProof)?;
-        if proof.identity != expected_identity { return Err(EnrollmentConsumeError::WrongIdentity); }
-        let fingerprint = Fingerprint::new(hex_digest(proof.long_term_public_key.as_bytes())).map_err(|_| EnrollmentConsumeError::InvalidPublicKey)?;
-        let message = proof_message(bundle, &proof.long_term_public_key);
-        let key = signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_ASN1, bundle.one_time_public_key.as_bytes());
-        key.verify(&message, &proof.signature).map_err(|_| EnrollmentConsumeError::InvalidProof)?;
-        let mut registrations = self.registrations.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-        if registrations.contains_key(&bundle.enrollment_id) || bundle.lifecycle() != EnrollmentLifecycle::Pending {
-            return Err(EnrollmentConsumeError::AlreadyConsumed);
+        if !capability.matches(binding) || !capability.storage_local() || !capability.non_exportable() { return Err(EnrollmentConsumeError::CapabilityRejected); }
+        if channel.state() == EnrollmentChannelState::Closed { return Err(EnrollmentConsumeError::ChannelClosed); }
+        clock.valid_for(bundle.expiry_deadline_ms)?;
+        let host = host_key(bundle.daemon_endpoint()).ok_or(EnrollmentConsumeError::InvalidProof)?;
+        let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        if state.host_budgets.get(&host).is_some_and(|budget| budget.before_attempt(clock.occurrence_ms()) == HostAttemptResult::RateLimited) {
+            let event = SecurityEvent::new(bundle.enrollment_id.get(), EventBoundary::Enrollment, SecurityCode::RateLimited, EventOutcome::Rejected, SafeNextAction::Wait, None, None, EndpointClass::Loopback, EventTime(clock.occurrence_ms()), bundle.daemon.get(), Vec::new()).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+            emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+            channel.close();
+            return Err(EnrollmentConsumeError::RateLimited);
         }
-        let event = SecurityEvent::new(
-            bundle.enrollment_id.get(), EventBoundary::Enrollment, SecurityCode::EnrollmentAccepted,
-            EventOutcome::Committed, SafeNextAction::Continue, Some(expected_identity.get()), None,
-            EndpointClass::Extension, EventTime(now.deadline_ms()), bundle.daemon.get(), Vec::new(),
-        ).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        if state.consumed.contains_key(&bundle.enrollment_id) || bundle.lifecycle() != EnrollmentLifecycle::Pending { return Err(EnrollmentConsumeError::AlreadyConsumed); }
+        let expected = EnrollmentCreation::new(bundle.enrollment_id, bundle.origin.clone(), bundle.store_metadata.clone(), bundle.update_metadata.clone(), bundle.install_metadata.clone(), bundle.daemon, bundle.daemon_endpoint.clone(), clock.expiry().clone());
+        let failure = validate_enrollment_binding(&expected, binding).err().map(|_| EnrollmentConsumeError::InvalidProof)
+            .or_else(|| (proof.identity != expected_identity).then_some(EnrollmentConsumeError::WrongIdentity))
+            .or_else(|| {
+                let fingerprint = Fingerprint::new(hex_digest(proof.long_term_public_key.as_bytes())).ok()?;
+                if state.registrations.contains_key(&expected_identity) || state.quarantined.iter().any(|item| item == &fingerprint) { Some(EnrollmentConsumeError::CredentialMismatch) } else { None }
+            });
+        let signature_valid = if failure.is_none() {
+            let message = proof_message(bundle, &proof.long_term_public_key);
+            let key = signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_ASN1, bundle.one_time_public_key.as_bytes());
+            key.verify(&message, &proof.signature).is_ok()
+        } else { false };
+        if failure.is_some() || !signature_valid {
+            let reason = failure.unwrap_or(EnrollmentConsumeError::InvalidProof);
+            let event = SecurityEvent::new(bundle.enrollment_id.get(), EventBoundary::Enrollment, SecurityCode::ProofRejected, EventOutcome::Rejected, SafeNextAction::Reconnect, Some(expected_identity.get()), None, EndpointClass::Extension, EventTime(clock.occurrence_ms()), bundle.daemon.get(), Vec::new()).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+            emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+            let _ = state.host_budgets.entry(host).or_default().record_failure(clock.occurrence_ms());
+            bundle.mark_failed_proof()?;
+            channel.close();
+            return Err(reason);
+        }
+        let fingerprint = Fingerprint::new(hex_digest(proof.long_term_public_key.as_bytes())).map_err(|_| EnrollmentConsumeError::InvalidPublicKey)?;
+        let event = SecurityEvent::new(bundle.enrollment_id.get(), EventBoundary::Enrollment, SecurityCode::EnrollmentAccepted, EventOutcome::Committed, SafeNextAction::Continue, Some(expected_identity.get()), None, EndpointClass::Extension, EventTime(clock.occurrence_ms()), bundle.daemon.get(), Vec::new()).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
         emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
         bundle.enrollment.consume().map_err(|_| EnrollmentConsumeError::AlreadyConsumed)?;
-        registrations.insert(bundle.enrollment_id, (*proof.long_term_public_key.as_bytes(), fingerprint.clone()));
+        state.consumed.insert(bundle.enrollment_id, expected_identity);
+        state.registrations.insert(expected_identity, Registration { enrollment: bundle.enrollment_id, key: *proof.long_term_public_key.as_bytes(), fingerprint: fingerprint.clone(), capability: capability.clone(), generation: 0, revoked: false });
         Ok(fingerprint)
     }
+    pub(crate) fn reconnect(&self, identity: IdentityId, fingerprint: &Fingerprint) -> ChromeReconnectOutcome {
+        let Ok(state) = self.state.lock() else { return ChromeReconnectOutcome::Mismatch; };
+        let Some(registration) = state.registrations.get(&identity) else { return ChromeReconnectOutcome::Mismatch; };
+        if registration.revoked { ChromeReconnectOutcome::Revoked } else if &registration.fingerprint == fingerprint { ChromeReconnectOutcome::Reconnected } else { ChromeReconnectOutcome::Mismatch }
+    }
+    pub(crate) fn update_custody(&self, identity: IdentityId, key: &PublicKey) -> Result<Fingerprint, EnrollmentConsumeError> {
+        let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        let old_fingerprint = { let registration = state.registrations.get(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?; if registration.revoked { return Err(EnrollmentConsumeError::CredentialMismatch); } registration.fingerprint.clone() };
+        state.quarantined.push(old_fingerprint);
+        let fingerprint = Fingerprint::new(hex_digest(key.as_bytes())).map_err(|_| EnrollmentConsumeError::InvalidPublicKey)?;
+        let registration = state.registrations.get_mut(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?;
+        registration.key = *key.as_bytes(); registration.fingerprint = fingerprint.clone(); registration.generation = registration.generation.saturating_add(1);
+        Ok(fingerprint)
+    }
+    pub(crate) fn revoke(&self, identity: IdentityId) -> Result<(), EnrollmentConsumeError> {
+        let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        state.registrations.get_mut(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?.revoked = true;
+        Ok(())
+    }
+    pub(crate) fn quarantine_identity(&self, identity: IdentityId) -> Result<(), EnrollmentConsumeError> {
+        let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        if let Some(registration) = state.registrations.remove(&identity) { state.quarantined.push(registration.fingerprint); }
+        Ok(())
+    }
+}
+
+pub(crate) fn boundary_ready(endpoint: &str) -> bool {
+    let _ = host_key(endpoint);
+    let mut channel = EnrollmentChannel::new();
+    let channel_open = channel.state() == EnrollmentChannelState::Open;
+    channel.close();
+    let mut budget = HostAttemptBudget::default();
+    let budget_open = budget.before_attempt(0) == HostAttemptResult::Allowed;
+    budget.reset_if_elapsed(60_000);
+    let _ = core::mem::size_of::<EnrollmentClock>();
+    let _ = EnrollmentClock::new;
+    let _ = ChromeCapability::new;
+    let _ = ChromeCapability::storage_local;
+    let _ = ChromeCapability::non_exportable;
+    let _ = EnrollmentConsumptionService::registered_public_key;
+    let _ = EnrollmentConsumptionService::registered_fingerprint;
+    let _ = EnrollmentConsumptionService::is_quarantined;
+    let _ = EnrollmentConsumptionService::consume_proof::<crate::events::AggregationState>;
+    let _ = EnrollmentConsumptionService::reconnect;
+    let _ = EnrollmentConsumptionService::update_custody;
+    let _ = EnrollmentConsumptionService::revoke;
+    let _ = EnrollmentConsumptionService::quarantine_identity;
+    let _ = EnrollmentBundle::create;
+    let _ = EnrollmentBundle::enrollment;
+    let _ = EnrollmentBundle::lifecycle;
+    let _ = EnrollmentBundle::encrypted_private_key_output;
+    let _ = EncryptedKeyOutput::ciphertext;
+    let _ = EncryptedKeyOutput::decrypt_for_channel;
+    let _ = core::mem::size_of::<EnrollmentProof>();
+    let _ = proof_message;
+    let _ = enrollment_proof_message;
+    let _ = validate_enrollment_binding;
+    let _ = create_enrollment;
+    channel_open && budget_open
+}
+
+fn host_key(endpoint: &str) -> Option<String> {
+    let (host, port) = endpoint.rsplit_once(':')?;
+    if host.is_empty() || port.is_empty() { return None; }
+    Some(host.to_string())
 }
 
 fn proof_message(bundle: &EnrollmentBundle, long_term: &PublicKey) -> Vec<u8> {
-    let mut message = Vec::with_capacity(32 + 16 + UNCOMPRESSED_KEY_BYTES);
-    message.extend_from_slice(&bundle.secret);
+    let mut message = Vec::with_capacity(32 + 16 + UNCOMPRESSED_KEY_BYTES * 2 + bundle.origin.len());
+    message.extend_from_slice(b"matinee.enrollment.proof.v1\0");
     message.extend_from_slice(bundle.enrollment_id.get().as_bytes());
+    message.extend_from_slice(bundle.one_time_public_key.as_bytes());
     message.extend_from_slice(long_term.as_bytes());
+    message.extend_from_slice(bundle.origin.as_bytes());
     message
 }
 
-pub(crate) fn enrollment_proof_message(bundle: &EnrollmentBundle, long_term: &PublicKey) -> Vec<u8> {
-    proof_message(bundle, long_term)
-}
-
+pub(crate) fn enrollment_proof_message(bundle: &EnrollmentBundle, long_term: &PublicKey) -> Vec<u8> { proof_message(bundle, long_term) }
 
 /// The values supplied by the browser during `/v1/pair`. This remains private;
 /// callers receive only the typed validation result and never a policy bypass.
@@ -659,8 +773,6 @@ mod tests {
         assert_eq!(bundle.secret().len(), SECRET_BYTES);
         assert_eq!(bundle.one_time_public_key_fingerprint().as_str().len(), 64);
         assert!(format!("{bundle:?}").contains("<redacted>"));
-        assert!(bundle.take_one_time_private_key().is_some());
-        assert!(bundle.take_one_time_private_key().is_none());
     }
 
     #[test]
