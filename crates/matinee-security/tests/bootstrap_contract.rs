@@ -1,30 +1,49 @@
 macro_rules! bootstrap_contract_tests {
     () => {
-        use crate::adapters::credential_store::{CredentialBinding, CredentialStore};
-        use crate::adapters::os_pipe::{OsPipe, OsPipeError};
-        use crate::events::{EventBoundary, EventOutcome, EventTime, EndpointClass, MetadataEntry, SafeNextAction, SecurityCode, SecurityEvent};
+        use crate::adapters::credential_store::{
+            CredentialBinding, CredentialStore, InMemoryCredentialStore,
+        };
+        use crate::adapters::os_pipe::{BootstrapEnvelope, OsPipe, OsPipeError};
+        use crate::events::{
+            EndpointClass, EventBoundary, EventOutcome, EventTime, MetadataEntry, SafeNextAction,
+            SecurityCode, SecurityEvent,
+        };
         use crate::identity::{
             CredentialReference, DaemonIdentity, DaemonLifecycle, Fingerprint, IdempotencyKey,
             IdentityId, PublicKey, TransitionId, TransitionInput, TransitionOperation,
             TransitionOutcome,
         };
-        use crate::test_support_fakes::{FakeCredentialStore, FakeOsPipe};
+        use crate::test_support_fakes::{FakeCredentialStore, FakeEventSink, FakeOsPipe};
+        use crate::transition::{BootstrapError, BootstrapState};
         use uuid::Uuid;
+
+        const NATIVE_PUBLIC_KEY: [u8; 65] = [
+            0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63,
+            0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39,
+            0x45, 0xd8, 0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e,
+            0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e,
+            0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+        ];
+
+        fn contains_private_key(surface: &[u8], private_key: &[u8]) -> bool {
+            surface
+                .windows(private_key.len())
+                .any(|window| window == private_key)
+        }
 
         fn identity(value: u128) -> IdentityId {
             IdentityId::new(Uuid::from_u128(value))
         }
 
         fn native_key(_seed: u8) -> PublicKey {
-        let bytes = [
-            0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc,
-            0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d,
-            0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96,
-            0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb,
-            0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31,
-            0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
-        ];
-        PublicKey::from_uncompressed(bytes).expect("valid uncompressed native key")
+            let bytes = [
+                0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63,
+                0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39,
+                0x45, 0xd8, 0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e,
+                0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e,
+                0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+            ];
+            PublicKey::from_uncompressed(bytes).expect("valid uncompressed native key")
         }
 
         #[test]
@@ -194,6 +213,98 @@ macro_rules! bootstrap_contract_tests {
                 }],
             );
             assert_eq!(rejected, Err(crate::events::EventBuildError::Redacted));
+        }
+        #[test]
+        fn bootstrap_surfaces_never_contain_known_private_key_bytes() {
+            let mut private_key = [0u8; 32];
+            private_key[31] = 1;
+            let planted = private_key.to_vec();
+            assert!(
+                contains_private_key(&planted, &private_key),
+                "negative control must detect planted key material"
+            );
+
+            let envelope = BootstrapEnvelope::new(
+                [7; 32],
+                Uuid::from_u128(0x1001),
+                Uuid::from_u128(0x1002),
+                Uuid::from_u128(0x1003),
+                NATIVE_PUBLIC_KEY,
+            )
+            .expect("valid bootstrap envelope");
+            let capture = envelope.encode();
+            assert!(!contains_private_key(&capture, &private_key));
+
+            let binding =
+                CredentialBinding::for_identities(envelope.state_directory, envelope.daemon);
+            let mut store = InMemoryCredentialStore::new();
+            store.register(binding, 7);
+
+            let pipe = FakeOsPipe::present(9);
+            let mut state = BootstrapState::default();
+            let mut sink = FakeEventSink::accepted();
+            let committed = state.bootstrap_encoded_for_test(
+                &pipe,
+                &capture,
+                &store,
+                Some(&mut sink),
+                None,
+                EventTime(42),
+                b"native://bootstrap",
+            );
+            assert_eq!(committed, Ok(TransitionOutcome::Committed));
+
+            let mut rejected_state = BootstrapState::default();
+            let mut rejected_sink = FakeEventSink::accepted();
+            let rejected = rejected_state.bootstrap_encoded_for_test(
+                &pipe,
+                &capture,
+                &store,
+                Some(&mut rejected_sink),
+                None,
+                EventTime(42),
+                b"127.0.0.1:9",
+            );
+            assert_eq!(rejected, Err(BootstrapError::EndpointRejected));
+
+            let mut unavailable_state = BootstrapState::default();
+            let mut unavailable_sink = FakeEventSink::unavailable();
+            let unavailable = unavailable_state.bootstrap_encoded_for_test(
+                &pipe,
+                &capture,
+                &store,
+                Some(&mut unavailable_sink),
+                None,
+                EventTime(42),
+                b"native://bootstrap",
+            );
+            assert_eq!(unavailable, Err(BootstrapError::EventUnavailable));
+
+            let failure_payloads = [format!("{rejected:?}"), format!("{unavailable:?}")];
+            let event_payloads = [
+                format!("{:?}", sink.received()),
+                format!("{:?}", unavailable_sink.received()),
+            ];
+            let durable_payloads = [
+                format!("{:?}", state.active()),
+                format!("status={committed:?}; diagnostics={:?}", state.active()),
+            ];
+            for (surface, payloads) in [
+                (
+                    "capture",
+                    vec![String::from_utf8_lossy(&capture).into_owned()],
+                ),
+                ("failure", failure_payloads.to_vec()),
+                ("event", event_payloads.to_vec()),
+                ("durable", durable_payloads.to_vec()),
+            ] {
+                for payload in payloads {
+                    assert!(
+                        !contains_private_key(payload.as_bytes(), &private_key),
+                        "private key leaked in {surface}: {payload}"
+                    );
+                }
+            }
         }
     };
 }
