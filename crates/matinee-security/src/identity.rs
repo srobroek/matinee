@@ -729,6 +729,25 @@ impl TransitionInput {
             outcome,
         }
     }
+    /// The state directory the reported transition belongs to. A transition that names
+    /// another directory than its target's credential does is refused.
+    pub fn state_directory(&self) -> IdentityId {
+        self.state_directory
+    }
+    pub fn transition(&self) -> TransitionId {
+        self.transition
+    }
+    pub fn operation(&self) -> &TransitionOperation {
+        &self.operation
+    }
+    pub fn idempotency(&self) -> IdempotencyKey {
+        self.idempotency
+    }
+    /// The epoch the caller believes the target holds. A transition applied against a
+    /// prior epoch is stale, so no reordered delivery can move the current one.
+    pub fn prior_epoch(&self) -> u64 {
+        self.prior_epoch
+    }
     pub fn outcome(&self) -> TransitionOutcome {
         self.outcome
     }
@@ -829,6 +848,26 @@ impl RotationTransition {
             outcome,
         })
     }
+    /// The audit facts one rotation preserved: which principal crossed which epoch
+    /// boundary, and the fingerprint that names the credential it now holds.
+    pub fn principal(&self) -> IdentityId {
+        self.principal
+    }
+    pub fn old_fingerprint(&self) -> &Fingerprint {
+        &self.old_fingerprint
+    }
+    pub fn new_fingerprint(&self) -> &Fingerprint {
+        &self.new_fingerprint
+    }
+    pub fn old_epoch(&self) -> u64 {
+        self.old_epoch
+    }
+    pub fn new_epoch(&self) -> u64 {
+        self.new_epoch
+    }
+    pub fn effective_boundary(&self) -> u64 {
+        self.effective_boundary
+    }
     pub fn outcome(&self) -> TransitionOutcome {
         self.outcome
     }
@@ -866,6 +905,23 @@ impl RevocationTransition {
             invalidated_grants: grants,
             outcome,
         })
+    }
+    /// The audit facts one revocation preserved: the principal, the epoch it ended at,
+    /// its bounded reason class, and how much live state the commit invalidated.
+    pub fn principal(&self) -> IdentityId {
+        self.principal
+    }
+    pub fn reason_class(&self) -> &str {
+        &self.reason_class
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    pub fn invalidated_channels(&self) -> u32 {
+        self.invalidated_channels
+    }
+    pub fn invalidated_grants(&self) -> u32 {
+        self.invalidated_grants
     }
     pub fn outcome(&self) -> TransitionOutcome {
         self.outcome

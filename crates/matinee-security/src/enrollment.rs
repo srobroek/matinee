@@ -200,6 +200,9 @@ impl EnrollmentBundle {
     pub fn install_metadata(&self) -> &str { &self.install_metadata }
     pub fn daemon(&self) -> IdentityId { self.daemon }
     pub fn daemon_endpoint(&self) -> &str { &self.daemon_endpoint }
+    /// Revoke this enrollment when its owner is revoked. A consumed, closed, or expired
+    /// enrollment is already terminal and is left exactly as it is.
+    pub(crate) fn revoke(&mut self) { self.enrollment.revoke(); }
     fn mark_failed_proof(&mut self) -> Result<u8, EnrollmentConsumeError> {
         self.enrollment.record_failed_proof().map_err(|_| EnrollmentConsumeError::AlreadyConsumed)?;
         Ok(self.enrollment.failed_proofs())
@@ -512,7 +515,7 @@ impl EnrollmentConsumptionService {
     }
 
 
-    pub(crate) fn consume_proof<S: SecurityEventSink>(
+    pub(crate) fn consume_proof<S: SecurityEventSink + ?Sized>(
         &self,
         bundle: &mut EnrollmentBundle,
         proof: &EnrollmentProof,

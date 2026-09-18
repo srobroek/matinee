@@ -35,6 +35,9 @@ mod test_support_channel;
 #[cfg(test)]
 #[path = "../tests/support/fakes.rs"]
 mod test_support_fakes;
+#[cfg(test)]
+#[path = "../tests/support/transitions.rs"]
+mod test_support_transitions;
 
 use core::fmt;
 

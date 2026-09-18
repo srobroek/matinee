@@ -222,6 +222,16 @@ fn capability_covers(ceiling: &Capability, requested: &Capability) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// The class of endpoint one principal kind connects from. An event reports the class
+/// only, never an address, a route, or an Origin.
+pub(crate) const fn endpoint_class(kind: PrincipalKind) -> EndpointClass {
+    match kind {
+        PrincipalKind::BrowserExtension => EndpointClass::Extension,
+        PrincipalKind::NativeAdmin => EndpointClass::Native,
+        PrincipalKind::McpClient => EndpointClass::Loopback,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_decision<S>(
     sink: Option<&mut S>,
@@ -245,11 +255,7 @@ where
         next_action,
         Some(principal.id().get()),
         Some(connection.get()),
-        match principal.kind() {
-            PrincipalKind::BrowserExtension => EndpointClass::Extension,
-            PrincipalKind::NativeAdmin => EndpointClass::Native,
-            PrincipalKind::McpClient => EndpointClass::Loopback,
-        },
+        endpoint_class(principal.kind()),
         time,
         state_directory.get(),
         vec![MetadataEntry {

@@ -225,3 +225,43 @@ pub(crate) fn establish_pair_at_epochs(
     let server_session = server_pending.finish(&client_proof, &mut sink)?;
     Ok((client_session, server_session))
 }
+
+/// Establish one live pair for a principal a registry already holds, on `connection`.
+///
+/// The client signs with `client_signer`, which has to hold exactly the key that
+/// principal is registered under, and the handshake is bound to the epoch the snapshot
+/// carries. A rotated principal therefore needs its replacement signer to reconnect.
+pub(crate) fn establish_pair_for(
+    principal: &Principal,
+    client_signer: &RingSigner,
+    connection: ConnectionId,
+) -> Result<(ChannelSession, ChannelSession), crate::SecurityFailure> {
+    let server_signer = RingSigner::generate();
+    let client = ClientHandshakeConfig::new(
+        ENDPOINT,
+        principal.id(),
+        client_signer.public.clone(),
+        id(DAEMON),
+        server_signer.public.clone(),
+        principal.epoch(),
+        1,
+        3,
+    )?;
+    let server = ServerHandshakeConfig::new(
+        ENDPOINT,
+        principal.clone(),
+        id(DAEMON),
+        server_signer.public.clone(),
+        2,
+        4,
+        connection,
+    )?;
+    let mut sink = RecordingSink::default();
+    let (client_pending, hello) = ClientHandshake::start(client)?;
+    let (server_pending, proof) =
+        ServerHandshake::accept(server, &hello, &server_signer, &mut sink)?;
+    let (client_session, client_proof) =
+        client_pending.finish(&proof, client_signer, &mut sink)?;
+    let server_session = server_pending.finish(&client_proof, &mut sink)?;
+    Ok((client_session, server_session))
+}
