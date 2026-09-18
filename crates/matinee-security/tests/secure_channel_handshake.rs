@@ -148,6 +148,112 @@ macro_rules! secure_channel_handshake_tests {
             assert_eq!(sink.events.len(), 1);
         }
 
+        /// FR-024, FR-026: a rotation replaces the credential transcripts are verified
+        /// against. The retired signer cannot authenticate at the new epoch even though it
+        /// authenticated at the old one, the replacement signer can, and the fingerprint,
+        /// credential locator, and public key all name that one replacement.
+        #[test]
+        fn a_rotated_principal_authenticates_only_its_replacement_signer() {
+            let retired = RingSigner::generate();
+            let replacement = RingSigner::generate();
+            let daemon_signer = RingSigner::generate();
+
+            let before = fixture_principal(retired.public_key().clone(), 0);
+            assert_eq!(before.epoch(), 0);
+            let mut after = before.clone();
+            after.begin_rotation().unwrap();
+            after
+                .complete_rotation(
+                    replacement.public_key().clone(),
+                    crate::Fingerprint::new("b".repeat(64)).unwrap(),
+                    crate::CredentialReference::new(
+                        "fixture-store",
+                        "principal-key-1",
+                        before.owner(),
+                        before.credential().state_directory(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(after.epoch(), 1);
+            assert_eq!(after.public_key(), replacement.public_key());
+            assert_ne!(after.public_key(), before.public_key());
+            assert_ne!(after.fingerprint(), before.fingerprint());
+            assert_ne!(
+                after.credential().key_locator(),
+                before.credential().key_locator()
+            );
+
+            // The retired signer, presenting the key and the epoch it used to hold, no longer
+            // matches the rotated principal.
+            for epoch in [0, 1] {
+                let client = ClientHandshakeConfig::new(
+                    ENDPOINT,
+                    id(PRINCIPAL),
+                    retired.public_key().clone(),
+                    id(DAEMON),
+                    daemon_signer.public_key().clone(),
+                    epoch,
+                    1,
+                    3,
+                )
+                .unwrap();
+                let server = ServerHandshakeConfig::new(
+                    ENDPOINT,
+                    after.clone(),
+                    id(DAEMON),
+                    daemon_signer.public_key().clone(),
+                    2,
+                    4,
+                    ConnectionId::new(Uuid::from_u128(CONNECTION)),
+                )
+                .unwrap();
+                let (_, hello) = ClientHandshake::start(client).unwrap();
+                let mut sink = RecordingSink::default();
+                let failure = ServerHandshake::accept(server, &hello, &daemon_signer, &mut sink)
+                    .expect_err("a retired signer never authenticates after rotation");
+                assert!(matches!(
+                    failure.code(),
+                    FailureCode::AuthenticationFailed | FailureCode::StaleEpoch
+                ));
+                assert_eq!(sink.events.len(), 1);
+            }
+
+            // The replacement signer authenticates at the new epoch and reaches a session.
+            let client = ClientHandshakeConfig::new(
+                ENDPOINT,
+                id(PRINCIPAL),
+                replacement.public_key().clone(),
+                id(DAEMON),
+                daemon_signer.public_key().clone(),
+                1,
+                1,
+                3,
+            )
+            .unwrap();
+            let server = ServerHandshakeConfig::new(
+                ENDPOINT,
+                after,
+                id(DAEMON),
+                daemon_signer.public_key().clone(),
+                2,
+                4,
+                ConnectionId::new(Uuid::from_u128(CONNECTION)),
+            )
+            .unwrap();
+            let mut sink = RecordingSink::default();
+            let (client_pending, hello) = ClientHandshake::start(client).unwrap();
+            let (server_pending, proof) =
+                ServerHandshake::accept(server, &hello, &daemon_signer, &mut sink).unwrap();
+            let (client_session, client_proof) = client_pending
+                .finish(&proof, &replacement, &mut sink)
+                .unwrap();
+            let daemon_session = server_pending.finish(&client_proof, &mut sink).unwrap();
+            assert_eq!(daemon_session.epoch(), 1);
+            assert_eq!(client_session.epoch(), 1);
+            assert!(daemon_session.is_open() && client_session.is_open());
+        }
+
         #[test]
         fn client_hello_uses_four_byte_lengths_utf8_uuid_and_valid_sec1_points() {
             let client_signer = RingSigner::generate();

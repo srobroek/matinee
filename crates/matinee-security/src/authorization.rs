@@ -473,6 +473,7 @@ mod tests {
         value.begin_rotation().unwrap();
         value
             .complete_rotation(
+                key(),
                 Fingerprint::new("b".repeat(64)).unwrap(),
                 CredentialReference::new("s", "k2", id, state_directory).unwrap(),
             )

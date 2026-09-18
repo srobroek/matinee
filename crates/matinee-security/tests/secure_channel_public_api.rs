@@ -63,28 +63,48 @@ fn capability(action: CapabilityAction, scope: &str) -> Capability {
 }
 
 /// An external consumer registers a principal exactly the way the crate boundary requires:
-/// an activated snapshot whose epoch it advanced through rotation.
+/// an activated snapshot whose epoch it advanced through real rotations. Each epoch before
+/// the last is held by its own key, and `key` is installed by the final rotation, so the
+/// signer presented at the handshake is the only credential the principal still names.
 fn registered_principal(key: PublicKey, owner: IdentityId, epoch: u64) -> Principal {
+    let initial = if epoch == 0 {
+        key.clone()
+    } else {
+        Signer::generate().public
+    };
     let mut principal = Principal::new(
         id(1),
         PrincipalKind::McpClient,
-        key,
+        initial,
         Fingerprint::new("a".repeat(64)).unwrap(),
         owner,
         vec![capability(CapabilityAction::Read, "matinee")],
-        CredentialReference::new("consumer-store", "principal-key", owner, id(9)).unwrap(),
+        CredentialReference::new("consumer-store", "principal-key-0", owner, id(9)).unwrap(),
     )
     .unwrap();
     principal.activate().unwrap();
     for index in 0..epoch {
+        let replacement = if index + 1 == epoch {
+            key.clone()
+        } else {
+            Signer::generate().public
+        };
         principal.begin_rotation().unwrap();
         principal
             .complete_rotation(
-                Fingerprint::new(format!("{index:064x}")).unwrap(),
-                CredentialReference::new("consumer-store", "principal-key", owner, id(9)).unwrap(),
+                replacement,
+                Fingerprint::new(format!("{:064x}", index + 1)).unwrap(),
+                CredentialReference::new(
+                    "consumer-store",
+                    &format!("principal-key-{}", index + 1),
+                    owner,
+                    id(9),
+                )
+                .unwrap(),
             )
             .unwrap();
     }
+    assert_eq!(principal.public_key(), &key);
     principal
 }
 

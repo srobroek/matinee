@@ -838,6 +838,11 @@ impl ChannelState {
     pub(crate) fn receive_counter(&self) -> u64 {
         self.receive_counter
     }
+
+    #[cfg(test)]
+    pub(crate) fn send_counter(&self) -> u64 {
+        self.send_counter
+    }
 }
 
 fn aead_key(bytes: &[u8; 32]) -> Result<aead::LessSafeKey, SecurityFailure> {

@@ -159,6 +159,7 @@ macro_rules! authorization_contract_tests {
             principal.begin_rotation().unwrap();
             assert_eq!(
                 principal.complete_rotation(
+                    key(),
                     Fingerprint::new("e".repeat(64)).unwrap(),
                     credential(foreign),
                 ),

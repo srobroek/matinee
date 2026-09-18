@@ -700,6 +700,11 @@ impl ChannelSession {
         self.channel
             .seal(self.connection, self.epoch, self.contract, kind, payload)
     }
+
+    #[cfg(test)]
+    pub(crate) fn send_counter(&self) -> u64 {
+        self.channel.send_counter()
+    }
 }
 
 /// Validate the one shape byte v1 plaintext carries and report the payload length behind

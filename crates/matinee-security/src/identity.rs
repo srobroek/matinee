@@ -402,17 +402,27 @@ impl Principal {
         self.lifecycle = PrincipalLifecycle::Rotating;
         Ok(())
     }
+    /// Install the replacement credential and advance the authentication epoch.
+    ///
+    /// A rotation replaces one identity: the public key transcripts are verified against,
+    /// the fingerprint that names it, and the credential locator that stores it move
+    /// together or not at all. Every precondition is checked before the first field is
+    /// written, so a refused rotation leaves the prior credential wholly intact and no
+    /// caller can end up with a new key under an old fingerprint.
     pub fn complete_rotation(
         &mut self,
+        public_key: PublicKey,
         fingerprint: Fingerprint,
         credential: CredentialReference,
     ) -> Result<(), &'static str> {
         if self.lifecycle != PrincipalLifecycle::Rotating || credential.daemon() != self.owner {
             return Err("rotation is not valid");
         }
+        let epoch = self.epoch.checked_add(1).ok_or("epoch exhausted")?;
+        self.public_key = public_key;
         self.fingerprint = fingerprint;
         self.credential = credential;
-        self.epoch = self.epoch.checked_add(1).ok_or("epoch exhausted")?;
+        self.epoch = epoch;
         self.lifecycle = PrincipalLifecycle::Active;
         Ok(())
     }

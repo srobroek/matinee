@@ -85,11 +85,18 @@ pub(crate) fn capability(action: CapabilityAction, scope: &str) -> Capability {
     Capability::new(action, scope).expect("bounded capability scope")
 }
 
-/// A registered principal at exactly `epoch`.
+fn fixture_credential(locator: &str) -> CredentialReference {
+    CredentialReference::new("fixture-store", locator, id(OWNER), id(STATE_DIRECTORY))
+        .expect("bounded credential reference")
+}
+
+/// A registered principal at exactly `epoch`, holding `key` as its current credential.
 ///
-/// The authentication epoch is not settable: it only advances through a completed rotation,
-/// so the fixture rotates the principal until it carries the epoch a session needs. That is
-/// the same path production takes, which is why a session can trust the epoch it reads.
+/// The authentication epoch is not settable: it only advances through a completed rotation.
+/// The fixture therefore walks the real registration history, and every epoch before the
+/// last is held by its own generated key that is then retired. `key` is installed by the
+/// final rotation, so the signer a session presents matches the only credential the
+/// principal currently names and no retired key is ever reused to reach an epoch.
 pub(crate) fn registered_principal(
     id_value: u128,
     kind: PrincipalKind,
@@ -97,35 +104,42 @@ pub(crate) fn registered_principal(
     ceiling: Vec<Capability>,
     epoch: u64,
 ) -> Principal {
-    let owner = id(OWNER);
+    // At epoch 0 the principal was never rotated, so `key` is its registration key.
+    // Otherwise registration starts on a key that every later rotation retires.
+    let initial = if epoch == 0 {
+        key.clone()
+    } else {
+        RingSigner::generate().public
+    };
     let mut principal = Principal::new(
         id(id_value),
         kind,
-        key,
+        initial,
         Fingerprint::new("a".repeat(64)).expect("64 lowercase hex digits"),
-        owner,
+        id(OWNER),
         ceiling,
-        CredentialReference::new("fixture-store", "principal-key", owner, id(STATE_DIRECTORY))
-            .expect("bounded credential reference"),
+        fixture_credential("principal-key-0"),
     )
     .expect("valid principal binding");
     principal.activate().expect("pending principal");
     for index in 0..epoch {
+        let last = index + 1 == epoch;
+        let replacement = if last {
+            key.clone()
+        } else {
+            RingSigner::generate().public
+        };
         principal.begin_rotation().expect("active principal");
         principal
             .complete_rotation(
-                Fingerprint::new(format!("{index:064x}")).expect("64 lowercase hex digits"),
-                CredentialReference::new(
-                    "fixture-store",
-                    "principal-key",
-                    owner,
-                    id(STATE_DIRECTORY),
-                )
-                .expect("bounded credential reference"),
+                replacement,
+                Fingerprint::new(format!("{:064x}", index + 1)).expect("64 lowercase hex digits"),
+                fixture_credential(&format!("principal-key-{}", index + 1)),
             )
             .expect("rotating principal");
     }
     assert_eq!(principal.epoch(), epoch);
+    assert_eq!(principal.public_key(), &key);
     principal
 }
 

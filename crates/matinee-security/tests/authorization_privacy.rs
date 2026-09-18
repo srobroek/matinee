@@ -494,6 +494,67 @@ macro_rules! authorization_privacy_tests {
                 }
                 assert!(rendered.contains("object.not_found"));
             }
+
+            /// FR-023, SC-004: the decision runs strictly before serialization, so a denied
+            /// projection costs the channel nothing. The send counter is the observable proof:
+            /// a denial must not consume one, and the next authorized projection must therefore
+            /// carry the counter the client is still expecting.
+            ///
+            /// If sealing or the counter increment moved ahead of the decision, the denial
+            /// below would burn counter 0 and this authorized frame would arrive at counter 1,
+            /// which the client's receive path rejects.
+            #[test]
+            fn a_denied_projection_consumes_no_send_counter_and_the_next_one_still_arrives() {
+                let (mut client, mut daemon) = establish_pair(0);
+                assert_eq!(daemon.send_counter(), 0);
+
+                let denied = SessionProjection::new(
+                    ProjectionClass::Status,
+                    capability(CapabilityAction::Read, SCOPE),
+                    ObjectOwner::Unknown,
+                    None,
+                    PROTECTED,
+                );
+                for _ in 0..3 {
+                    let mut sink = RecordingSink::default();
+                    let failure = daemon
+                        .send_projection(&denied, &mut sink)
+                        .expect_err("an unresolved object is never serialized");
+                    assert_eq!(failure.code(), FailureCode::ObjectNotFound);
+                    // The decision was recorded, but nothing was framed.
+                    assert_eq!(sink.events.len(), 1);
+                    assert_eq!(sink.events[0].code(), SecurityCode::AuthorizationDenied);
+                    assert_eq!(
+                        daemon.send_counter(),
+                        0,
+                        "a refused projection must not consume a frame counter"
+                    );
+                    assert!(daemon.is_open(), "a denial must leave the channel usable");
+                }
+
+                let mut sink = RecordingSink::default();
+                let frame = daemon
+                    .send_projection(
+                        &owned_projection(ProjectionClass::Status, b"ready"),
+                        &mut sink,
+                    )
+                    .expect("the same projection over an owned object");
+                assert_eq!(sink.events.len(), 1);
+                assert_eq!(sink.events[0].code(), SecurityCode::AuthorizationAccepted);
+                // The authorized frame is the channel's first: the denials cost no counter.
+                assert_eq!(
+                    u64::from_be_bytes(frame[21..29].try_into().unwrap()),
+                    0,
+                    "the first authorized projection must carry counter zero"
+                );
+                assert_eq!(daemon.send_counter(), 1);
+                let filtered = client
+                    .receive_filtered(&frame, PayloadKind::Response, &mut sink)
+                    .expect("the client is still at the counter the daemon sealed under");
+                assert_eq!(filtered.payload(), b"ready");
+                assert_eq!(client.receive_counter(), 1);
+                assert!(client.is_open() && daemon.is_open());
+            }
         }
     };
 }

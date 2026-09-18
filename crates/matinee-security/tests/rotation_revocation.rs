@@ -25,6 +25,15 @@ macro_rules! rotation_revocation_tests {
             PublicKey::from_uncompressed(bytes).unwrap()
         }
 
+        /// The key a rotation installs. It differs from `key()` in every assertion below, so
+        /// a rotation that kept the retired key would be visible.
+        fn replacement_key() -> PublicKey {
+            let mut bytes = [0; crate::identity::UNCOMPRESSED_KEY_BYTES];
+            bytes[0] = 4;
+            bytes[1] = 9;
+            PublicKey::from_uncompressed(bytes).unwrap()
+        }
+
         fn credential(daemon: IdentityId, locator: &str) -> CredentialReference {
             CredentialReference::new("platform-store", locator, daemon, ids(99)).unwrap()
         }
@@ -74,7 +83,11 @@ macro_rules! rotation_revocation_tests {
             let mut steps = Vec::new();
             steps.push(RotationStep::ReplacementRegistered);
             principal
-                .complete_rotation(fingerprint('b'), credential(ids(1), "key-new"))
+                .complete_rotation(
+                    replacement_key(),
+                    fingerprint('b'),
+                    credential(ids(1), "key-new"),
+                )
                 .unwrap();
             steps.push(RotationStep::EpochAdvanced);
 
@@ -87,7 +100,24 @@ macro_rules! rotation_revocation_tests {
             );
             assert_eq!(principal.epoch(), 1);
             assert_eq!(principal.lifecycle(), PrincipalLifecycle::Active);
+            // One replacement: the key, the fingerprint that names it, and the locator that
+            // stores it all moved together.
             assert_eq!(principal.fingerprint(), &fingerprint('b'));
+            assert_eq!(principal.public_key(), &replacement_key());
+            assert_eq!(principal.credential().key_locator(), "key-new");
+
+            // A refused rotation leaves the whole prior credential intact.
+            let before = principal.clone();
+            principal.begin_rotation().unwrap();
+            assert!(
+                principal
+                    .complete_rotation(key(), fingerprint('c'), credential(ids(7), "key-foreign"))
+                    .is_err()
+            );
+            assert_eq!(principal.public_key(), before.public_key());
+            assert_eq!(principal.fingerprint(), before.fingerprint());
+            assert_eq!(principal.credential(), before.credential());
+            assert_eq!(principal.epoch(), before.epoch());
         }
 
         #[test]
@@ -106,10 +136,15 @@ macro_rules! rotation_revocation_tests {
             principal.activate().unwrap();
             principal.begin_rotation().unwrap();
             principal
-                .complete_rotation(fingerprint('b'), credential(ids(1), "key-new"))
+                .complete_rotation(
+                    replacement_key(),
+                    fingerprint('b'),
+                    credential(ids(1), "key-new"),
+                )
                 .unwrap();
             assert_eq!(principal.epoch(), 1);
             assert_ne!(principal.fingerprint(), &fingerprint('a'));
+            assert_ne!(principal.public_key(), &key());
 
             let capability = Capability::new(CapabilityAction::Read, "status").unwrap();
             let mut grant =
