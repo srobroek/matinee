@@ -2,8 +2,11 @@
 //!
 //! Protocol framing, transcript handling, cryptographic operations, authorization
 //! policy, origin validation, adapter access, and transition state remain behind
-//! private modules. Consumers interact only through the typed session boundary and
-//! the closed lifecycle command interface defined here.
+//! private modules. Consumers interact only through the typed session boundary, the
+//! closed lifecycle command interface, and the enrollment lifecycle re-exported
+//! here: the enrollment secret, the one-time private key, the required-event sink,
+//! the host attempt budgets, and the quarantine set are reachable through none of
+//! them.
 
 // Foundational modules. Every declaration resolves to real content: a module is
 // declared once it carries its own definitions, so channel framing, authorization
@@ -22,12 +25,24 @@ mod transition;
 mod test_support_fakes;
 
 use core::fmt;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 use crate::failures::{FailureCode, SecurityFailure};
-use crate::identity::{
-    Capability, Connection, ConnectionId, ConnectionLifecycle, Fingerprint, IdempotencyKey,
-    IdentityId, TransitionId, TransitionOperation,
+use crate::identity::{Capability, Connection, ConnectionLifecycle, IdempotencyKey, TransitionOperation};
+
+/// The enrollment lifecycle a host process drives: create a bounded one-time
+/// enrollment, seal its one-time key to one authenticated channel, consume the
+/// pairing proof once, then reconnect, update custody, or revoke the registered
+/// principal. Everything else about enrollment - secrets, transcript assembly,
+/// budgets, quarantine, and event emission - stays behind this boundary.
+pub use crate::enrollment::{
+    enrollment_proof_message, ChromeCapability, ChromeReconnectOutcome,
+    DevelopmentIdentityAllowance, EncryptedKeyOutput, EnrollmentBinding, EnrollmentBundle,
+    EnrollmentChannel, EnrollmentClock, EnrollmentConsumeError, EnrollmentConsumptionService,
+    EnrollmentCreateError, EnrollmentCreation, EnrollmentCustodyError, EnrollmentProof,
+};
+pub use crate::identity::{
+    ConnectionId, ExpiryResult, Fingerprint, IdentityId, PublicKey, TransitionId,
+    UNCOMPRESSED_KEY_BYTES,
 };
 
 /// v1 carries no secure-channel fragmentation, so one payload occupies one frame:
@@ -230,7 +245,7 @@ pub struct ChannelSession {
     connection: Connection,
     contract: u16,
     endpoint: String,
-    output_active: Arc<AtomicBool>,
+    open: bool,
 }
 
 impl ChannelSession {
@@ -257,32 +272,19 @@ impl ChannelSession {
             connection,
             contract,
             endpoint,
-            output_active: Arc::new(AtomicBool::new(true)),
+            open: true,
         })
     }
 
     /// Whether the session still carries payloads.
     pub fn is_open(&self) -> bool {
-        self.output_active.load(Ordering::Acquire)
-            && self.connection.lifecycle() == ConnectionLifecycle::Authenticated
+        self.open && self.connection.lifecycle() == ConnectionLifecycle::Authenticated
     }
 
     /// Close the session. A closed session accepts no later payload.
     pub fn close(&mut self) {
-        self.output_active.store(false, Ordering::Release);
+        self.open = false;
         self.connection.close();
-    }
-    /// Mint the only capability accepted by enrollment custody. A closed or
-    /// unauthenticated session cannot receive one-time key material.
-    pub fn enrollment_output_capability(
-        &self,
-    ) -> Result<crate::enrollment::AuthenticatedOutputCapability, crate::enrollment::EnrollmentCustodyError> {
-        if !self.is_open() {
-            return Err(crate::enrollment::EnrollmentCustodyError::ChannelNotAuthenticated);
-        }
-        crate::enrollment::AuthenticatedOutputCapability::from_authenticated_channel(
-            self.connection_id(), self.epoch(), Arc::clone(&self.output_active),
-        )
     }
 
     pub(crate) fn connection_id(&self) -> ConnectionId {

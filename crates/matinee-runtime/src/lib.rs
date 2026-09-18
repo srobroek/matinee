@@ -3,11 +3,19 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 pub(crate) mod config;
+pub(crate) mod enrollment;
 pub(crate) mod environment;
 pub(crate) mod error;
 pub(crate) mod platform;
 
 pub(crate) mod path_identity;
+pub use enrollment::{
+    ChromeReconnectOutcome, ConnectionId, DevelopmentIdentityAllowance, EnrollmentBinding,
+    EnrollmentConsumeError, EnrollmentCreateError, EnrollmentCreation, EnrollmentCustodyError,
+    EnrollmentFailure, EnrollmentHost, EnrollmentProof, ExpiryResult, Fingerprint, IdentityId,
+    PairedPrincipal, PairingCompletion, PairingSession, PairingTicket, PublicKey, SealedOneTimeKey,
+    TransitionId, UNCOMPRESSED_KEY_BYTES, enrollment_host,
+};
 pub use environment::{ConfigurationSource, EnvironmentInput, EnvironmentResult, Provenance};
 pub use error::{ConfigurationFailure, ConfigurationFailureCode};
 

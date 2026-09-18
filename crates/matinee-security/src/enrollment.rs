@@ -10,8 +10,8 @@ use ring::signature::KeyPair;
 use ring::{digest, rand, signature};
 
 use crate::events::{
-    emit_required, EndpointClass, EventBoundary, EventOutcome, EventTime, SafeNextAction,
-    SecurityCode, SecurityEvent, SecurityEventSink,
+    emit_required, AggregationState, EndpointClass, EventBoundary, EventOutcome, EventTime,
+    SafeNextAction, SecurityCode, SecurityEvent, SecurityEventSink,
 };
 use crate::identity::{
     ConnectionId, EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment,
@@ -194,6 +194,8 @@ impl EnrollmentBundle {
         })
     }
     pub fn enrollment(&self) -> &ExtensionEnrollment { &self.enrollment }
+    pub fn enrollment_id(&self) -> TransitionId { self.enrollment_id }
+    pub fn expiry_deadline_ms(&self) -> u64 { self.expiry_deadline_ms }
     pub fn lifecycle(&self) -> EnrollmentLifecycle { self.enrollment.lifecycle() }
     pub(crate) fn secret(&self) -> &[u8; SECRET_BYTES] { &self.secret }
     pub fn one_time_public_key(&self) -> &PublicKey { &self.one_time_public_key }
@@ -243,6 +245,18 @@ impl AuthenticatedOutputCapability {
         rng.fill(&mut key).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
         rng.fill(&mut nonce).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
         Ok(Self { connection, epoch, key, nonce, active })
+    }
+}
+
+impl fmt::Debug for AuthenticatedOutputCapability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedOutputCapability")
+            .field("connection", &self.connection)
+            .field("epoch", &self.epoch)
+            .field("key", &"<redacted>")
+            .field("nonce", &"<redacted>")
+            .finish()
     }
 }
 
@@ -319,7 +333,7 @@ impl HostAttemptBudget {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ChromeCapability {
+pub struct ChromeCapability {
     origin: String,
     store_metadata: String,
     update_metadata: String,
@@ -329,23 +343,32 @@ pub(crate) struct ChromeCapability {
 }
 
 impl ChromeCapability {
-    pub(crate) fn new(binding: &EnrollmentBinding<'_>) -> Result<Self, EnrollmentConsumeError> {
+    /// The capability the browser reported for one pairing attempt.
+    ///
+    /// `storage_local` and `non_exportable` are observations, never assumptions: a
+    /// browser that cannot preserve `chrome.storage.local` persistence or a
+    /// non-exportable WebCrypto key reports `false`, and consumption then refuses.
+    pub fn reported(
+        binding: &EnrollmentBinding<'_>,
+        storage_local: bool,
+        non_exportable: bool,
+    ) -> Result<Self, EnrollmentConsumeError> {
         if binding.origin.is_empty() || binding.store_metadata.is_empty() || binding.update_metadata.is_empty() || binding.install_metadata.is_empty()
             || !validate_origin(binding.origin) || !validate_metadata(binding.store_metadata, false)
             || !validate_metadata(binding.update_metadata, true) || !validate_metadata(binding.install_metadata, false) {
             return Err(EnrollmentConsumeError::CapabilityRejected);
         }
-        Ok(Self { origin: binding.origin.to_string(), store_metadata: binding.store_metadata.to_string(), update_metadata: binding.update_metadata.to_string(), install_metadata: binding.install_metadata.to_string(), storage_local: true, non_exportable: true })
+        Ok(Self { origin: binding.origin.to_string(), store_metadata: binding.store_metadata.to_string(), update_metadata: binding.update_metadata.to_string(), install_metadata: binding.install_metadata.to_string(), storage_local, non_exportable })
     }
-    pub(crate) fn storage_local(&self) -> bool { self.storage_local }
-    pub(crate) fn non_exportable(&self) -> bool { self.non_exportable }
+    pub fn storage_local(&self) -> bool { self.storage_local }
+    pub fn non_exportable(&self) -> bool { self.non_exportable }
     fn matches(&self, binding: &EnrollmentBinding<'_>) -> bool {
         self.origin == binding.origin && self.store_metadata == binding.store_metadata && self.update_metadata == binding.update_metadata && self.install_metadata == binding.install_metadata
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ChromeReconnectOutcome { Reconnected, Mismatch, Revoked }
+pub enum ChromeReconnectOutcome { Reconnected, Mismatch, Revoked }
 
 #[derive(Clone, Debug)]
 struct Registration {
@@ -365,31 +388,89 @@ struct ConsumptionState {
     quarantined: Vec<Fingerprint>,
 }
 
+/// The process-lifetime registry, host budgets, quarantine set, and required-event
+/// sink for enrollment consumption.
+///
+/// One instance serves every connection of a host process: replacing a connection
+/// replaces its channel only, never the registrations or the host attempt budgets.
 #[derive(Debug, Default)]
-pub struct EnrollmentConsumptionService { state: Mutex<ConsumptionState> }
+pub struct EnrollmentConsumptionService {
+    state: Mutex<ConsumptionState>,
+    events: Mutex<AggregationState>,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EnrollmentChannelState { Open, Closed }
+pub(crate) enum EnrollmentChannelState { Open, Closed }
+
+/// One authenticated native channel to a pairing peer.
+///
+/// The channel owns the only sealing capability for its connection, so closing it
+/// destroys the ability to seal or recover one-time key material on that
+/// connection. A replacement connection opens a new channel with a new capability.
 #[derive(Debug)]
-pub struct EnrollmentChannel { state: EnrollmentChannelState }
+pub struct EnrollmentChannel {
+    state: EnrollmentChannelState,
+    capability: AuthenticatedOutputCapability,
+    active: Arc<AtomicBool>,
+}
 impl EnrollmentChannel {
-    pub(crate) fn new() -> Self { Self { state: EnrollmentChannelState::Open } }
-    pub(crate) fn close(&mut self) { self.state = EnrollmentChannelState::Closed; }
+    /// Open the channel for one authenticated connection at its current epoch.
+    pub fn open(connection: ConnectionId, epoch: u64) -> Result<Self, EnrollmentCustodyError> {
+        let active = Arc::new(AtomicBool::new(true));
+        let capability = AuthenticatedOutputCapability::from_authenticated_channel(
+            connection, epoch, Arc::clone(&active),
+        )?;
+        Ok(Self { state: EnrollmentChannelState::Open, capability, active })
+    }
+    pub fn connection(&self) -> ConnectionId { self.capability.connection }
+    pub fn epoch(&self) -> u64 { self.capability.epoch }
+    pub fn is_open(&self) -> bool { self.state == EnrollmentChannelState::Open }
+    pub fn close(&mut self) {
+        self.state = EnrollmentChannelState::Closed;
+        self.active.store(false, Ordering::Release);
+    }
     pub(crate) fn state(&self) -> EnrollmentChannelState { self.state }
+    /// Seal the bundle's one-time PKCS#8 key for this channel's peer.
+    ///
+    /// This is the only operation that moves that key out of the bundle, and it
+    /// succeeds once: a second call reports `AlreadyTransferred`.
+    pub fn seal_one_time_key(
+        &self, bundle: &mut EnrollmentBundle,
+    ) -> Result<EncryptedKeyOutput, EnrollmentCustodyError> {
+        bundle.encrypted_private_key_output(&self.capability)
+    }
+    /// The peer half of the same channel: recover a sealed one-time key.
+    ///
+    /// Only this channel's capability opens its own output, so a closed channel, a
+    /// replaced connection, or a stale epoch recovers nothing.
+    pub fn open_sealed(&self, sealed: &EncryptedKeyOutput) -> Result<Vec<u8>, EnrollmentCustodyError> {
+        sealed.decrypt_for_channel(&self.capability)
+    }
 }
 
 impl EnrollmentConsumptionService {
-    pub(crate) fn registered_public_key(&self, identity: IdentityId) -> Option<PublicKey> {
+    pub fn registered_public_key(&self, identity: IdentityId) -> Option<PublicKey> {
         let bytes = self.state.lock().ok()?.registrations.get(&identity)?.key;
         PublicKey::from_uncompressed(bytes).ok()
     }
 
-    pub(crate) fn registered_fingerprint(&self, identity: IdentityId) -> Option<Fingerprint> {
+    pub fn registered_fingerprint(&self, identity: IdentityId) -> Option<Fingerprint> {
         self.state.lock().ok()?.registrations.get(&identity).map(|entry| entry.fingerprint.clone())
     }
 
-    pub(crate) fn is_quarantined(&self, fingerprint: &Fingerprint) -> bool {
+    pub fn is_quarantined(&self, fingerprint: &Fingerprint) -> bool {
         self.state.lock().map(|state| state.quarantined.iter().any(|item| item == fingerprint)).unwrap_or(true)
     }
+    /// The counted failures for one endpoint's host key. The contract tests read
+    /// this to prove the host budget is independent of any enrollment's own count.
+    #[cfg(test)]
+    pub(crate) fn host_failures(&self, endpoint: &str) -> u8 {
+        let Some(host) = host_key(endpoint) else { return 0 };
+        self.state
+            .lock()
+            .map(|state| state.host_budgets.get(&host).map_or(0, HostAttemptBudget::failures))
+            .unwrap_or(0)
+    }
+
 
     pub(crate) fn consume_proof<S: SecurityEventSink>(
         &self,
@@ -490,8 +571,29 @@ impl EnrollmentConsumptionService {
         });
         Ok(fingerprint)
     }
+    /// Consume one pairing proof against this service's own required-event sink.
+    ///
+    /// This is the boundary a host process calls. The sink lives as long as the
+    /// service, so rate-limit and rejection facts aggregate across connections
+    /// instead of restarting with every channel.
+    pub fn consume_pairing_proof(
+        &self,
+        bundle: &mut EnrollmentBundle,
+        proof: &EnrollmentProof,
+        expected_identity: IdentityId,
+        clock: &EnrollmentClock,
+        binding: &EnrollmentBinding<'_>,
+        capability: &ChromeCapability,
+        channel: &mut EnrollmentChannel,
+    ) -> Result<Fingerprint, EnrollmentConsumeError> {
+        let mut events = self.events.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        self.consume_proof(
+            bundle, proof, expected_identity, clock, binding, capability, channel,
+            Some(&mut *events),
+        )
+    }
 
-    pub(crate) fn reconnect(&self, identity: IdentityId, fingerprint: &Fingerprint) -> ChromeReconnectOutcome {
+    pub fn reconnect(&self, identity: IdentityId, fingerprint: &Fingerprint) -> ChromeReconnectOutcome {
         let Ok(state) = self.state.lock() else { return ChromeReconnectOutcome::Mismatch; };
         let Some(registration) = state.registrations.get(&identity) else { return ChromeReconnectOutcome::Mismatch; };
         if registration.revoked {
@@ -503,7 +605,7 @@ impl EnrollmentConsumptionService {
         }
     }
 
-    pub(crate) fn update_custody(&self, identity: IdentityId, key: &PublicKey) -> Result<Fingerprint, EnrollmentConsumeError> {
+    pub fn update_custody(&self, identity: IdentityId, key: &PublicKey) -> Result<Fingerprint, EnrollmentConsumeError> {
         let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
         let old_fingerprint = {
             let registration = state.registrations.get(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?;
@@ -521,7 +623,7 @@ impl EnrollmentConsumptionService {
         Ok(fingerprint)
     }
 
-    pub(crate) fn revoke(&self, identity: IdentityId) -> Result<(), EnrollmentConsumeError> {
+    pub fn revoke(&self, identity: IdentityId) -> Result<(), EnrollmentConsumeError> {
         let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
         state.registrations.get_mut(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?.revoked = true;
         Ok(())
@@ -545,24 +647,29 @@ fn proof_message(bundle: &EnrollmentBundle, long_term: &PublicKey) -> Vec<u8> {
     message
 }
 
-pub(crate) fn enrollment_proof_message(bundle: &EnrollmentBundle, long_term: &PublicKey) -> Vec<u8> {
+/// The exact bytes a pairing client signs with the one-time key.
+///
+/// The daemon publishes this transcript for one pending enrollment and one offered
+/// long-term public key, so the client signs what consumption verifies and neither
+/// side reimplements the format.
+pub fn enrollment_proof_message(bundle: &EnrollmentBundle, long_term: &PublicKey) -> Vec<u8> {
     proof_message(bundle, long_term)
 }
 
 /// The values supplied by the browser during `/v1/pair`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct EnrollmentBinding<'a> {
-    pub(crate) origin: &'a str,
-    pub(crate) endpoint: &'a str,
-    pub(crate) store_metadata: &'a str,
-    pub(crate) update_metadata: &'a str,
-    pub(crate) install_metadata: &'a str,
-    pub(crate) development_allowance: DevelopmentIdentityAllowance,
+pub struct EnrollmentBinding<'a> {
+    pub origin: &'a str,
+    pub endpoint: &'a str,
+    pub store_metadata: &'a str,
+    pub update_metadata: &'a str,
+    pub install_metadata: &'a str,
+    pub development_allowance: DevelopmentIdentityAllowance,
 }
 
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DevelopmentIdentityAllowance {
+pub enum DevelopmentIdentityAllowance {
     None,
     Explicit { warning_acknowledged: bool },
 }
@@ -799,7 +906,7 @@ mod tests {
 
     #[test]
     fn creates_bounded_redacted_one_use_bundle() {
-        let mut bundle = create_enrollment(input()).unwrap();
+        let bundle = create_enrollment(input()).unwrap();
         assert_eq!(bundle.secret().len(), SECRET_BYTES);
         assert_eq!(bundle.one_time_public_key_fingerprint().as_str().len(), 64);
         assert!(format!("{bundle:?}").contains("<redacted>"));

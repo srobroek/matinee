@@ -10,18 +10,14 @@ macro_rules! enrollment_custody_tests {
                 "127.0.0.1:7777", crate::identity::ExpiryResult::valid(600_000).unwrap(),
             );
             let mut bundle = crate::enrollment::create_enrollment(input).unwrap();
-            let mut connection = crate::identity::Connection::new(
-                crate::identity::ConnectionId::new(uuid::Uuid::from_u128(0x42)),
-                crate::identity::IdentityId::new(uuid::Uuid::from_u128(0x43)),
-                1, 1, [0; 12], [1; 12], uuid::Uuid::from_u128(0x44), uuid::Uuid::from_u128(0x45),
-            );
-            connection.authenticate().unwrap();
-            let session = crate::ChannelSession::establish(connection, 1, "127.0.0.1:7777").unwrap();
-            let capability = session.enrollment_output_capability().unwrap();
-            let output = bundle.encrypted_private_key_output(&capability).unwrap();
+            let channel = crate::enrollment::EnrollmentChannel::open(
+                crate::identity::ConnectionId::new(uuid::Uuid::from_u128(0x42)), 1,
+            )
+            .expect("open native channel");
+            let output = channel.seal_one_time_key(&mut bundle).unwrap();
             assert!(!output.ciphertext().is_empty());
-            assert!(bundle.encrypted_private_key_output(&capability).is_err());
-            assert!(!output.decrypt_for_channel(&capability).unwrap().is_empty());
+            assert!(channel.seal_one_time_key(&mut bundle).is_err());
+            assert!(!channel.open_sealed(&output).unwrap().is_empty());
             assert!(!format!("{bundle:?}").contains("PKCS#8"));
         }
     };

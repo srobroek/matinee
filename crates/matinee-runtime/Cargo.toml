@@ -6,10 +6,15 @@ rust-version = "1.85"
 publish = false
 
 [dependencies]
+matinee-security = { path = "../matinee-security" }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 directories = "6"
 unicode-normalization = "0.1"
+
+[dev-dependencies]
+ring = "0.17"
+uuid = { version = "1", features = ["v7"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

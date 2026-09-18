@@ -95,20 +95,22 @@ macro_rules! enrollment_contract_tests {
         #[test]
         fn one_time_private_key_is_owned_by_authenticated_encrypted_output() {
             let mut bundle = create_enrollment(creation()).expect("valid enrollment creation");
-            let mut connection = crate::identity::Connection::new(
-                ConnectionId::new(Uuid::from_u128(0x30)),
-                IdentityId::new(Uuid::from_u128(0x31)),
-                1, 1, [0; 12], [1; 12], Uuid::from_u128(0x32), Uuid::from_u128(0x33),
-            );
-            connection.authenticate().unwrap();
-            let session = crate::ChannelSession::establish(connection, 1, "127.0.0.1:7777").unwrap();
-            let capability = session.enrollment_output_capability().unwrap();
-            let output = bundle.encrypted_private_key_output(&capability).unwrap();
+            let mut channel = crate::enrollment::EnrollmentChannel::open(
+                ConnectionId::new(Uuid::from_u128(0x30)), 1,
+            )
+            .expect("open native channel");
+            let output = channel.seal_one_time_key(&mut bundle).unwrap();
             assert!(!output.ciphertext().is_empty());
-            assert!(bundle.encrypted_private_key_output(&capability).is_err(), "PKCS#8 transfer is one-use");
-            let plain = output.decrypt_for_channel(&capability).unwrap();
+            assert!(channel.seal_one_time_key(&mut bundle).is_err(), "PKCS#8 transfer is one-use");
+            let plain = channel.open_sealed(&output).unwrap();
             assert!(!plain.is_empty());
             assert!(!format!("{bundle:?}").contains("PKCS#8"));
+            channel.close();
+            assert_eq!(
+                channel.open_sealed(&output),
+                Err(crate::enrollment::EnrollmentCustodyError::ChannelNotAuthenticated),
+                "a closed channel recovers no one-time key",
+            );
         }
 
         #[test]

@@ -735,9 +735,12 @@ version = "0.0.2"
 dependencies = [
  "directories",
  "libc",
+ "matinee-security",
+ "ring",
  "serde",
  "toml",
  "unicode-normalization",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
