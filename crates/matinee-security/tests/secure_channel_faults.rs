@@ -2,15 +2,17 @@ macro_rules! secure_channel_faults_tests {
     () => {
         mod secure_channel_faults_inner {
             use crate::test_support_channel::{
-                CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner, capability,
-                establish_pair, establish_pair_at_epochs, establish_pair_with_ranges,
-                fixture_principal, id, owned_operation, owned_projection, registered_principal,
+                CONNECTION, DAEMON, ENDPOINT, OWNER, PRINCIPAL, RecordingSink, RingSigner, SCOPE,
+                capability, establish_pair, establish_pair_at_epochs, establish_pair_for,
+                establish_pair_with_ranges, fixture_principal, id, owned_operation,
+                owned_projection, registered_principal,
             };
             use crate::{
                 AuthorizedOutput, CapabilityAction, ChannelSigner, ClientHandshake,
-                ClientHandshakeConfig, ConnectionId, FailureBoundary, FailureCode, PayloadKind,
-                Principal, PrincipalKind, ProjectionClass, PublicKey, SafeNextAction, SecurityCode,
-                ServerHandshake, ServerHandshakeConfig,
+                ClientHandshakeConfig, ConnectionId, ExtensionGrant, FailureBoundary, FailureCode,
+                ObjectOwner, PayloadKind, Principal, PrincipalKind, ProjectionClass, PublicKey,
+                SafeNextAction, SecurityCode, ServerHandshake, ServerHandshakeConfig, SessionInput,
+                SessionProjection,
             };
             use std::collections::BTreeMap;
             use uuid::Uuid;
@@ -1452,8 +1454,229 @@ macro_rules! secure_channel_faults_tests {
                 assert_eq!(accepted + rejected, 72, "corpus size");
             }
 
-            /// SC-003: 1,000 seeded valid and invalid native and extension
-            /// handshake cases, every one classified identically by both peers.
+            /// The families whose refusal lands after the hello. Each one carries a
+            /// hello both peers admit, because a replay is only reachable through an
+            /// admitted hello.
+            const REPLAY_CLIENT_PROOF: &str = "replay.client-proof";
+            const REPLAY_SERVER_PROOF: &str = "replay.server-proof";
+            const REPLAY_COMPLETED: &str = "replay.completed-handshake";
+            const REPLAY_PRODUCT_FRAME: &str = "replay.product-frame";
+
+            /// The seeded mix: 30 families drawn by `index % 30`, so the first ten
+            /// families take 34 cases and the remaining twenty take 33. Exactly two
+            /// families accept, `valid` and `nonce-rotate` at indices zero and one, so 68
+            /// cases complete a session and 932 are refused at the stage their family
+            /// names.
+            const CAMPAIGN_FAMILY_COUNT: usize = 30;
+            const CAMPAIGN_ACCEPTED: usize = 68;
+            const CAMPAIGN_REJECTED: usize = 932;
+            /// The four replay families carry valid hellos, so 132 refused cases are
+            /// admitted at the hello stage and refused later.
+            const CAMPAIGN_PER_FAMILY: usize = 33;
+            const CAMPAIGN_HELLO_ADMITTED: usize = CAMPAIGN_ACCEPTED + 4 * CAMPAIGN_PER_FAMILY;
+            /// Every admitted case asks the peer for the client half except the
+            /// frame-stage family, whose session is the corpus one both peers already key.
+            const CAMPAIGN_CLIENT_REQUESTS: usize =
+                CAMPAIGN_HELLO_ADMITTED - CAMPAIGN_PER_FAMILY;
+            /// Two product payloads per accepted case cross between the native daemon and
+            /// the extension peer, and two more cross the native pair.
+            const CAMPAIGN_DISPATCHES: usize = 4;
+
+            fn encode_hex(bytes: &[u8]) -> String {
+                use std::fmt::Write as _;
+                let mut out = String::with_capacity(bytes.len() * 2);
+                for byte in bytes {
+                    write!(out, "{byte:02x}").expect("a string never fails to write");
+                }
+                out
+            }
+
+            /// Run the peer with one JSON request document on its standard input. The peer
+            /// reads to end of file before it answers, so the write cannot deadlock.
+            fn run_peer_with_input(args: &[&str], input: &str) -> String {
+                use std::io::Write as _;
+                let mut child = std::process::Command::new("node")
+                    .arg(FIXTURE)
+                    .args(args)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("Node.js WebCrypto peer");
+                child
+                    .stdin
+                    .take()
+                    .expect("peer standard input")
+                    .write_all(input.as_bytes())
+                    .expect("the peer reads its request");
+                let output = child.wait_with_output().expect("peer exit status");
+                assert!(
+                    output.status.success(),
+                    "peer {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8(output.stdout).expect("peer emits utf-8")
+            }
+
+            /// One peer run: every case-keyed record by index, plus the summary line.
+            fn peer_records(output: &str) -> (BTreeMap<u64, Json>, Json) {
+                let mut records = BTreeMap::new();
+                let mut summary = None;
+                for line in output.lines() {
+                    let record = parse_json(line).expect("peer emits strict json");
+                    let index = match record.get("case") {
+                        Some(Json::Number(value)) => Some(*value),
+                        _ => None,
+                    };
+                    match index {
+                        Some(index) => assert!(
+                            records.insert(index, record).is_none(),
+                            "case {index} recorded twice"
+                        ),
+                        None => summary = Some(record),
+                    }
+                }
+                (records, summary.expect("peer summary line"))
+            }
+
+            fn campaign_server_config(
+                principal: Principal,
+                daemon_signer: &RingSigner,
+                reference: &Reference,
+            ) -> ServerHandshakeConfig {
+                ServerHandshakeConfig::new(
+                    ENDPOINT,
+                    principal,
+                    id(DAEMON),
+                    daemon_signer.public_key().clone(),
+                    2,
+                    4,
+                    reference.connection,
+                )
+                .expect("server configuration")
+            }
+
+            fn campaign_client_config(
+                client: &RingSigner,
+                daemon: &RingSigner,
+            ) -> ClientHandshakeConfig {
+                ClientHandshakeConfig::new(
+                    ENDPOINT,
+                    id(PRINCIPAL),
+                    client.public_key().clone(),
+                    id(DAEMON),
+                    daemon.public_key().clone(),
+                    EPOCH,
+                    1,
+                    3,
+                )
+                .expect("client configuration")
+            }
+
+            /// The operation a campaign case authorizes. A browser-extension principal
+            /// reaches a product payload only through a grant, so the extension half of
+            /// the campaign carries one and the MCP half carries none.
+            fn case_operation(grant: Option<&ExtensionGrant>) -> SessionInput<'_> {
+                SessionInput::new(
+                    capability(CapabilityAction::Read, SCOPE),
+                    PayloadKind::Command,
+                    ObjectOwner::Owned(id(OWNER)),
+                    grant,
+                )
+            }
+
+            fn case_projection<'a>(
+                grant: Option<&'a ExtensionGrant>,
+                payload: &'a [u8],
+            ) -> SessionProjection<'a> {
+                SessionProjection::new(
+                    ProjectionClass::Response,
+                    capability(CapabilityAction::Read, SCOPE),
+                    ObjectOwner::Owned(id(OWNER)),
+                    grant,
+                    payload,
+                )
+            }
+
+            /// What one campaign case's subject artifact reached.
+            ///
+            /// SC-003 fixes the frontier at product payload acceptance, so a case is
+            /// recorded by the stages it crossed and not by a failure code alone. A replay
+            /// needs a premise — the donor handshake a proof was lifted from, or the first
+            /// product frame a duplicate follows — and that premise is scaffolding whose
+            /// dispatch is counted in `dispatched_before_reject`. What the replayed or
+            /// mutated artifact itself reached is `dispatched_after_reject`, which SC-003
+            /// fixes at zero for every invalid vector however valid its premise.
+            #[derive(Debug, Default)]
+            struct CaseReach {
+                session_created: bool,
+                traffic_keys_agreed: bool,
+                dispatched_before_reject: usize,
+                dispatched_after_reject: usize,
+                channel_open: bool,
+                code: Option<String>,
+            }
+
+            /// One finished case: the family it was drawn from, the stage that family fixes
+            /// its outcome at, the failure code the family declares there, and what the
+            /// case actually reached.
+            struct CaseOutcome {
+                family: String,
+                stage: String,
+                expected: Option<String>,
+                reach: CaseReach,
+            }
+
+            /// The artifact whose outcome one case is about, held between the hello pass
+            /// and the completion pass because the peer answers all of them in one run.
+            enum CaseSubject {
+                /// The case's own admitted handshake, completed with the peer.
+                Complete(ServerHandshake),
+                /// A second transcript for the same hello, which the donor's client proof
+                /// is replayed into. `donor` is present when the family requires the donor
+                /// handshake to complete first.
+                ClientProofReplay {
+                    victim: ServerHandshake,
+                    donor: Option<ServerHandshake>,
+                },
+                /// A fresh native client, to which a foreign server proof is replayed.
+                ServerProofReplay {
+                    client: ClientHandshake,
+                    proof: Vec<u8>,
+                },
+                /// A product frame replayed on the corpus session both peers key.
+                ProductFrameReplay { framed: Vec<u8>, payload: Vec<u8> },
+                /// The hello never reached a later stage.
+                Refused,
+            }
+
+            struct CasePlan {
+                index: usize,
+                family: String,
+                stage: String,
+                extension: bool,
+                expected: Option<String>,
+                hello_code: Option<String>,
+                subject: CaseSubject,
+            }
+
+            /// SC-003: 1,000 seeded valid and invalid native and extension handshake
+            /// cases. Every accepted case completes a session and round-trips a product
+            /// frame in both directions, and every invalid case is refused before product
+            /// payload acceptance: no session, no traffic key, no dispatch, no open
+            /// channel.
+            ///
+            /// Peer agreement is per stage and it is deliberately not uniform. Both peers
+            /// classify every hello. The extension peer also runs the client half of every
+            /// admitted case, so an accepted case's traffic keys are derived twice and
+            /// independently, and the product frames the daemon opens and seals are the
+            /// peer's own; it classifies the server-proof replay as a client and the
+            /// product-frame replay from its own counter state. It cannot classify the
+            /// daemon-side client-proof replay or the session replay, because it holds no
+            /// daemon role and keeps no session state across invocations. For those two
+            /// families the peer supplies the replayed artifact instead — a valid client
+            /// signature over the donor transcript — and the production path owns the
+            /// verdict, checked against the code its family declares.
             #[test]
             fn sc003_thousand_handshake_cases_classify_identically_on_both_peers() {
                 let started = std::time::Instant::now();
@@ -1466,116 +1689,630 @@ macro_rules! secure_channel_faults_tests {
                     EXTENSION_PRINCIPAL,
                     PrincipalKind::BrowserExtension,
                     reference.client_key.clone(),
+                    ceiling.clone(),
+                    EPOCH,
+                );
+                let grant = ExtensionGrant::new(
+                    id(EXTENSION_PRINCIPAL),
+                    id(OWNER),
+                    vec![capability(CapabilityAction::Read, SCOPE)],
+                    EPOCH,
+                )
+                .expect("a grant at the registered epoch");
+                // The campaign's registered principals hold the extension peer's identity
+                // key, so a native pair needs its own principals under a key the native
+                // side can sign with.
+                let native_signer = RingSigner::generate();
+                let native_mcp = fixture_principal(native_signer.public_key().clone(), EPOCH);
+                let native_extension = registered_principal(
+                    EXTENSION_PRINCIPAL,
+                    PrincipalKind::BrowserExtension,
+                    native_signer.public_key().clone(),
                     ceiling,
                     EPOCH,
                 );
 
-                let output = run_peer(&[
+                let (records, summary) = peer_records(&run_peer(&[
                     "--campaign",
                     "--seed",
                     CAMPAIGN_SEED,
                     "--cases",
                     &CAMPAIGN_CASES.to_string(),
-                ]);
-                let mut families: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-                let mut accepted = 0usize;
-                let mut rejected = 0usize;
-                let mut cases = 0usize;
-                let mut summary = None;
-                for line in output.lines() {
-                    let record = parse_json(line).expect("peer emits strict json");
-                    if record.get("case").is_none() {
-                        summary = Some(record);
-                        continue;
-                    }
-                    let index = record.integer("case");
-                    let family = record.text("family").to_owned();
-                    let expected_accept = record.text("expected") == "accept";
-                    let expected_code = record
-                        .maybe_text("expected_failure_code")
-                        .map(str::to_owned);
-                    let peer_code = record.maybe_text("failure_code").map(str::to_owned);
-                    assert!(
-                        record.flag("agrees"),
-                        "case {index} ({family}): the peer disagreed with its own family"
-                    );
+                ]));
 
-                    let principal = if record.text("peer") == "browser-extension" {
+                // Pass one: the daemon's hello admission, on the peer's exact bytes.
+                let mut plans = Vec::with_capacity(CAMPAIGN_CASES);
+                let mut finish_requests: Vec<String> = Vec::new();
+                for (index, record) in &records {
+                    let index = *index as usize;
+                    let family = record.text("family").to_owned();
+                    let stage = record.text("stage").to_owned();
+                    let extension_peer = record.text("peer") == "browser-extension";
+                    let principal = if extension_peer {
                         extension.clone()
                     } else {
                         mcp.clone()
                     };
-                    let config = ServerHandshakeConfig::new(
-                        ENDPOINT,
-                        principal,
-                        id(DAEMON),
-                        daemon_signer.public_key().clone(),
-                        2,
-                        4,
-                        reference.connection,
-                    )
-                    .expect("server configuration");
-                    let mut sink = RecordingSink::default();
                     let hello = decode_hex(record.text("hello_hex"));
-                    let native = ServerHandshake::accept(config, &hello, &daemon_signer, &mut sink)
+                    let mut sink = RecordingSink::default();
+                    let admitted = ServerHandshake::accept(
+                        campaign_server_config(principal, &daemon_signer, &reference),
+                        &hello,
+                        &daemon_signer,
+                        &mut sink,
+                    );
+                    let hello_code = admitted
+                        .as_ref()
                         .err()
                         .map(|failure| failure.code().as_str().to_owned());
-
-                    assert_eq!(
-                        native.is_none(),
-                        expected_accept,
-                        "case {index} ({family}): native outcome against the declared family"
+                    let peer_hello_code =
+                        record.maybe_text("hello_failure_code").map(str::to_owned);
+                    let declared_hello_code = record
+                        .maybe_text("hello_expected_failure_code")
+                        .map(str::to_owned);
+                    assert!(
+                        record.flag("agrees"),
+                        "case {index} ({family}): the peer disagreed with its own family"
                     );
                     assert_eq!(
-                        native, expected_code,
+                        hello_code.is_none(),
+                        record.text("hello_expected") == "accept",
+                        "case {index} ({family}): native admission against the declared family"
+                    );
+                    assert_eq!(
+                        hello_code, declared_hello_code,
                         "case {index} ({family}): native code against the declared family"
                     );
                     assert_eq!(
-                        native, peer_code,
+                        hello_code, peer_hello_code,
                         "case {index} ({family}): native and extension peers disagree"
                     );
-                    if native.is_none() {
-                        accepted += 1;
-                        assert!(
-                            sink.events.is_empty(),
-                            "case {index} accepted with an event"
-                        );
-                    } else {
-                        rejected += 1;
-                        assert_eq!(sink.events.len(), 1, "case {index} bounded event");
+
+                    let subject = match admitted {
+                        Err(_) => {
+                            assert_eq!(sink.events.len(), 1, "case {index} bounded event");
+                            CaseSubject::Refused
+                        }
+                        Ok((pending, proof)) => {
+                            assert!(
+                                sink.events.is_empty(),
+                                "case {index} admitted with an event"
+                            );
+                            match family.as_str() {
+                                REPLAY_CLIENT_PROOF | REPLAY_COMPLETED => {
+                                    let principal = if extension_peer {
+                                        extension.clone()
+                                    } else {
+                                        mcp.clone()
+                                    };
+                                    let (victim, second) = ServerHandshake::accept(
+                                        campaign_server_config(
+                                            principal,
+                                            &daemon_signer,
+                                            &reference,
+                                        ),
+                                        &hello,
+                                        &daemon_signer,
+                                        &mut sink,
+                                    )
+                                    .expect("the recorded hello still satisfies every field");
+                                    assert_ne!(
+                                        second, proof,
+                                        "case {index}: each accept mints its own nonce"
+                                    );
+                                    // The peer signs the donor transcript, so the replayed
+                                    // proof is a valid one from the registered principal.
+                                    finish_requests.push(format!(
+                                        "{{\"case\":{index},\"hello_hex\":\"{}\",\"proof_hex\":\"{}\"}}",
+                                        encode_hex(&hello),
+                                        encode_hex(&proof)
+                                    ));
+                                    CaseSubject::ClientProofReplay {
+                                        victim,
+                                        donor: (family == REPLAY_COMPLETED).then_some(pending),
+                                    }
+                                }
+                                REPLAY_SERVER_PROOF => {
+                                    let (client, client_hello) = ClientHandshake::start(
+                                        campaign_client_config(&native_signer, &daemon_signer),
+                                    )
+                                    .expect("a fresh client hello");
+                                    // The peer classifies the same replay from its own
+                                    // client half, against the same fresh hello.
+                                    finish_requests.push(format!(
+                                        "{{\"case\":{index},\"hello_hex\":\"{}\",\"proof_hex\":\"{}\"}}",
+                                        encode_hex(&client_hello),
+                                        encode_hex(&proof)
+                                    ));
+                                    CaseSubject::ServerProofReplay { client, proof }
+                                }
+                                REPLAY_PRODUCT_FRAME => CaseSubject::ProductFrameReplay {
+                                    framed: decode_hex(record.text("frame_hex")),
+                                    payload: decode_hex(record.text("frame_payload_hex")),
+                                },
+                                _ => {
+                                    finish_requests.push(format!(
+                                        "{{\"case\":{index},\"hello_hex\":\"{}\",\"proof_hex\":\"{}\"}}",
+                                        encode_hex(&hello),
+                                        encode_hex(&proof)
+                                    ));
+                                    CaseSubject::Complete(pending)
+                                }
+                            }
+                        }
+                    };
+                    plans.push(CasePlan {
+                        index,
+                        family,
+                        stage,
+                        extension: extension_peer,
+                        expected: record.maybe_text("expected_failure_code").map(str::to_owned),
+                        hello_code,
+                        subject,
+                    });
+                }
+                assert_eq!(
+                    plans.iter().filter(|plan| plan.hello_code.is_none()).count(),
+                    CAMPAIGN_HELLO_ADMITTED,
+                    "the admitted hellos are the accepting families plus the replay families"
+                );
+                assert_eq!(
+                    finish_requests.len(),
+                    CAMPAIGN_CLIENT_REQUESTS,
+                    "every admitted case needing a client proof asks the peer for one"
+                );
+
+                // The peer completes the client half of every admitted case: it verifies
+                // the server proof, signs the client proof, and derives its own traffic
+                // keys from the completed transcript.
+                let (answers, finish_summary) = peer_records(&run_peer_with_input(
+                    &["--campaign-finish"],
+                    &format!(
+                        "{{\"daemon_key_hex\":\"{}\",\"daemon_hex\":\"{}\",\"requests\":[{}]}}",
+                        encode_hex(daemon_signer.public_key().as_bytes()),
+                        encode_hex(id(DAEMON).get().as_bytes()),
+                        finish_requests.join(",")
+                    ),
+                ));
+                assert_eq!(
+                    finish_summary.integer("requests") as usize,
+                    CAMPAIGN_CLIENT_REQUESTS
+                );
+                assert_eq!(answers.len(), CAMPAIGN_CLIENT_REQUESTS);
+
+                // Pass two: complete every admitted case, or drive its replay.
+                let mut outcomes: BTreeMap<usize, CaseOutcome> = BTreeMap::new();
+                let mut open_requests: Vec<String> = Vec::new();
+                let mut open_expectations: Vec<(usize, Vec<u8>)> = Vec::new();
+                for plan in plans {
+                    let index = plan.index;
+                    let family = plan.family;
+                    let grant = plan.extension.then_some(&grant);
+                    let mut reach = CaseReach {
+                        code: plan.hello_code,
+                        ..CaseReach::default()
+                    };
+                    let mut sink = RecordingSink::default();
+                    match plan.subject {
+                        CaseSubject::Refused => {}
+                        CaseSubject::Complete(pending) => {
+                            let answer = &answers[&(index as u64)];
+                            assert_eq!(
+                                answer.text("result"),
+                                "accept",
+                                "case {index}: the peer refused a valid transcript: {:?}",
+                                answer.maybe_text("failure_code")
+                            );
+                            let signature = decode_hex(answer.text("client_signature_hex"));
+                            let mut session = pending
+                                .finish(&signature, &mut sink)
+                                .unwrap_or_else(|failure| {
+                                    panic!(
+                                        "case {index}: the daemon refused the peer's client proof: {:?}",
+                                        failure.code()
+                                    )
+                                });
+                            reach.session_created = true;
+                            assert!(
+                                sink.events.is_empty(),
+                                "case {index}: a completed handshake records no failure"
+                            );
+                            assert!(session.is_open(), "case {index}: the daemon half completed");
+                            assert_eq!(session.contract(), reference.contract);
+                            assert_eq!(session.epoch(), EPOCH);
+                            assert_eq!(session.connection_id(), reference.connection);
+
+                            // Client to daemon. The peer sealed this product frame under
+                            // the traffic key it derived itself, so an open proves both
+                            // peers reached the same key from the same transcript.
+                            let command = decode_hex(answer.text("client_payload_hex"));
+                            let opened = session
+                                .receive(
+                                    &decode_hex(answer.text("client_frame_hex")),
+                                    &case_operation(grant),
+                                    &mut sink,
+                                )
+                                .unwrap_or_else(|failure| {
+                                    panic!(
+                                        "case {index}: the peer's product frame was refused: {:?}",
+                                        failure.code()
+                                    )
+                                });
+                            assert_eq!(
+                                opened.payload(),
+                                command,
+                                "case {index}: the client-to-daemon payload did not round-trip"
+                            );
+                            reach.traffic_keys_agreed = true;
+                            reach.dispatched_before_reject += 1;
+
+                            // Daemon to client, through the only path that authorizes and
+                            // then serializes a projection.
+                            let response = decode_hex(answer.text("daemon_payload_hex"));
+                            let sealed = session
+                                .send_projection(&case_projection(grant, &response), &mut sink)
+                                .unwrap_or_else(|failure| {
+                                    panic!(
+                                        "case {index}: the daemon refused its own projection: {:?}",
+                                        failure.code()
+                                    )
+                                });
+                            assert_eq!(
+                                encode_hex(&sealed),
+                                answer.text("expected_daemon_frame_hex"),
+                                "case {index}: the peers disagree on the daemon-to-client frame"
+                            );
+                            open_requests.push(format!(
+                                "{{\"case\":{index},\"key_hex\":\"{}\",\"framed_hex\":\"{}\",\"connection_hex\":\"{}\",\"counter\":0,\"direction\":\"daemon-to-client\",\"kind\":2}}",
+                                answer.text("daemon_to_client_key_hex"),
+                                encode_hex(&sealed),
+                                answer.text("connection_hex")
+                            ));
+                            open_expectations.push((index, response.clone()));
+                            assert!(session.is_open(), "case {index}: the channel stays open");
+                            reach.channel_open = true;
+
+                            // The same case on both production halves: the client
+                            // handshake finishes, derives its own traffic keys, and the
+                            // pair round-trips a product frame in both directions.
+                            let native_principal = if plan.extension {
+                                &native_extension
+                            } else {
+                                &native_mcp
+                            };
+                            let (mut client, mut daemon) = establish_pair_for(
+                                native_principal,
+                                &native_signer,
+                                ConnectionId::new(Uuid::from_u128(CONNECTION + index as u128)),
+                            )
+                            .unwrap_or_else(|failure| {
+                                panic!(
+                                    "case {index}: the production handshake failed: {:?}",
+                                    failure.code()
+                                )
+                            });
+                            assert!(client.is_open() && daemon.is_open());
+                            let output =
+                                AuthorizedOutput::filtered(PayloadKind::Command, command.clone())
+                                    .expect("a bounded product command");
+                            let frame = client.send(&output, &mut sink).expect("the client seals");
+                            let opened = daemon
+                                .receive(&frame, &case_operation(grant), &mut sink)
+                                .expect("the daemon opens and authorizes");
+                            assert_eq!(opened.payload(), command);
+                            reach.dispatched_before_reject += 1;
+                            let reply = daemon
+                                .send_projection(&case_projection(grant, &response), &mut sink)
+                                .expect("the daemon discloses");
+                            let filtered = client
+                                .receive_filtered(&reply, PayloadKind::Response, &mut sink)
+                                .expect("the client opens the response");
+                            assert_eq!(filtered.payload(), response);
+                            reach.dispatched_before_reject += 1;
+                            assert!(client.is_open() && daemon.is_open());
+                            // No failure was recorded, and every payload that crossed
+                            // passed the required decision gate on its way.
+                            assert_eq!(
+                                sink.events.len(),
+                                CAMPAIGN_DISPATCHES,
+                                "case {index}: one decision per dispatched payload"
+                            );
+                            assert!(
+                                sink.events
+                                    .iter()
+                                    .all(|event| event.code()
+                                        == SecurityCode::AuthorizationAccepted),
+                                "case {index}: a dispatch bypassed the decision gate"
+                            );
+                        }
+                        CaseSubject::ClientProofReplay { victim, donor } => {
+                            let answer = &answers[&(index as u64)];
+                            assert_eq!(
+                                answer.text("result"),
+                                "accept",
+                                "case {index}: the donor transcript is a valid one"
+                            );
+                            let signature = decode_hex(answer.text("client_signature_hex"));
+                            if let Some(donor) = donor {
+                                // The premise: the donor handshake completes, so what
+                                // follows replays a finished transcript.
+                                let mut completed = donor
+                                    .finish(&signature, &mut sink)
+                                    .expect("the donor handshake completes");
+                                assert!(
+                                    completed.is_open(),
+                                    "case {index}: the replayed handshake completed first"
+                                );
+                                assert!(sink.events.is_empty());
+                                completed.close();
+                            }
+                            match victim.finish(&signature, &mut sink) {
+                                Ok(session) => {
+                                    // A replay that authenticates is the SC-003 failure,
+                                    // so it is recorded and the invariant below reports it.
+                                    reach.session_created = true;
+                                    reach.channel_open = session.is_open();
+                                }
+                                Err(failure) => {
+                                    reach.code = Some(failure.code().as_str().to_owned());
+                                    assert_eq!(
+                                        sink.events.len(),
+                                        1,
+                                        "case {index}: one bounded event per rejection"
+                                    );
+                                }
+                            }
+                        }
+                        CaseSubject::ServerProofReplay { client, proof } => {
+                            let answer = &answers[&(index as u64)];
+                            assert_eq!(
+                                answer.text("result"),
+                                "reject",
+                                "case {index}: the peer accepted a replayed server proof"
+                            );
+                            let peer_code = answer.maybe_text("failure_code").map(str::to_owned);
+                            match client.finish(&proof, &native_signer, &mut sink) {
+                                Ok((session, _)) => {
+                                    reach.session_created = true;
+                                    reach.channel_open = session.is_open();
+                                }
+                                Err(failure) => {
+                                    reach.code = Some(failure.code().as_str().to_owned());
+                                    assert_eq!(
+                                        sink.events.len(),
+                                        1,
+                                        "case {index}: one bounded event per rejection"
+                                    );
+                                }
+                            }
+                            assert_eq!(
+                                reach.code, peer_code,
+                                "case {index}: native and extension peers disagree on the replay"
+                            );
+                        }
+                        CaseSubject::ProductFrameReplay { framed, payload } => {
+                            // The corpus session both peers hold the keys for. The first
+                            // frame is the premise: a legitimate product payload that
+                            // dispatches and advances the receive counter.
+                            let principal = if plan.extension {
+                                extension.clone()
+                            } else {
+                                mcp.clone()
+                            };
+                            let mut session = vector_session(&reference, principal);
+                            reach.session_created = true;
+                            let opened = session
+                                .receive(&framed, &case_operation(grant), &mut sink)
+                                .expect("the first product frame dispatches");
+                            assert_eq!(opened.payload(), payload);
+                            reach.traffic_keys_agreed = true;
+                            reach.dispatched_before_reject += 1;
+                            assert_eq!(session.receive_counter(), 1);
+                            assert_eq!(
+                                sink.events.len(),
+                                1,
+                                "case {index}: the premise frame passed the decision gate"
+                            );
+                            assert_eq!(
+                                sink.events[0].code(),
+                                SecurityCode::AuthorizationAccepted
+                            );
+                            match session.receive(&framed, &case_operation(grant), &mut sink) {
+                                Ok(twice) => {
+                                    assert_eq!(twice.payload(), payload);
+                                    reach.dispatched_after_reject += 1;
+                                    reach.channel_open = session.is_open();
+                                }
+                                Err(failure) => {
+                                    reach.code = Some(failure.code().as_str().to_owned());
+                                    assert!(
+                                        !session.is_open(),
+                                        "case {index}: a replayed frame closes the channel"
+                                    );
+                                    assert_eq!(
+                                        session.receive_counter(),
+                                        1,
+                                        "case {index}: a reject never advances"
+                                    );
+                                    // The premise decision, then the refusal. Nothing
+                                    // else reached the sink, so nothing else was decided.
+                                    assert_eq!(
+                                        sink.events.len(),
+                                        2,
+                                        "case {index}: one bounded event per rejection"
+                                    );
+                                    assert_eq!(
+                                        sink.events[1].code(),
+                                        SecurityCode::ReplayDetected
+                                    );
+                                }
+                            }
+                            let peer_code = records[&(index as u64)]
+                                .maybe_text("frame_replay_failure_code")
+                                .map(str::to_owned);
+                            assert_eq!(
+                                reach.code, peer_code,
+                                "case {index}: native and extension peers disagree on the replay"
+                            );
+                        }
                     }
-                    let entry = families.entry(family).or_default();
-                    if native.is_none() {
+                    assert!(
+                        outcomes
+                            .insert(
+                                index,
+                                CaseOutcome {
+                                    family: family.clone(),
+                                    stage: plan.stage,
+                                    expected: plan.expected,
+                                    reach,
+                                },
+                            )
+                            .is_none(),
+                        "case {index} ({family}): one outcome per case"
+                    );
+                }
+
+                // The peer opens every product frame the daemon sealed, under the key it
+                // derived for that case. This is the far half of the round trip: the
+                // plaintext the daemon disclosed arrives at the extension peer.
+                let (opens, open_summary) = peer_records(&run_peer_with_input(
+                    &["--campaign-open"],
+                    &format!("{{\"frames\":[{}]}}", open_requests.join(",")),
+                ));
+                assert_eq!(open_summary.integer("frames") as usize, CAMPAIGN_ACCEPTED);
+                assert_eq!(open_summary.integer("opened") as usize, CAMPAIGN_ACCEPTED);
+                assert_eq!(open_summary.integer("refused"), 0);
+                for (index, expected) in open_expectations {
+                    let record = &opens[&(index as u64)];
+                    assert_eq!(
+                        record.text("result"),
+                        "open",
+                        "case {index}: the peer refused the daemon's product frame: {:?}",
+                        record.maybe_text("failure_code")
+                    );
+                    assert_eq!(
+                        decode_hex(record.text("payload_hex")),
+                        expected,
+                        "case {index}: the daemon-to-client payload did not round-trip"
+                    );
+                    outcomes
+                        .get_mut(&index)
+                        .expect("an outcome per case")
+                        .reach
+                        .dispatched_before_reject += 1;
+                }
+
+                // Every case, against the frontier SC-003 fixes.
+                let mut families: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+                let mut stages: BTreeMap<String, usize> = BTreeMap::new();
+                let mut accepted = 0usize;
+                let mut rejected = 0usize;
+                for (index, outcome) in &outcomes {
+                    let CaseOutcome {
+                        family,
+                        stage,
+                        expected,
+                        reach,
+                    } = outcome;
+                    assert_eq!(
+                        &reach.code, expected,
+                        "case {index} ({family}): outcome against the declared family"
+                    );
+                    if reach.code.is_none() {
+                        assert!(
+                            reach.session_created,
+                            "case {index} ({family}): an accepted case creates a session"
+                        );
+                        assert!(
+                            reach.traffic_keys_agreed,
+                            "case {index} ({family}): both peers derived the same traffic keys"
+                        );
+                        assert_eq!(
+                            reach.dispatched_before_reject, CAMPAIGN_DISPATCHES,
+                            "case {index} ({family}): product frames round-tripped both ways"
+                        );
+                        assert!(reach.channel_open, "case {index}: the channel stays open");
+                        accepted += 1;
+                    } else {
+                        assert_eq!(
+                            reach.dispatched_after_reject, 0,
+                            "case {index} ({family}): a refused artifact dispatched a payload"
+                        );
+                        assert!(
+                            !reach.channel_open,
+                            "case {index} ({family}): a refused case left an open channel"
+                        );
+                        if stage == "frame" {
+                            assert_eq!(
+                                reach.dispatched_before_reject, 1,
+                                "case {index}: the premise frame dispatched exactly once"
+                            );
+                        } else {
+                            assert!(
+                                !reach.session_created,
+                                "case {index} ({family}): a refused case created a session"
+                            );
+                            assert!(
+                                !reach.traffic_keys_agreed,
+                                "case {index} ({family}): a refused case derived a traffic key"
+                            );
+                            assert_eq!(
+                                reach.dispatched_before_reject, 0,
+                                "case {index} ({family}): a refused case dispatched a payload"
+                            );
+                        }
+                        rejected += 1;
+                    }
+                    let entry = families.entry(family.clone()).or_default();
+                    if reach.code.is_none() {
                         entry.0 += 1;
                     } else {
                         entry.1 += 1;
                     }
-                    cases += 1;
+                    *stages.entry(stage.clone()).or_default() += 1;
                 }
 
-                let summary = summary.expect("campaign summary line");
                 assert_eq!(summary.text("seed"), CAMPAIGN_SEED);
-                assert_eq!(cases, CAMPAIGN_CASES, "every case ran");
+                assert_eq!(outcomes.len(), CAMPAIGN_CASES, "every case ran");
                 assert_eq!(summary.integer("cases") as usize, CAMPAIGN_CASES);
                 assert_eq!(summary.integer("accepted") as usize, accepted);
                 assert_eq!(summary.integer("rejected") as usize, rejected);
+                assert_eq!(
+                    summary.integer("hello_accepted") as usize,
+                    CAMPAIGN_HELLO_ADMITTED
+                );
                 assert_eq!(
                     accepted + rejected,
                     CAMPAIGN_CASES,
                     "zero unclassified cases"
                 );
-                assert_eq!(accepted, 78, "seeded valid cases");
-                assert_eq!(rejected, 922, "seeded invalid cases");
+                assert_eq!(accepted, CAMPAIGN_ACCEPTED, "seeded valid cases");
+                assert_eq!(rejected, CAMPAIGN_REJECTED, "seeded invalid cases");
                 // Every family contributed, and no family is silently all-accept.
-                assert_eq!(families.len(), 26, "families in the seeded corpus");
+                assert_eq!(
+                    families.len(),
+                    CAMPAIGN_FAMILY_COUNT,
+                    "families in the seeded corpus"
+                );
                 for (family, (ok, bad)) in &families {
                     assert_eq!(
                         ok * bad,
                         0,
                         "{family} mixes outcomes, so its expectation is not fixed"
                     );
-                    assert!(ok + bad >= 38, "{family} ran {} cases", ok + bad);
+                    assert!(
+                        ok + bad >= CAMPAIGN_PER_FAMILY,
+                        "{family} ran {} cases",
+                        ok + bad
+                    );
                 }
+                // SC-003 enumerates replay alongside the mutation classes, so the
+                // campaign carries a case at every stage a replay is reachable at.
+                assert_eq!(
+                    stages.keys().map(String::as_str).collect::<Vec<_>>(),
+                    vec!["client-proof", "frame", "hello", "server-proof", "session"],
+                    "every stage SC-003 names is represented"
+                );
                 assert!(
                     started.elapsed() < std::time::Duration::from_secs(120),
                     "the campaign must stay a test, not a benchmark: {:?}",

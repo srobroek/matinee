@@ -193,6 +193,20 @@ deliberate way to roll them. Run the regeneration and the seeded SC-003 campaign
     node crates/matinee-security/fixtures/webcrypto/secure-channel-vectors.mjs \
       --campaign --seed 0x5ec0000600035c03 --cases 1000
 
+The campaign does not stop at hello admission. Its accepting families complete the whole
+transcript: the native daemon runs `ServerHandshake::finish` over the client proof this
+peer signs, both sides derive traffic keys independently, and one product frame crosses in
+each direction. Two further peer modes serve that, each reading one JSON request document
+from standard input and driven by the native test rather than by hand:
+`--campaign-finish` verifies a server proof as the client, signs the client proof, derives
+both traffic keys, and seals the command frame plus the response frame it expects back;
+`--campaign-open` opens the frames the daemon sealed. The families past the hello stage are
+replays -- of a client proof, of a server proof, of a completed handshake, and of a product
+frame -- and each MUST be refused with no session, no traffic key, and no dispatched
+payload. This peer classifies the server-proof and product-frame replays itself; the
+daemon-side client-proof and session replays have no counterpart here, because this peer
+holds no daemon role and no session state across invocations.
+
 The schema check MUST reject duplicate keys, non-canonical numbers, unknown required
 shape, wrong hex lengths, absent mutation metadata, and secret-bearing strings. The
 mutation check MUST prove one single-field mutation for every required field and all

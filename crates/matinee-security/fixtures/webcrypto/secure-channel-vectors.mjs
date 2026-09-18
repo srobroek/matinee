@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // The extension-side peer for `vectors/secure-channel-v1.json`.
 //
-// Three modes, all deterministic and all free of wall-clock, randomness, and secrets:
+// Five modes, all deterministic and all free of wall-clock, randomness, and secrets:
 //   --generate            rewrite the corpus from the fixed scalars below
 //   (default)             classify every corpus vector, one evidence line per vector
 //   --campaign            classify the seeded SC-003 handshake corpus, one line per case
+//   --campaign-finish     complete the client half of the cases the daemon admitted,
+//                         reading one JSON request document from stdin
+//   --campaign-open       open the product frames the daemon sealed, from stdin
 //
 // The classifier is an independent implementation of the v1 wire contract: it does not
 // share code with the Rust peer, so agreement between the two is evidence rather than
@@ -47,6 +50,7 @@ const KEY_LEN = 65;
 const SIGNATURE_LEN = 64;
 const U64_MAX = (1n << 64n) - 1n;
 const COMMAND_KIND = 1;
+const RESPONSE_KIND = 2;
 
 const AUTH_FAILED = "authentication.failed";
 const CRYPTO_FAILED = "authentication.cryptographic";
@@ -239,6 +243,10 @@ class Reader {
     if (!this.lp(maximum).equals(Buffer.from(expected))) reject(AUTH_FAILED);
   }
 
+  expectRaw(expected) {
+    if (!this.raw(expected.length).equals(Buffer.from(expected))) reject(AUTH_FAILED);
+  }
+
   finish() {
     if (this.offset !== this.input.length) reject(MALFORMED);
   }
@@ -358,9 +366,85 @@ async function classifyFrame(framed, state) {
     ));
   } catch { return reject(CRYPTO_FAILED); }
   if (plaintext.length > MAX_PLAINTEXT) reject(RESOURCE_LIMIT);
-  if (plaintext.length === 0 || plaintext[0] !== COMMAND_KIND) reject(MALFORMED);
+  const kind = state.kind ?? COMMAND_KIND;
+  if (plaintext.length === 0 || plaintext[0] !== kind) reject(MALFORMED);
   if (plaintext.length - 1 > MAX_PAYLOAD) reject(RESOURCE_LIMIT);
   return { nonce, aad, payload: plaintext.subarray(1) };
+}
+
+// ---------------------------------------------------------------------------
+// The client half of the handshake. `accept` only admits a hello: a session
+// exists once the client verifies the server proof, signs the client proof, and
+// both peers derive traffic keys from that completed transcript.
+// ---------------------------------------------------------------------------
+function parseServerProof(proof, hello) {
+  if (proof.length > MAX_HANDSHAKE) reject(RESOURCE_LIMIT);
+  const reader = new Reader(proof);
+  reader.expectLp(text("server-proof"), 12);
+  // The transcript carries the hello it answered, so a proof lifted from
+  // another handshake cannot be bound to this one.
+  reader.expectRaw(hello);
+  const selected = parseContract(reader.lp(5));
+  const serverMin = parseContract(reader.lp(5));
+  const serverMax = parseContract(reader.lp(5));
+  const daemon = reader.exactLp(16);
+  const daemonKey = reader.validPublicKey();
+  reader.exactLp(NONCE_LEN);
+  const serverEphemeral = reader.validPublicKey();
+  const connection = reader.exactLp(16);
+  const proofInput = proof.subarray(0, reader.offset);
+  const serverSignature = reader.exactLp(SIGNATURE_LEN);
+  reader.finish();
+  return {
+    selected, serverMin, serverMax, daemon, daemonKey,
+    serverEphemeral, connection, proofInput, serverSignature,
+  };
+}
+
+async function publicVerifyKey(point) {
+  return subtle.importKey("raw", point, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+}
+
+async function publicAgreementKey(point) {
+  return subtle.importKey("raw", point, { name: "ECDH", namedCurve: "P-256" }, false, []);
+}
+
+/// Verify one server proof and complete the client half, in the order the
+/// contract fixes: the pinned daemon identity and key, the selection, then the
+/// P1363 signature, and only then a client signature and any traffic key.
+async function clientFinish(helloBytes, proofBytes, pinned) {
+  const fields = parseServerProof(proofBytes, helloBytes);
+  if (hex(fields.daemonKey) !== pinned.daemonKeyHex || hex(fields.daemon) !== pinned.daemonHex) {
+    reject(AUTH_FAILED);
+  }
+  const hello = parseClientHello(helloBytes);
+  if (fields.selected !== negotiate(hello.min, hello.max, fields.serverMin, fields.serverMax)) {
+    reject(DOWNGRADE);
+  }
+  const verified = await subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    await publicVerifyKey(fields.daemonKey), fields.serverSignature, fields.proofInput,
+  );
+  if (!verified) reject(AUTH_FAILED);
+  // Every campaign case negotiates the contract the fixed info string names, so
+  // a different selection here would silently derive an unrelated key.
+  equal("selected contract", fields.selected, SELECTED);
+  const clientProof = await clientProofInput(fields.proofInput, fields.serverSignature);
+  const clientSignature = Buffer.from(await subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" }, await signingKey(CLIENT_IDENTITY_SCALAR), clientProof,
+  ));
+  if (clientSignature.length !== SIGNATURE_LEN) fail("WebCrypto did not produce P1363");
+  const salt = await sha256(concat(clientProof, clientSignature));
+  const shared = Buffer.from(await subtle.deriveBits(
+    { name: "ECDH", public: await publicAgreementKey(fields.serverEphemeral) },
+    await agreementKey(CLIENT_EPHEMERAL_SCALAR, ["deriveBits"]), 256,
+  ));
+  return {
+    clientSignature,
+    connectionHex: hex(fields.connection),
+    clientToDaemon: await deriveKey(shared, salt, "client-to-daemon"),
+    daemonToClient: await deriveKey(shared, salt, "daemon-to-client"),
+  };
 }
 
 /// Size-boundary vectors carry a repeat rule instead of a megabyte of hex.
@@ -1170,36 +1254,49 @@ class SplitMix64 {
   }
 }
 
-/// Each family declares the outcome the protocol fixes for it. `nonce-rotate`
-/// accepts on purpose: the client nonce is not bound at hello, it is bound by
-/// the signature that follows, so a fresh nonce is a valid hello.
+/// Each family declares the handshake stage its outcome is fixed at and the
+/// outcome the protocol fixes there. `nonce-rotate` accepts on purpose: the
+/// client nonce is not bound at hello, it is bound by the signature that
+/// follows, so a fresh nonce is a valid hello.
+///
+/// A family past the `hello` stage carries a hello both peers admit, because a
+/// replay is only reachable through an admitted hello. Its rejection belongs to
+/// the stage named here, and every one of them lands before the channel accepts
+/// a product payload.
 const CAMPAIGN_FAMILIES = [
-  ["valid", true, null],
-  ["nonce-rotate", true, null],
-  ["context.substitution", false, AUTH_FAILED],
-  ["hello-label.substitution", false, AUTH_FAILED],
-  ["endpoint.substitution", false, AUTH_FAILED],
-  ["endpoint.malformed-utf8", false, MALFORMED],
-  ["endpoint.empty", false, AUTH_FAILED],
-  ["endpoint.extension", false, RESOURCE_LIMIT],
-  ["principal-selector.substitution", false, AUTH_FAILED],
-  ["principal-selector.invalid-uuid", false, AUTH_FAILED],
-  ["epoch.one-over", false, STALE_EPOCH],
-  ["epoch.one-under", false, STALE_EPOCH],
-  ["epoch.truncation", false, RESOURCE_LIMIT],
-  ["minimum-contract.disjoint", false, DOWNGRADE],
-  ["minimum-contract.leading-zero", false, MALFORMED],
-  ["maximum-contract.disjoint", false, UNSUPPORTED_CONTRACT],
-  ["client-nonce.short", false, MALFORMED],
-  ["client-nonce.extension", false, RESOURCE_LIMIT],
-  ["client-ephemeral-key.compressed-key", false, MALFORMED],
-  ["client-ephemeral-key.der-key", false, MALFORMED],
-  ["client-key.substitution", false, AUTH_FAILED],
-  ["client-key.compressed-key", false, MALFORMED],
-  ["client-key.bad-length-prefix", false, RESOURCE_LIMIT],
-  ["transcript-length.extension", false, MALFORMED],
-  ["transcript-length.truncation", false, MALFORMED],
-  ["transcript-length.one-over", false, RESOURCE_LIMIT],
+  ["valid", "hello", true, null],
+  ["nonce-rotate", "hello", true, null],
+  ["context.substitution", "hello", false, AUTH_FAILED],
+  ["hello-label.substitution", "hello", false, AUTH_FAILED],
+  ["endpoint.substitution", "hello", false, AUTH_FAILED],
+  ["endpoint.malformed-utf8", "hello", false, MALFORMED],
+  ["endpoint.empty", "hello", false, AUTH_FAILED],
+  ["endpoint.extension", "hello", false, RESOURCE_LIMIT],
+  ["principal-selector.substitution", "hello", false, AUTH_FAILED],
+  ["principal-selector.invalid-uuid", "hello", false, AUTH_FAILED],
+  ["epoch.one-over", "hello", false, STALE_EPOCH],
+  ["epoch.one-under", "hello", false, STALE_EPOCH],
+  ["epoch.truncation", "hello", false, RESOURCE_LIMIT],
+  ["minimum-contract.disjoint", "hello", false, DOWNGRADE],
+  ["minimum-contract.leading-zero", "hello", false, MALFORMED],
+  ["maximum-contract.disjoint", "hello", false, UNSUPPORTED_CONTRACT],
+  ["client-nonce.short", "hello", false, MALFORMED],
+  ["client-nonce.extension", "hello", false, RESOURCE_LIMIT],
+  ["client-ephemeral-key.compressed-key", "hello", false, MALFORMED],
+  ["client-ephemeral-key.der-key", "hello", false, MALFORMED],
+  ["client-key.substitution", "hello", false, AUTH_FAILED],
+  ["client-key.compressed-key", "hello", false, MALFORMED],
+  ["client-key.bad-length-prefix", "hello", false, RESOURCE_LIMIT],
+  ["transcript-length.extension", "hello", false, MALFORMED],
+  ["transcript-length.truncation", "hello", false, MALFORMED],
+  ["transcript-length.one-over", "hello", false, RESOURCE_LIMIT],
+  // The replay stages. A client proof is bound to the exact transcript that
+  // produced it, a server proof to the exact hello it answered, and a product
+  // frame to the counter its receiver expects next.
+  ["replay.client-proof", "client-proof", false, AUTH_FAILED],
+  ["replay.server-proof", "server-proof", false, AUTH_FAILED],
+  ["replay.completed-handshake", "session", false, AUTH_FAILED],
+  ["replay.product-frame", "frame", false, REPLAY],
 ];
 
 function campaignNonce(rng) {
@@ -1216,8 +1313,13 @@ function campaignHello(family, principalHex, nonce) {
   const identity = facts.identity;
   const ephemeral = facts.ephemeral;
   switch (family) {
+    // A replay family's hello is valid: the stage that refuses it is later.
     case "valid":
     case "nonce-rotate":
+    case "replay.client-proof":
+    case "replay.server-proof":
+    case "replay.completed-handshake":
+    case "replay.product-frame":
       break;
     case "context.substitution":
       segments = mutateHello(segments, "context", { body: text("matinee.secure-channel.v2") });
@@ -1302,14 +1404,25 @@ function campaignHello(family, principalHex, nonce) {
   return encodeHello(segments);
 }
 
-function campaign(seedText, count) {
+/// One campaign case's product payloads. They carry the case index so no two
+/// cases seal identical bytes and a crossed case cannot pass unnoticed.
+function commandPayload(index) { return text(`sc-003.command.${index}`); }
+function responsePayload(index) { return text(`sc-003.response.${index}`); }
+function framePayload(index) { return text(`sc-003.product-frame.${index}`); }
+
+async function campaign(seedText, count, pinned) {
+  // The corpus session's traffic keys, which the frame-stage family seals under.
+  const parts = await deterministicParts(pinned.serverSignature, pinned.clientSignature);
   const rng = new SplitMix64(seedText);
   const identityHex = hex(publicFromScalar(CLIENT_IDENTITY_SCALAR));
   const families = {};
   let accepted = 0;
   let rejected = 0;
+  let helloAccepted = 0;
+  let helloRejected = 0;
   for (let index = 0; index < count; index += 1) {
-    const [family, expectAccept, expectedCode] = CAMPAIGN_FAMILIES[index % CAMPAIGN_FAMILIES.length];
+    const [family, stage, expectAccept, expectedCode] =
+      CAMPAIGN_FAMILIES[index % CAMPAIGN_FAMILIES.length];
     const kindDraw = rng.next();
     const nonce = campaignNonce(rng);
     rng.next();
@@ -1324,29 +1437,64 @@ function campaign(seedText, count) {
       serverMin: SERVER_MIN,
       serverMax: SERVER_MAX,
     };
-    let result = "accept";
-    let code = null;
+    let helloResult = "accept";
+    let helloCode = null;
     try {
       classifyHello(hello, reference);
     } catch (error) {
       if (!(error instanceof Reject)) throw error;
-      result = "reject";
-      code = error.code;
+      helloResult = "reject";
+      helloCode = error.code;
     }
-    if (result === "accept") accepted += 1; else rejected += 1;
-    const expected = expectAccept ? "accept" : "reject";
+    if (helloResult === "accept") helloAccepted += 1; else helloRejected += 1;
+    // A family whose outcome lands after the hello carries a hello both peers
+    // must admit: its rejection is owned by the later stage, not by admission.
+    const helloExpected = stage === "hello" ? (expectAccept ? "accept" : "reject") : "accept";
+    const helloExpectedCode = stage === "hello" ? expectedCode : null;
+    if (expectAccept) accepted += 1; else rejected += 1;
     families[family] = (families[family] ?? 0) + 1;
-    process.stdout.write(`${JSON.stringify({
+    const record = {
       case: index,
       family,
+      stage,
       peer: extension ? "browser-extension" : "mcp-client",
       hello_hex: hex(hello),
-      expected,
+      expected: expectAccept ? "accept" : "reject",
       expected_failure_code: expectedCode,
-      result,
-      failure_code: code,
-      agrees: result === expected && code === expectedCode,
-    })}\n`);
+      hello_expected: helloExpected,
+      hello_expected_failure_code: helloExpectedCode,
+      hello_result: helloResult,
+      hello_failure_code: helloCode,
+      agrees: helloResult === helloExpected && helloCode === helloExpectedCode,
+    };
+    if (stage === "frame") {
+      // The product frame this family replays, sealed under the corpus
+      // client-to-daemon key at the counter a fresh receiver expects.
+      const sealed = await sealFrame(parts.clientToDaemon, {
+        payload_hex: hex(framePayload(index)),
+        counter: 0n,
+        direction: "client-to-daemon",
+      });
+      record.frame_hex = hex(sealed.framed);
+      record.frame_payload_hex = hex(sealed.payload);
+      // This peer's own verdict on the duplicate, from the state a receiver
+      // holds once it has consumed counter zero.
+      let replayCode = null;
+      try {
+        await classifyFrame(sealed.framed, {
+          connection: CONNECTION,
+          receiveCounter: 1n,
+          direction: "client-to-daemon",
+          key: parts.clientToDaemon,
+        });
+      } catch (error) {
+        if (!(error instanceof Reject)) throw error;
+        replayCode = error.code;
+      }
+      record.frame_replay_failure_code = replayCode;
+      record.agrees = record.agrees && replayCode === expectedCode;
+    }
+    process.stdout.write(`${JSON.stringify(record)}\n`);
   }
   process.stdout.write(`${JSON.stringify({
     campaign: "sc-003.handshake",
@@ -1355,7 +1503,119 @@ function campaign(seedText, count) {
     cases: count,
     accepted,
     rejected,
+    hello_accepted: helloAccepted,
+    hello_rejected: helloRejected,
     families,
+    result: "pass",
+  })}\n`);
+}
+
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/// Complete the client half of every campaign case the native daemon admitted,
+/// and classify the foreign proof a `replay.server-proof` case presents.
+///
+/// This peer holds the client ephemeral and identity scalars, so the keys it
+/// returns are derived independently of the native derivation. A native session
+/// that opens the frame sealed here therefore proves both peers reached the same
+/// traffic key from the same transcript.
+async function campaignFinish(request) {
+  const pinned = { daemonKeyHex: request.daemon_key_hex, daemonHex: request.daemon_hex };
+  let completed = 0;
+  let refused = 0;
+  for (const entry of request.requests) {
+    let record;
+    try {
+      const finished = await clientFinish(bytes(entry.hello_hex), bytes(entry.proof_hex), pinned);
+      const command = commandPayload(entry.case);
+      const response = responsePayload(entry.case);
+      const sealed = await sealFrame(finished.clientToDaemon, {
+        payload_hex: hex(command),
+        counter: 0n,
+        direction: "client-to-daemon",
+        connection: finished.connectionHex,
+      });
+      // What this peer expects the daemon's first product response to be, byte
+      // for byte: AES-GCM is deterministic, so the native seal either
+      // reproduces it or the two peers disagree on a key, nonce, or AAD input.
+      const expected = await sealFrame(finished.daemonToClient, {
+        payload_hex: hex(response),
+        counter: 0n,
+        direction: "daemon-to-client",
+        kind: RESPONSE_KIND,
+        connection: finished.connectionHex,
+      });
+      record = {
+        case: entry.case,
+        result: "accept",
+        failure_code: null,
+        client_signature_hex: hex(finished.clientSignature),
+        client_to_daemon_key_hex: hex(finished.clientToDaemon),
+        daemon_to_client_key_hex: hex(finished.daemonToClient),
+        client_frame_hex: hex(sealed.framed),
+        client_payload_hex: hex(command),
+        daemon_payload_hex: hex(response),
+        expected_daemon_frame_hex: hex(expected.framed),
+        connection_hex: finished.connectionHex,
+      };
+      completed += 1;
+    } catch (error) {
+      if (!(error instanceof Reject)) throw error;
+      record = { case: entry.case, result: "reject", failure_code: error.code };
+      refused += 1;
+    }
+    process.stdout.write(`${JSON.stringify(record)}\n`);
+  }
+  process.stdout.write(`${JSON.stringify({
+    campaign: "sc-003.client-finish",
+    peer: "Node.js WebCrypto",
+    requests: request.requests.length,
+    completed,
+    refused,
+    result: "pass",
+  })}\n`);
+}
+
+/// Open the product frames the native daemon sealed, under the daemon-to-client
+/// key this peer derived for that case. An open that returns the declared
+/// plaintext is the far half of the product round trip.
+async function campaignOpen(request) {
+  let opened = 0;
+  let refused = 0;
+  for (const entry of request.frames) {
+    let record;
+    try {
+      const result = await classifyFrame(bytes(entry.framed_hex), {
+        connection: entry.connection_hex,
+        receiveCounter: BigInt(entry.counter),
+        direction: entry.direction,
+        key: bytes(entry.key_hex),
+        kind: entry.kind,
+      });
+      record = {
+        case: entry.case,
+        result: "open",
+        failure_code: null,
+        payload_hex: hex(result.payload),
+      };
+      opened += 1;
+    } catch (error) {
+      if (!(error instanceof Reject)) throw error;
+      record = { case: entry.case, result: "reject", failure_code: error.code, payload_hex: null };
+      refused += 1;
+    }
+    process.stdout.write(`${JSON.stringify(record)}\n`);
+  }
+  process.stdout.write(`${JSON.stringify({
+    campaign: "sc-003.product-frame",
+    peer: "Node.js WebCrypto",
+    frames: request.frames.length,
+    opened,
+    refused,
     result: "pass",
   })}\n`);
 }
@@ -1390,7 +1650,19 @@ if (argv.includes("--generate")) {
     signatures: pinned ? "pinned" : "minted",
   })}\n`);
 } else if (argv.includes("--campaign")) {
-  campaign(flag("--seed", "0"), Number(flag("--cases", "1000")));
+  // The seeded campaign reaches past the hello, so it needs the pinned
+  // signatures the corpus records: its frame-stage family shares traffic keys
+  // with the corpus session the native peer rebuilds.
+  const existing = JSON.parse(await readFile(corpusPath, "utf8"));
+  const inputs = existing.vectors.find((vector) => vector.id === "valid.handshake").inputs;
+  await campaign(flag("--seed", "0"), Number(flag("--cases", "1000")), {
+    serverSignature: bytes(inputs.server_signature_p1363_hex),
+    clientSignature: bytes(inputs.client_signature_p1363_hex),
+  });
+} else if (argv.includes("--campaign-finish")) {
+  await campaignFinish(JSON.parse(await readStdin()));
+} else if (argv.includes("--campaign-open")) {
+  await campaignOpen(JSON.parse(await readStdin()));
 } else {
 
   await verify(JSON.parse(await readFile(corpusPath, "utf8")));
