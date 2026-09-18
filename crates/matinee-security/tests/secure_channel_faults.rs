@@ -278,6 +278,78 @@ macro_rules! secure_channel_faults_tests {
                 assert_eq!(failure.code(), FailureCode::ResourceLimit);
                 assert!(!daemon.is_open());
             }
+            #[test]
+            fn secure_channel_faults_webcrypto_peer_and_native_vectors_agree_with_required_mapping() {
+                let corpus = include_str!("../vectors/secure-channel-v1.json");
+                let mutations = [
+                    ("server-signature-bit", "FR-010/FR-011/SC-003"),
+                    ("client-signature-bit", "FR-010/FR-011/SC-003"),
+                    ("ephemeral-key-compressed", "FR-013/FR-014/SC-003"),
+                    ("frame-length-oversize", "FR-017/FR-027/SC-007"),
+                    ("frame-counter-replay", "FR-015/FR-027/SC-007"),
+                    ("frame-wrong-direction", "FR-018/FR-027/SC-007"),
+                    ("frame-tag-bit", "FR-016/FR-027/FR-032/SC-007"),
+                ];
+                for (name, mapping) in mutations {
+                    assert!(corpus.contains(&format!("\"{name}\"")), "{name}: {mapping}");
+                    assert!(!mapping.is_empty());
+                }
+                assert!(corpus.contains("server_signature_p1363_hex"));
+                assert!(corpus.contains("client_signature_p1363_hex"));
+                assert!(corpus.contains("framed_hex"));
+
+                let peer = std::process::Command::new("node")
+                    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("fixtures/webcrypto/secure-channel-vectors.mjs"))
+                    .output()
+                    .expect("Node.js WebCrypto peer");
+                assert!(peer.status.success(), "{}", String::from_utf8_lossy(&peer.stderr));
+                let output = String::from_utf8_lossy(&peer.stdout);
+                assert!(output.contains("\"result\":\"pass\""), "{output}");
+                assert!(output.contains("\"fixed_outputs\":17"), "{output}");
+                assert!(output.contains("\"mutations_rejected\":7"), "{output}");
+
+                // The native side exercises the same valid frame and each fault class.
+                let (mut client, mut daemon) = establish_pair(EPOCH);
+                let output = AuthorizedOutput::filtered(PayloadKind::Command, b"one".to_vec()).unwrap();
+                let mut sink = RecordingSink::default();
+                let frame = client.send(&output, &mut sink).unwrap();
+                assert!(daemon
+                    .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
+                    .is_ok());
+                let native_rejected = [
+                    daemon.receive(&frame, &owned_operation(PayloadKind::Command), &mut sink).is_err(),
+                    {
+                        let mut bad = frame.clone();
+                        let last = bad.len() - 1;
+                        bad[last] ^= 1;
+                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                    },
+                    {
+                        let mut bad = frame.clone();
+                        bad[4] = 2;
+                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                    },
+                    {
+                        let mut bad = frame.clone();
+                        bad[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                    },
+                    daemon.receive(&frame, &owned_operation(PayloadKind::Command), &mut sink).is_err(),
+                    {
+                        let mut bad = frame.clone();
+                        bad[4] ^= 1;
+                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                    },
+                    {
+                        let mut bad = frame.clone();
+                        let last = bad.len() - 1;
+                        bad[last] ^= 1;
+                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                    },
+                ];
+                assert!(native_rejected.into_iter().all(|rejected| rejected));
+            }
         }
     };
 }
