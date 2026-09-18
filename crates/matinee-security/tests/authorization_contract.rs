@@ -230,6 +230,35 @@ macro_rules! authorization_contract_tests {
         }
 
         #[test]
+        fn production_authorize_enforces_kind_ceiling_contract_epoch_owner_grant_and_action() {
+            let owner = id(2); let mcp_id = id(3); let requested = cap(CapabilityAction::Read, "owned/status");
+            let mcp = principal(PrincipalKind::McpClient, mcp_id, owner, vec![cap(CapabilityAction::Read, "owned")]);
+            let base_context = context(mcp_id, 0, requested.clone(), PayloadKind::Response);
+            let mut sink = Sink { unavailable: false, events: Vec::new() };
+            assert!(authorize(request(&mcp, &base_context, Some(owner), None), vec![1, 2], Some(&mut sink)).is_ok());
+            assert_eq!(sink.events.len(), 1);
+            let denied = context(mcp_id, 0, cap(CapabilityAction::Write, "owned/status"), PayloadKind::Response); let mut sink = Sink { unavailable: false, events: Vec::new() };
+            assert_eq!(authorize(request(&mcp, &denied, Some(owner), None), vec![1], Some(&mut sink)).unwrap_err().code(), crate::failures::FailureCode::AuthorizationDenied);
+            let stale = context(mcp_id, 1, requested.clone(), PayloadKind::Response); let mut sink = Sink { unavailable: false, events: Vec::new() };
+            assert_eq!(authorize(request(&mcp, &stale, Some(owner), None), vec![1], Some(&mut sink)).unwrap_err().code(), crate::failures::FailureCode::StaleEpoch);
+            let mut sink = Sink { unavailable: false, events: Vec::new() };
+            assert_eq!(authorize(AuthorizationRequest::new(&mcp, &base_context, 2, 1, 1, Some(owner), None, id(99), EventTime(1)), vec![1], Some(&mut sink)).unwrap_err().code(), crate::failures::FailureCode::CompatibilityUnsupported);
+            let extension_id = id(4); let extension = principal(PrincipalKind::BrowserExtension, extension_id, owner, vec![cap(CapabilityAction::Read, "browser")]);
+            let extension_context = context(extension_id, 0, cap(CapabilityAction::Read, "browser/session"), PayloadKind::Event);
+            let grant = ExtensionGrant::new(extension_id, owner, vec![cap(CapabilityAction::Read, "browser/session")], 0).unwrap(); let mut sink = Sink { unavailable: false, events: Vec::new() };
+            assert!(authorize(request(&extension, &extension_context, Some(owner), Some(&grant)), vec![1], Some(&mut sink)).is_ok());
+            let mut sink = Sink { unavailable: false, events: Vec::new() }; assert_eq!(authorize(request(&extension, &extension_context, Some(owner), None), vec![1], Some(&mut sink)).unwrap_err().code(), crate::failures::FailureCode::AuthorizationDenied);
+        }
+
+        #[test]
+        fn production_authorize_bounds_payload_and_requires_decision_before_minting() {
+            let owner = id(2); let principal = principal(PrincipalKind::NativeAdmin, id(3), owner, vec![cap(CapabilityAction::Read, "global")]);
+            let context = context(principal.id(), 0, cap(CapabilityAction::Read, "global/status"), PayloadKind::Event); let mut sink = Sink { unavailable: false, events: Vec::new() };
+            let failure = authorize(request(&principal, &context, Some(owner), None), vec![0; context.kind().max_bytes() + 1], Some(&mut sink)).unwrap_err(); assert_eq!(failure.code(), crate::failures::FailureCode::ResourceLimit); assert_eq!(sink.events.len(), 1);
+            let mut sink = Sink { unavailable: true, events: Vec::new() }; assert_eq!(authorize(request(&principal, &context, Some(owner), None), vec![1], Some(&mut sink)).unwrap_err().code(), crate::failures::FailureCode::EventSinkUnavailable); assert!(sink.events.is_empty());
+        }
+
+        #[test]
         fn administrator_actions_are_not_conferred_by_mcp_or_extension_ceilings() {
             let owner = id(2);
             for kind in [PrincipalKind::McpClient, PrincipalKind::BrowserExtension] {
