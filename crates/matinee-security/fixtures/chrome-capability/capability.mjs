@@ -118,6 +118,11 @@ async function clearStoredKey() {
     // Cleanup is best-effort; the probe remains fail-closed.
   }
 }
+async function publicKeyFingerprint(subtle, publicKey) {
+  const raw = await subtle.exportKey("raw", publicKey);
+  const digest = new Uint8Array(await subtle.digest("SHA-256", raw));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 async function probeKeyPersistence() {
   const subtle = globalThis.crypto?.subtle;
@@ -128,7 +133,8 @@ async function probeKeyPersistence() {
   try {
     const stored = await chrome.storage.local.get(STORAGE_KEY);
     metadata = stored[STORAGE_KEY];
-    if (metadata !== undefined && (metadata?.version !== 1 || metadata.key_reference !== KEY_REFERENCE)) {
+    if (metadata !== undefined && (metadata?.version !== 1 || metadata.key_reference !== KEY_REFERENCE ||
+        typeof metadata.public_key_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(metadata.public_key_fingerprint))) {
       await chrome.storage.local.remove(STORAGE_KEY);
       await clearStoredKey();
       return unsupported("capability.persistence");
@@ -154,6 +160,7 @@ async function probeKeyPersistence() {
         [STORAGE_KEY]: {
           version: 1,
           key_reference: KEY_REFERENCE,
+          public_key_fingerprint: await publicKeyFingerprint(subtle, pair.publicKey),
           daemon_identity: "daemon.synthetic",
           epoch: 7
         }
@@ -161,8 +168,10 @@ async function probeKeyPersistence() {
       metadata = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
     }
 
+    const fingerprint = record?.publicKey ? await publicKeyFingerprint(subtle, record.publicKey) : null;
     if (!record || record.version !== 1 || !record.privateKey || !record.publicKey ||
         metadata?.key_reference !== KEY_REFERENCE || metadata?.version !== 1 ||
+        metadata?.public_key_fingerprint !== fingerprint ||
         record.privateKey.extractable !== false || !record.privateKey.usages.includes("sign") ||
         !record.publicKey.usages.includes("verify")) {
       await chrome.storage.local.remove(STORAGE_KEY);
