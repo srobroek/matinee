@@ -77,8 +77,7 @@ fn unsigned_proof(identity: IdentityId) -> EnrollmentProof {
     EnrollmentProof {
         identity,
         signature: vec![0; 8],
-        long_term_public_key: PublicKey::from_uncompressed(bytes)
-            .expect("uncompressed SEC1 point"),
+        long_term_public_key: PublicKey::from_uncompressed(bytes).expect("uncompressed SEC1 point"),
     }
 }
 

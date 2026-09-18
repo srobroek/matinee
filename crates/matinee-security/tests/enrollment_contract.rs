@@ -1,8 +1,9 @@
 macro_rules! enrollment_contract_tests {
     () => {
         use crate::enrollment::{
-            validate_enrollment_binding, DevelopmentIdentityAllowance, EnrollmentBinding,
-            EnrollmentBindingError, EnrollmentBundle, EnrollmentCreation, EnrollmentCreateError,
+            DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBindingError,
+            EnrollmentBundle, EnrollmentCreateError, EnrollmentCreation,
+            validate_enrollment_binding,
         };
         use crate::identity::{
             ConnectionId, EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment,
@@ -40,9 +41,15 @@ macro_rules! enrollment_contract_tests {
         fn creation_bounds_lifecycle_metadata() {
             let bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
             assert_eq!(bundle.lifecycle(), EnrollmentLifecycle::Pending);
-            assert_eq!(bundle.origin(), "chrome-extension://abcdefghijklmnopabcdefghijklmnop");
+            assert_eq!(
+                bundle.origin(),
+                "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+            );
             assert_eq!(bundle.store_metadata(), "Chrome Web Store");
-            assert_eq!(bundle.update_metadata(), "https://updates.example.test/ext.xml");
+            assert_eq!(
+                bundle.update_metadata(),
+                "https://updates.example.test/ext.xml"
+            );
             assert_eq!(bundle.install_metadata(), "normal");
             assert_eq!(bundle.daemon_endpoint(), "127.0.0.1:7777");
             assert_eq!(bundle.one_time_public_key_fingerprint().as_str().len(), 64);
@@ -64,7 +71,8 @@ macro_rules! enrollment_contract_tests {
             let mut overlong = creation();
             overlong.expiry = ExpiryResult::valid(10 * 60 * 1_000 + 1).unwrap();
             assert_eq!(
-                EnrollmentBundle::create(overlong).expect_err("expiry over ten minutes fails closed"),
+                EnrollmentBundle::create(overlong)
+                    .expect_err("expiry over ten minutes fails closed"),
                 EnrollmentCreateError::InvalidExpiry
             );
         }
@@ -82,26 +90,42 @@ macro_rules! enrollment_contract_tests {
             };
             assert_eq!(validate_enrollment_binding(&expected, &attempt), Ok(()));
             attempt.origin = "chrome-extension://abcdefghijklmnopabcdefghijklmnox";
-            assert_eq!(validate_enrollment_binding(&expected, &attempt), Err(EnrollmentBindingError::Origin));
+            assert_eq!(
+                validate_enrollment_binding(&expected, &attempt),
+                Err(EnrollmentBindingError::Origin)
+            );
             attempt.origin = expected.origin.as_str();
             attempt.endpoint = "localhost:7777";
-            assert_eq!(validate_enrollment_binding(&expected, &attempt), Err(EnrollmentBindingError::Endpoint));
+            assert_eq!(
+                validate_enrollment_binding(&expected, &attempt),
+                Err(EnrollmentBindingError::Endpoint)
+            );
             attempt.endpoint = expected.daemon_endpoint.as_str();
             attempt.install_metadata = "development";
-            assert_eq!(validate_enrollment_binding(&expected, &attempt), Err(EnrollmentBindingError::Metadata));
+            assert_eq!(
+                validate_enrollment_binding(&expected, &attempt),
+                Err(EnrollmentBindingError::Metadata)
+            );
         }
 
         #[test]
         fn one_time_private_key_is_owned_by_authenticated_encrypted_output() {
-            let mut bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
+            let mut bundle =
+                EnrollmentBundle::create(creation()).expect("valid enrollment creation");
             let mut channel = crate::enrollment::EnrollmentChannel::open(
-                ConnectionId::new(Uuid::from_u128(0x30)), 1,
+                ConnectionId::new(Uuid::from_u128(0x30)),
+                1,
             )
             .expect("open native channel");
             let output = channel.seal_one_time_key(&mut bundle).unwrap();
             assert!(!output.ciphertext().is_empty());
-            assert!(channel.seal_one_time_key(&mut bundle).is_err(), "PKCS#8 transfer is one-use");
-            let plain = channel.open_sealed_for_test(bundle.enrollment_id(), &output).unwrap();
+            assert!(
+                channel.seal_one_time_key(&mut bundle).is_err(),
+                "PKCS#8 transfer is one-use"
+            );
+            let plain = channel
+                .open_sealed_for_test(bundle.enrollment_id(), &output)
+                .unwrap();
             assert!(!plain.is_empty());
             assert!(!format!("{bundle:?}").contains("PKCS#8"));
             channel.close();
@@ -129,19 +153,28 @@ macro_rules! enrollment_contract_tests {
         #[test]
         fn enrollment_consumption_and_failure_budget_are_terminal_and_idempotent() {
             let mut enrollment = enrollment_fixture(ExpiryResult::valid(600_000).unwrap());
-            enrollment.consume().expect("first proof consumes enrollment");
+            enrollment
+                .consume()
+                .expect("first proof consumes enrollment");
             assert_eq!(enrollment.lifecycle(), EnrollmentLifecycle::Consumed);
             assert_eq!(enrollment.consume(), Err("enrollment is not pending"));
-            assert_eq!(enrollment.record_failed_proof(), Err("enrollment is not pending"));
+            assert_eq!(
+                enrollment.record_failed_proof(),
+                Err("enrollment is not pending")
+            );
 
             let mut budget = enrollment_fixture(ExpiryResult::valid(600_000).unwrap());
             for _ in 0..5 {
-                budget.record_failed_proof().expect("pending failure budget");
+                budget
+                    .record_failed_proof()
+                    .expect("pending failure budget");
             }
             assert_eq!(budget.failed_proofs(), 5);
             assert_eq!(budget.lifecycle(), EnrollmentLifecycle::Closed);
-            assert_eq!(budget.record_failed_proof(), Err("enrollment is not pending"));
+            assert_eq!(
+                budget.record_failed_proof(),
+                Err("enrollment is not pending")
+            );
         }
-
     };
 }

@@ -7,11 +7,11 @@ macro_rules! rotation_revocation_races_tests {
             EnrollmentLifecycle, ExpiryResult, Fingerprint, GrantLifecycle, IdentityId,
             PrincipalKind, PrincipalLifecycle, TransitionOperation, TransitionOutcome,
         };
-        use crate::test_support_channel::{establish_pair_for, id, RecordingSink, RingSigner};
+        use crate::test_support_channel::{RecordingSink, RingSigner, establish_pair_for, id};
         use crate::test_support_transitions::{
-            commit_mutation, connection, consume_enrollment, create_enrollment, credential, grant,
-            input, key, live_channel, paired_proof, receive, registered, request, revoke, rotate,
-            transition, ADMINISTRATOR, EXTENSION,
+            ADMINISTRATOR, EXTENSION, commit_mutation, connection, consume_enrollment,
+            create_enrollment, credential, grant, input, key, live_channel, paired_proof, receive,
+            registered, request, revoke, rotate, transition,
         };
         use crate::transition::{
             DecisionState, ReplacementCredential, SecurityTransitions, TransitionMaterial,
@@ -63,7 +63,8 @@ macro_rules! rotation_revocation_races_tests {
             }
 
             fn enter(&self) {
-                self.entrants.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.entrants
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.barrier.wait();
             }
 
@@ -79,7 +80,6 @@ macro_rules! rotation_revocation_races_tests {
                 self.barrier.wait();
             }
         }
-
 
         /// FR-026, FR-032: one rotation racing one late registration of a channel that was
         /// established against the retired snapshot. Whatever the interleaving, the epoch
@@ -212,7 +212,10 @@ macro_rules! rotation_revocation_races_tests {
                 1,
                 "four deliveries advance one epoch"
             );
-            match transitions.recorded(key(300)).expect("one recorded carrier") {
+            match transitions
+                .recorded(key(300))
+                .expect("one recorded carrier")
+            {
                 TransitionRecord::Rotated(carrier) => {
                     assert_eq!(carrier.old_epoch(), 0);
                     assert_eq!(carrier.new_epoch(), 1);
@@ -267,7 +270,11 @@ macro_rules! rotation_revocation_races_tests {
                                 Ok(authorized) => commit_mutation(shared, &authorized).is_ok(),
                                 Err(failure) => {
                                     assert!(
-                                        matches!(failure.code(), FailureCode::Revoked | FailureCode::AuthenticationFailed),
+                                        matches!(
+                                            failure.code(),
+                                            FailureCode::Revoked
+                                                | FailureCode::AuthenticationFailed
+                                        ),
                                         "a refused frame names a closed class: {failure:?}"
                                     );
                                     false
@@ -283,7 +290,8 @@ macro_rules! rotation_revocation_races_tests {
                 apply_gate.release();
                 (
                     revoking.join().expect("revocation thread"),
-                    workers.into_iter()
+                    workers
+                        .into_iter()
                         .map(|worker| worker.join().expect("mutation thread"))
                         .filter(|committed| *committed)
                         .count(),
@@ -327,8 +335,12 @@ macro_rules! rotation_revocation_races_tests {
         fn a_reordered_enrollment_consumption_is_stale_after_an_owner_rotation() {
             let transitions = SecurityTransitions::default();
             let signer = RingSigner::generate();
-            let administrator =
-                registered(&transitions, ADMINISTRATOR, PrincipalKind::NativeAdmin, &signer);
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &signer,
+            );
             let mut sink = RecordingSink::default();
             let enrollment = transition(40);
             assert_eq!(
@@ -469,8 +481,12 @@ macro_rules! rotation_revocation_races_tests {
         fn an_uncertain_expiry_fails_closed_without_a_partial_commit() {
             let transitions = SecurityTransitions::default();
             let signer = RingSigner::generate();
-            let administrator =
-                registered(&transitions, ADMINISTRATOR, PrincipalKind::NativeAdmin, &signer);
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &signer,
+            );
             let mut sink = RecordingSink::default();
             let uncertain = transition(41);
             let rejection = create_enrollment(
@@ -486,7 +502,10 @@ macro_rules! rotation_revocation_races_tests {
             assert_eq!(rejection.outcome(), TransitionOutcome::Unknown);
             assert_eq!(rejection.code(), FailureCode::TransitionUnknown);
             assert_eq!(transitions.enrollment_lifecycle(uncertain), None);
-            assert!(sink.events.is_empty(), "nothing is asserted about a transition that did not happen");
+            assert!(
+                sink.events.is_empty(),
+                "nothing is asserted about a transition that did not happen"
+            );
 
             let enrollment = transition(42);
             assert_eq!(
@@ -531,8 +550,12 @@ macro_rules! rotation_revocation_races_tests {
         fn an_unknown_record_or_a_conflicting_key_changes_nothing() {
             let transitions = SecurityTransitions::default();
             let signer = RingSigner::generate();
-            let extension =
-                registered(&transitions, EXTENSION, PrincipalKind::BrowserExtension, &signer);
+            let extension = registered(
+                &transitions,
+                EXTENSION,
+                PrincipalKind::BrowserExtension,
+                &signer,
+            );
             transitions
                 .register_grant(grant(extension.id(), 0))
                 .expect("a grant at the registered epoch");
@@ -774,9 +797,15 @@ macro_rules! rotation_revocation_races_tests {
             for trial in 0..100u128 {
                 let transitions = SecurityTransitions::default();
                 let signer = RingSigner::generate();
-                let extension =
-                    registered(&transitions, EXTENSION, PrincipalKind::BrowserExtension, &signer);
-                transitions.register_grant(grant(extension.id(), 0)).unwrap();
+                let extension = registered(
+                    &transitions,
+                    EXTENSION,
+                    PrincipalKind::BrowserExtension,
+                    &signer,
+                );
+                transitions
+                    .register_grant(grant(extension.id(), 0))
+                    .unwrap();
                 let decision = transition(50);
                 transitions.open_decision(decision, extension.id()).unwrap();
                 let mut client = live_channel(&transitions, &extension, &signer, 800);
@@ -786,7 +815,8 @@ macro_rules! rotation_revocation_races_tests {
                     connection(800),
                     &request(&mut client, &mut setup_sink),
                     &mut setup_sink,
-                ).unwrap();
+                )
+                .unwrap();
                 let stale_frame = request(&mut client, &mut setup_sink);
                 let replacement = RingSigner::generate();
                 let apply_gate = transitions.gate_next_apply();
@@ -857,7 +887,10 @@ macro_rules! rotation_revocation_races_tests {
                 stale_dispatches += usize::from(dispatch.is_ok());
                 stale_mutations += usize::from(mutation.is_ok());
                 stale_decisions += usize::from(completion.is_ok());
-                assert_eq!(transitions.decision_state(decision), Some(DecisionState::Invalidated));
+                assert_eq!(
+                    transitions.decision_state(decision),
+                    Some(DecisionState::Invalidated)
+                );
             }
             assert_eq!(stale_dispatches, 0, "no stale frame dispatched a payload");
             assert_eq!(stale_mutations, 0, "no stale input completed a mutation");
@@ -940,7 +973,10 @@ macro_rules! rotation_revocation_races_tests {
 
                 assert_eq!(revocation, Ok(TransitionOutcome::Committed));
                 transition_events += events;
-                assert!(mutation.is_err(), "revocation linearized before the mutation");
+                assert!(
+                    mutation.is_err(),
+                    "revocation linearized before the mutation"
+                );
                 assert!(!disconnected, "revocation already closed the channel");
                 replayed += usize::from(retry == Ok(TransitionOutcome::AlreadyCommitted));
                 assert_eq!(transitions.object_version(), 0);
@@ -986,10 +1022,7 @@ macro_rules! rotation_revocation_races_tests {
             assert_eq!(failure.redacted().1, FailureCode::StaleEpoch);
             // The stable class travels in the rendered failure; the debug projection names
             // the same closed values. Neither carries key, locator, or payload material.
-            assert!(
-                failure.to_string().contains("stale_epoch"),
-                "{failure}"
-            );
+            assert!(failure.to_string().contains("stale_epoch"), "{failure}");
             for rendered in [failure.to_string(), format!("{failure:?}")] {
                 assert!(rendered.contains("StaleEpoch") || rendered.contains("stale_epoch"));
                 assert!(!rendered.contains("private"), "{rendered}");

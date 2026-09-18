@@ -177,10 +177,12 @@ mod tests {
     #[test]
     fn fakes_cover_valid_and_closed_paths() {
         let binding = credential_store::CredentialBinding::new([1; 32]);
-        assert!(FakeCredentialStore::new()
-            .registered(binding, 7)
-            .lookup(binding)
-            .is_ok());
+        assert!(
+            FakeCredentialStore::new()
+                .registered(binding, 7)
+                .lookup(binding)
+                .is_ok()
+        );
         assert_eq!(
             FakeCredentialStore::new()
                 .with_error(binding, credential_store::CredentialStoreError::Mismatch)

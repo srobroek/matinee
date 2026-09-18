@@ -121,7 +121,8 @@ impl EnrollmentHost {
         storage_local: bool,
         non_exportable: bool,
     ) -> ChromeReconnectOutcome {
-        let Ok(capability) = ChromeCapability::reported(binding, storage_local, non_exportable) else {
+        let Ok(capability) = ChromeCapability::reported(binding, storage_local, non_exportable)
+        else {
             return ChromeReconnectOutcome::Mismatch;
         };
         self.service.reconnect(identity, fingerprint, &capability)
@@ -336,7 +337,9 @@ impl PairingSession<'_> {
         sealed: &SealedOneTimeKey,
         challenge: &[u8],
     ) -> Result<Vec<u8>, EnrollmentFailure> {
-        Ok(self.channel.sign_sealed_for_test(expected_enrollment, &sealed.0, challenge)?)
+        Ok(self
+            .channel
+            .sign_sealed_for_test(expected_enrollment, &sealed.0, challenge)?)
     }
 
     /// Consume one pairing proof and register its long-term key.

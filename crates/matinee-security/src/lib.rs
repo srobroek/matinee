@@ -27,8 +27,8 @@ pub use crate::events::{
     EndpointClass, EventBoundary, EventOutcome, MetadataEntry, SafeNextAction as EventNextAction,
     SecurityCode, SecurityEvent, SecurityEventSink, SecurityEventSinkResult,
 };
-pub use crate::transition::{SecurityTransitions, TransitionRejection};
 pub use crate::failures::{FailureBoundary, FailureCode, SafeNextAction, SecurityFailure};
+pub use crate::transition::{SecurityTransitions, TransitionRejection};
 
 #[cfg(test)]
 #[path = "../tests/support/channel.rs"]

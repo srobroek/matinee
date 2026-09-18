@@ -113,77 +113,165 @@ macro_rules! events_contract_tests {
             )
             .expect("512 metadata bytes are accepted");
             assert_eq!(bounded.metadata().len(), 8);
-            assert_eq!(bounded.metadata().iter().map(|m| m.key.len() + m.value.len()).sum::<usize>(), 512);
+            assert_eq!(
+                bounded
+                    .metadata()
+                    .iter()
+                    .map(|m| m.key.len() + m.value.len())
+                    .sum::<usize>(),
+                512
+            );
             assert!(bounded.encoded_len() <= 2_048);
 
             let too_many = (0..9)
-                .map(|i| events::MetadataEntry { key: format!("k{i}"), value: "v".into() })
+                .map(|i| events::MetadataEntry {
+                    key: format!("k{i}"),
+                    value: "v".into(),
+                })
                 .collect();
             assert_eq!(
                 events::SecurityEvent::new(
-                    Uuid::nil(), events::EventBoundary::Bootstrap,
-                    events::SecurityCode::EnrollmentAccepted, events::EventOutcome::Accepted,
-                    events::SafeNextAction::Retry, None, None, events::EndpointClass::Native,
-                    events::EventTime(0), Uuid::nil(), too_many,
+                    Uuid::nil(),
+                    events::EventBoundary::Bootstrap,
+                    events::SecurityCode::EnrollmentAccepted,
+                    events::EventOutcome::Accepted,
+                    events::SafeNextAction::Retry,
+                    None,
+                    None,
+                    events::EndpointClass::Native,
+                    events::EventTime(0),
+                    Uuid::nil(),
+                    too_many,
                 ),
                 Err(events::EventBuildError::TooManyMetadata)
             );
 
             let metadata_over = (0..7)
-                .map(|i| events::MetadataEntry { key: format!("k{i:0>31}"), value: "v".repeat(32) })
-                .chain(std::iter::once(events::MetadataEntry { key: "k".repeat(32), value: "v".repeat(33) }))
+                .map(|i| events::MetadataEntry {
+                    key: format!("k{i:0>31}"),
+                    value: "v".repeat(32),
+                })
+                .chain(std::iter::once(events::MetadataEntry {
+                    key: "k".repeat(32),
+                    value: "v".repeat(33),
+                }))
                 .collect();
             assert_eq!(
                 events::SecurityEvent::new(
-                    Uuid::nil(), events::EventBoundary::Bootstrap,
-                    events::SecurityCode::EnrollmentAccepted, events::EventOutcome::Accepted,
-                    events::SafeNextAction::Retry, None, None, events::EndpointClass::Native,
-                    events::EventTime(0), Uuid::nil(), metadata_over,
+                    Uuid::nil(),
+                    events::EventBoundary::Bootstrap,
+                    events::SecurityCode::EnrollmentAccepted,
+                    events::EventOutcome::Accepted,
+                    events::SafeNextAction::Retry,
+                    None,
+                    None,
+                    events::EndpointClass::Native,
+                    events::EventTime(0),
+                    Uuid::nil(),
+                    metadata_over,
                 ),
                 Err(events::EventBuildError::MetadataTooLarge)
             );
 
-            let base = |entry| events::SecurityEvent::new(
-                Uuid::nil(), events::EventBoundary::Bootstrap,
-                events::SecurityCode::EnrollmentAccepted, events::EventOutcome::Accepted,
-                events::SafeNextAction::Retry, None, None, events::EndpointClass::Native,
-                events::EventTime(0), Uuid::nil(), vec![entry],
+            let base = |entry| {
+                events::SecurityEvent::new(
+                    Uuid::nil(),
+                    events::EventBoundary::Bootstrap,
+                    events::SecurityCode::EnrollmentAccepted,
+                    events::EventOutcome::Accepted,
+                    events::SafeNextAction::Retry,
+                    None,
+                    None,
+                    events::EndpointClass::Native,
+                    events::EventTime(0),
+                    Uuid::nil(),
+                    vec![entry],
+                )
+            };
+            assert_eq!(
+                base(events::MetadataEntry {
+                    key: "k".repeat(33),
+                    value: "v".into()
+                }),
+                Err(events::EventBuildError::MetadataKeyTooLong)
             );
-            assert_eq!(base(events::MetadataEntry { key: "k".repeat(33), value: "v".into() }), Err(events::EventBuildError::MetadataKeyTooLong));
-            assert_eq!(base(events::MetadataEntry { key: "k".into(), value: "v".repeat(129) }), Err(events::EventBuildError::MetadataValueTooLong));
+            assert_eq!(
+                base(events::MetadataEntry {
+                    key: "k".into(),
+                    value: "v".repeat(129)
+                }),
+                Err(events::EventBuildError::MetadataValueTooLong)
+            );
 
             // Metadata is capped at 512 bytes, so the fixed event fields plus metadata
             // can never reach 2,048; EventTooLarge is mathematically unreachable.
-            assert!(bounded.encoded_len() <= 16 + 1 + 1 + 1 + 1 + 1 + 8 + 16 + 1 + 16 + 16 + 512 + (8 * 4));
+            assert!(
+                bounded.encoded_len()
+                    <= 16 + 1 + 1 + 1 + 1 + 1 + 8 + 16 + 1 + 16 + 16 + 512 + (8 * 4)
+            );
             assert!(bounded.encoded_len() < 2_048);
         }
 
         #[test]
         fn event_and_sink_failure_redaction_rejects_secret_vocabulary() {
             let words = [
-                "private_key", "pkcs8", "enrollment_secret", "credential", "password",
-                "cookie", "authorization_header", "payload_text", "https://host/path",
-                "object_id", "artifact_id", "stream_id",
+                "private_key",
+                "pkcs8",
+                "enrollment_secret",
+                "credential",
+                "password",
+                "cookie",
+                "authorization_header",
+                "payload_text",
+                "https://host/path",
+                "object_id",
+                "artifact_id",
+                "stream_id",
             ];
             for word in words {
                 for (field, entry) in [
-                    ("key", events::MetadataEntry { key: word.into(), value: "safe".into() }),
-                    ("value", events::MetadataEntry { key: "reason".into(), value: word.into() }),
+                    (
+                        "key",
+                        events::MetadataEntry {
+                            key: word.into(),
+                            value: "safe".into(),
+                        },
+                    ),
+                    (
+                        "value",
+                        events::MetadataEntry {
+                            key: "reason".into(),
+                            value: word.into(),
+                        },
+                    ),
                 ] {
                     let result = events::SecurityEvent::new(
-                        Uuid::nil(), events::EventBoundary::Input,
-                        events::SecurityCode::MalformedInput, events::EventOutcome::Rejected,
-                        events::SafeNextAction::FailClosed, None, None,
-                        events::EndpointClass::Unknown, events::EventTime(0), Uuid::nil(),
+                        Uuid::nil(),
+                        events::EventBoundary::Input,
+                        events::SecurityCode::MalformedInput,
+                        events::EventOutcome::Rejected,
+                        events::SafeNextAction::FailClosed,
+                        None,
+                        None,
+                        events::EndpointClass::Unknown,
+                        events::EventTime(0),
+                        Uuid::nil(),
                         vec![entry],
                     );
-                    assert_eq!(result, Err(events::EventBuildError::Redacted), "{field}: {word}");
+                    assert_eq!(
+                        result,
+                        Err(events::EventBuildError::Redacted),
+                        "{field}: {word}"
+                    );
                 }
             }
 
             let mut sink = FakeEventSink::unavailable();
             assert_eq!(
-                events::emit_required(Some(&mut sink), event(events::SecurityCode::EventSinkUnavailable)),
+                events::emit_required(
+                    Some(&mut sink),
+                    event(events::SecurityCode::EventSinkUnavailable)
+                ),
                 Err(events::RequiredEventError::Unavailable)
             );
             let failure = &sink.received()[0];
@@ -194,27 +282,55 @@ macro_rules! events_contract_tests {
         #[test]
         fn aggregation_is_bounded_by_64_buckets_and_saturates_at_255() {
             use crate::events::SecurityEventSink;
-            let make = |i: u128| events::SecurityEvent::new(
-                Uuid::from_u128(i), events::EventBoundary::Authentication,
-                events::SecurityCode::AuthenticationFailed, events::EventOutcome::Failed,
-                events::SafeNextAction::FailClosed, Some(Uuid::from_u128(i)), None,
-                events::EndpointClass::Loopback, events::EventTime(0), Uuid::nil(), vec![],
-            ).unwrap();
+            let make = |i: u128| {
+                events::SecurityEvent::new(
+                    Uuid::from_u128(i),
+                    events::EventBoundary::Authentication,
+                    events::SecurityCode::AuthenticationFailed,
+                    events::EventOutcome::Failed,
+                    events::SafeNextAction::FailClosed,
+                    Some(Uuid::from_u128(i)),
+                    None,
+                    events::EndpointClass::Loopback,
+                    events::EventTime(0),
+                    Uuid::nil(),
+                    vec![],
+                )
+                .unwrap()
+            };
             let repeated = make(1);
             let mut state = events::AggregationState::default();
-            for _ in 0..255 { assert_eq!(state.emit(repeated.clone()), events::SecurityEventSinkResult::Aggregated); }
+            for _ in 0..255 {
+                assert_eq!(
+                    state.emit(repeated.clone()),
+                    events::SecurityEventSinkResult::Aggregated
+                );
+            }
             assert_eq!(state.count_for(&repeated), Some(255));
-            assert_eq!(state.emit(repeated.clone()), events::SecurityEventSinkResult::Aggregated);
+            assert_eq!(
+                state.emit(repeated.clone()),
+                events::SecurityEventSinkResult::Aggregated
+            );
             assert_eq!(state.count_for(&repeated), Some(255));
 
             for i in 2..=64 {
-                assert_eq!(state.emit(make(i)), events::SecurityEventSinkResult::Aggregated);
+                assert_eq!(
+                    state.emit(make(i)),
+                    events::SecurityEventSinkResult::Aggregated
+                );
             }
             assert_eq!(state.bucket_count(), 64);
             let before = state.bucket_count();
             let overflow = make(65);
-            assert_eq!(state.emit(overflow.clone()), events::SecurityEventSinkResult::Unavailable);
-            assert_eq!(state.bucket_count(), before, "overflow leaves aggregation unchanged");
+            assert_eq!(
+                state.emit(overflow.clone()),
+                events::SecurityEventSinkResult::Unavailable
+            );
+            assert_eq!(
+                state.bucket_count(),
+                before,
+                "overflow leaves aggregation unchanged"
+            );
             assert_eq!(state.count_for(&overflow), None);
         }
 
@@ -237,7 +353,10 @@ macro_rules! events_contract_tests {
         fn required_sink_gates_mutation_and_projects_unavailable_failure() {
             let mut protected_state = 0u8;
             let mut accepted = FakeEventSink::accepted();
-            assert_eq!(guarded_increment(Some(&mut accepted), &mut protected_state), Ok(()));
+            assert_eq!(
+                guarded_increment(Some(&mut accepted), &mut protected_state),
+                Ok(())
+            );
             assert_eq!(protected_state, 1);
             assert_eq!(accepted.received().len(), 1);
 
@@ -252,8 +371,8 @@ macro_rules! events_contract_tests {
         #[test]
         fn production_channel_and_authorization_failures_feed_bounded_aggregation() {
             use crate::test_support_channel::{
-                capability, establish_pair, fixture_principal, id, RingSigner, DAEMON, ENDPOINT,
-                PRINCIPAL,
+                DAEMON, ENDPOINT, PRINCIPAL, RingSigner, capability, establish_pair,
+                fixture_principal, id,
             };
             struct CapturingAggregation {
                 state: events::AggregationState,
@@ -297,13 +416,9 @@ macro_rules! events_contract_tests {
                 state: events::AggregationState::default(),
                 events: Vec::new(),
             };
-            let failure = crate::ServerHandshake::accept(
-                server,
-                &hello,
-                &wrong_signer,
-                &mut aggregate,
-            )
-            .expect_err("the wrong server signer must fail authentication");
+            let failure =
+                crate::ServerHandshake::accept(server, &hello, &wrong_signer, &mut aggregate)
+                    .expect_err("the wrong server signer must fail authentication");
             assert_eq!(failure.code(), crate::FailureCode::AuthenticationFailed);
             assert_eq!(aggregate.state.bucket_count(), 1);
             let (mut client_session, mut daemon_session) = establish_pair(0);
@@ -326,9 +441,15 @@ macro_rules! events_contract_tests {
                 .expect_err("authorization must reject the out-of-ceiling action");
             assert_eq!(denied.code(), crate::FailureCode::AuthorizationDenied);
             assert_eq!(aggregate.events.len(), 2);
-            assert_eq!(aggregate.events[1].boundary(), events::EventBoundary::Authorization);
-            assert_eq!(aggregate.events[1].code(), events::SecurityCode::AuthorizationDenied);
+            assert_eq!(
+                aggregate.events[1].boundary(),
+                events::EventBoundary::Authorization
+            );
+            assert_eq!(
+                aggregate.events[1].code(),
+                events::SecurityCode::AuthorizationDenied
+            );
             assert_eq!(aggregate.state.bucket_count(), 2);
         }
-     };
+    };
 }

@@ -260,8 +260,7 @@ pub(crate) fn establish_pair_for(
     let (client_pending, hello) = ClientHandshake::start(client)?;
     let (server_pending, proof) =
         ServerHandshake::accept(server, &hello, &server_signer, &mut sink)?;
-    let (client_session, client_proof) =
-        client_pending.finish(&proof, client_signer, &mut sink)?;
+    let (client_session, client_proof) = client_pending.finish(&proof, client_signer, &mut sink)?;
     let server_session = server_pending.finish(&client_proof, &mut sink)?;
     Ok((client_session, server_session))
 }

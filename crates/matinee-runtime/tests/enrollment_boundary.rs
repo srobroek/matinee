@@ -207,7 +207,9 @@ fn registration_and_custody_survive_session_replacement() {
     let rng = SystemRandom::new();
     let (_rotated_key, rotated) = long_term_keypair(&rng);
     assert_eq!(
-        later.update_custody(identity, &rotated, &binding(), true, false).unwrap_err(),
+        later
+            .update_custody(identity, &rotated, &binding(), true, false)
+            .unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::CapabilityRejected),
         "custody rotation fails closed after non-exportable binding is lost",
     );
@@ -235,7 +237,9 @@ fn registration_and_custody_survive_session_replacement() {
         ChromeReconnectOutcome::Revoked
     );
     assert_eq!(
-        later.update_custody(identity, &rotated, &binding(), true, true).unwrap_err(),
+        later
+            .update_custody(identity, &rotated, &binding(), true, true)
+            .unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::CredentialMismatch),
         "a revoked principal accepts no replacement key"
     );
@@ -354,9 +358,13 @@ fn a_closed_channel_seals_and_opens_no_one_time_key() {
         .deliver_one_time_key(ticket.enrollment())
         .expect("seal the one-time key");
     session.close();
-    let challenge = host.proof_challenge(ticket.enrollment(), ticket.one_time_public_key()).unwrap();
+    let challenge = host
+        .proof_challenge(ticket.enrollment(), ticket.one_time_public_key())
+        .unwrap();
     assert_eq!(
-        session.sign_proof_for_test(ticket.enrollment(), &sealed, &challenge).unwrap_err(),
+        session
+            .sign_proof_for_test(ticket.enrollment(), &sealed, &challenge)
+            .unwrap_err(),
         EnrollmentFailure::Custody(EnrollmentCustodyError::ChannelNotAuthenticated),
         "a closed channel signs nothing already on the wire"
     );

@@ -311,9 +311,11 @@ mod tests {
         for (index, action) in ALL_ACTIONS.iter().enumerate() {
             let value = action.as_str();
             assert!(!value.is_empty() && value.len() <= 40);
-            assert!(ALL_ACTIONS[..index]
-                .iter()
-                .all(|prior| prior.as_str() != value));
+            assert!(
+                ALL_ACTIONS[..index]
+                    .iter()
+                    .all(|prior| prior.as_str() != value)
+            );
             assert!(
                 ALL_CODES
                     .iter()
@@ -336,9 +338,11 @@ mod tests {
         for (index, code) in ALL_CODES.iter().enumerate() {
             let value = code.as_str();
             assert!(!value.is_empty() && value.len() <= 32);
-            assert!(ALL_CODES[..index]
-                .iter()
-                .all(|prior| prior.as_str() != value));
+            assert!(
+                ALL_CODES[..index]
+                    .iter()
+                    .all(|prior| prior.as_str() != value)
+            );
             assert_eq!(SecurityFailure::new(*code).boundary(), code.boundary());
             assert_eq!(
                 SecurityFailure::new(*code).safe_next_action(),

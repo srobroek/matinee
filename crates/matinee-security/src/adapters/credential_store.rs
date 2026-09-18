@@ -28,7 +28,10 @@ impl CredentialBinding {
     /// Construct a deterministic opaque binding for adapter-level tests.
     #[cfg(test)]
     pub(crate) const fn new(value: [u8; 32]) -> Self {
-        Self { selector: value, owner: value }
+        Self {
+            selector: value,
+            owner: value,
+        }
     }
 
     /// Derive a stable selector from the state-directory and daemon identities.
@@ -42,8 +45,12 @@ impl CredentialBinding {
         }
     }
 
-    fn selector(self) -> [u8; 32] { self.selector }
-    fn owner(self) -> [u8; 32] { self.owner }
+    fn selector(self) -> [u8; 32] {
+        self.selector
+    }
+    fn owner(self) -> [u8; 32] {
+        self.owner
+    }
 }
 
 fn derive(domain: &[u8], state: &[u8; 16], daemon: &[u8; 16]) -> [u8; 32] {
@@ -73,8 +80,12 @@ pub(crate) struct CredentialHandle {
 }
 
 impl CredentialHandle {
-    pub(crate) const fn from_slot(slot: u64) -> Self { Self { slot } }
-    pub(crate) const fn slot(&self) -> u64 { self.slot }
+    pub(crate) const fn from_slot(slot: u64) -> Self {
+        Self { slot }
+    }
+    pub(crate) const fn slot(&self) -> u64 {
+        self.slot
+    }
 }
 
 impl fmt::Debug for CredentialHandle {
@@ -111,7 +122,9 @@ pub(crate) trait CredentialStore {
 pub(crate) struct PlatformCredentialStore;
 
 impl PlatformCredentialStore {
-    pub(crate) const fn new() -> Self { Self }
+    pub(crate) const fn new() -> Self {
+        Self
+    }
 
     fn entry(binding: CredentialBinding) -> Result<Entry, CredentialStoreError> {
         let selector = selector_text(binding);
@@ -191,11 +204,14 @@ struct CredentialRecord {
 
 #[cfg(test)]
 impl InMemoryCredentialStore {
-    pub(crate) fn new() -> Self { Self::default() }
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
 
     pub(crate) fn register(&mut self, binding: CredentialBinding, slot: u64) {
         self.entries.push(CredentialRecord {
-            selector: binding.selector(), owner: binding.owner(),
+            selector: binding.selector(),
+            owner: binding.owner(),
             handle: CredentialHandle::from_slot(slot),
         });
     }
@@ -204,7 +220,9 @@ impl InMemoryCredentialStore {
         let mut owner = binding.owner();
         owner[0] ^= 0xff;
         self.entries.push(CredentialRecord {
-            selector: binding.selector(), owner, handle: CredentialHandle::from_slot(slot),
+            selector: binding.selector(),
+            owner,
+            handle: CredentialHandle::from_slot(slot),
         });
     }
 
@@ -216,14 +234,24 @@ impl InMemoryCredentialStore {
 #[cfg(test)]
 impl CredentialStore for InMemoryCredentialStore {
     fn lookup(&self, binding: CredentialBinding) -> Result<CredentialHandle, CredentialStoreError> {
-        if self.unavailable { return Err(CredentialStoreError::Unavailable); }
+        if self.unavailable {
+            return Err(CredentialStoreError::Unavailable);
+        }
         let mut found = None;
-        for record in self.entries.iter().filter(|record| record.selector == binding.selector()) {
-            if found.is_some() { return Err(CredentialStoreError::Duplicate); }
+        for record in self
+            .entries
+            .iter()
+            .filter(|record| record.selector == binding.selector())
+        {
+            if found.is_some() {
+                return Err(CredentialStoreError::Duplicate);
+            }
             found = Some(record);
         }
         let record = found.ok_or(CredentialStoreError::Missing)?;
-        if record.owner != binding.owner() { return Err(CredentialStoreError::Mismatch); }
+        if record.owner != binding.owner() {
+            return Err(CredentialStoreError::Mismatch);
+        }
         Ok(record.handle)
     }
 }
@@ -234,8 +262,10 @@ mod tests {
 
     #[test]
     fn selector_is_derived_and_storage_outcomes_are_closed() {
-        let first = CredentialBinding::for_identities(uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
-        let other = CredentialBinding::for_identities(uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(3));
+        let first =
+            CredentialBinding::for_identities(uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+        let other =
+            CredentialBinding::for_identities(uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(3));
         assert_ne!(first, other);
         assert_eq!(format!("{first:?}"), "CredentialBinding(REDACTED)");
         let selector = selector_text(first);
@@ -258,7 +288,13 @@ mod tests {
         record.extend_from_slice(&[0x42; MIN_PRIVATE_KEY_BYTES]);
         let handle = decode_record(binding, &record).expect("valid platform record");
         assert_eq!(format!("{handle:?}"), "CredentialHandle(REDACTED)");
-        assert_eq!(decode_record(binding, &[0; OWNER_BYTES + MIN_PRIVATE_KEY_BYTES]), Err(CredentialStoreError::Mismatch));
-        assert_eq!(decode_record(binding, &[0; OWNER_BYTES]), Err(CredentialStoreError::Mismatch));
+        assert_eq!(
+            decode_record(binding, &[0; OWNER_BYTES + MIN_PRIVATE_KEY_BYTES]),
+            Err(CredentialStoreError::Mismatch)
+        );
+        assert_eq!(
+            decode_record(binding, &[0; OWNER_BYTES]),
+            Err(CredentialStoreError::Mismatch)
+        );
     }
 }

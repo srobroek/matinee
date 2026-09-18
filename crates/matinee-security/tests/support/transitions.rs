@@ -344,7 +344,8 @@ pub(crate) fn paired_proof(
     let sealed = transitions
         .seal_one_time_key(enrollment, channel)
         .expect("one-time key seals once");
-    let private = channel.open_sealed_for_test(enrollment, &sealed)
+    let private = channel
+        .open_sealed_for_test(enrollment, &sealed)
         .expect("the channel peer recovers the sealed key");
     let rng = SystemRandom::new();
     let one_time = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &private, &rng)

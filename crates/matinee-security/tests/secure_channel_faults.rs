@@ -279,7 +279,8 @@ macro_rules! secure_channel_faults_tests {
                 assert!(!daemon.is_open());
             }
             #[test]
-            fn secure_channel_faults_webcrypto_peer_and_native_vectors_agree_with_required_mapping() {
+            fn secure_channel_faults_webcrypto_peer_and_native_vectors_agree_with_required_mapping()
+            {
                 let corpus = include_str!("../vectors/secure-channel-v1.json");
                 let mutations = [
                     ("server-signature-bit", "FR-010/FR-011/SC-003"),
@@ -299,11 +300,17 @@ macro_rules! secure_channel_faults_tests {
                 assert!(corpus.contains("framed_hex"));
 
                 let peer = std::process::Command::new("node")
-                    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("fixtures/webcrypto/secure-channel-vectors.mjs"))
+                    .arg(
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("fixtures/webcrypto/secure-channel-vectors.mjs"),
+                    )
                     .output()
                     .expect("Node.js WebCrypto peer");
-                assert!(peer.status.success(), "{}", String::from_utf8_lossy(&peer.stderr));
+                assert!(
+                    peer.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&peer.stderr)
+                );
                 let output = String::from_utf8_lossy(&peer.stdout);
                 assert!(output.contains("\"result\":\"pass\""), "{output}");
                 assert!(output.contains("\"fixed_outputs\":17"), "{output}");
@@ -311,41 +318,58 @@ macro_rules! secure_channel_faults_tests {
 
                 // The native side exercises the same valid frame and each fault class.
                 let (mut client, mut daemon) = establish_pair(EPOCH);
-                let output = AuthorizedOutput::filtered(PayloadKind::Command, b"one".to_vec()).unwrap();
+                let output =
+                    AuthorizedOutput::filtered(PayloadKind::Command, b"one".to_vec()).unwrap();
                 let mut sink = RecordingSink::default();
                 let frame = client.send(&output, &mut sink).unwrap();
-                assert!(daemon
-                    .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
-                    .is_ok());
+                assert!(
+                    daemon
+                        .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
+                        .is_ok()
+                );
                 let native_rejected = [
-                    daemon.receive(&frame, &owned_operation(PayloadKind::Command), &mut sink).is_err(),
+                    daemon
+                        .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
+                        .is_err(),
                     {
                         let mut bad = frame.clone();
                         let last = bad.len() - 1;
                         bad[last] ^= 1;
-                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                        daemon
+                            .receive(&bad, &owned_operation(PayloadKind::Command), &mut sink)
+                            .is_err()
                     },
                     {
                         let mut bad = frame.clone();
                         bad[4] = 2;
-                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                        daemon
+                            .receive(&bad, &owned_operation(PayloadKind::Command), &mut sink)
+                            .is_err()
                     },
                     {
                         let mut bad = frame.clone();
                         bad[..4].copy_from_slice(&u32::MAX.to_be_bytes());
-                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                        daemon
+                            .receive(&bad, &owned_operation(PayloadKind::Command), &mut sink)
+                            .is_err()
                     },
-                    daemon.receive(&frame, &owned_operation(PayloadKind::Command), &mut sink).is_err(),
+                    daemon
+                        .receive(&frame, &owned_operation(PayloadKind::Command), &mut sink)
+                        .is_err(),
                     {
                         let mut bad = frame.clone();
                         bad[4] ^= 1;
-                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                        daemon
+                            .receive(&bad, &owned_operation(PayloadKind::Command), &mut sink)
+                            .is_err()
                     },
                     {
                         let mut bad = frame.clone();
                         let last = bad.len() - 1;
                         bad[last] ^= 1;
-                        daemon.receive(&bad, &owned_operation(PayloadKind::Command), &mut sink).is_err()
+                        daemon
+                            .receive(&bad, &owned_operation(PayloadKind::Command), &mut sink)
+                            .is_err()
                     },
                 ];
                 assert!(native_rejected.into_iter().all(|rejected| rejected));

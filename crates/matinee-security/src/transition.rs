@@ -11,15 +11,22 @@ use core::fmt;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
-use crate::adapters::credential_store::{CredentialStore, CredentialStoreError, PlatformCredentialStore};
-use crate::adapters::os_pipe::{BootstrapEnvelope, EnvelopeError, NonceLedger, OsPipe, OsPipeError, PlatformOsPipe};
+use crate::adapters::credential_store::{
+    CredentialStore, CredentialStoreError, PlatformCredentialStore,
+};
+use crate::adapters::os_pipe::{
+    BootstrapEnvelope, EnvelopeError, NonceLedger, OsPipe, OsPipeError, PlatformOsPipe,
+};
 use crate::authorization::endpoint_class;
 use crate::enrollment::{
     ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBundle,
     EnrollmentChannel, EnrollmentClock, EnrollmentConsumeError, EnrollmentConsumptionService,
     EnrollmentCreation, EnrollmentProof,
 };
-use crate::events::{emit_required, EndpointClass, EventBoundary, EventOutcome, EventTime, MetadataEntry, SafeNextAction, SecurityCode, SecurityEvent, SecurityEventSink};
+use crate::events::{
+    EndpointClass, EventBoundary, EventOutcome, EventTime, MetadataEntry, SafeNextAction,
+    SecurityCode, SecurityEvent, SecurityEventSink, emit_required,
+};
 use crate::failures::{FailureCode, SecurityFailure};
 use crate::identity::{
     Capability, CapabilityAction, ConnectionId, CredentialReference, EnrollmentLifecycle,
@@ -27,7 +34,9 @@ use crate::identity::{
     Principal, PrincipalKind, PrincipalLifecycle, PublicKey, RevocationTransition,
     RotationTransition, TransitionId, TransitionInput, TransitionOperation, TransitionOutcome,
 };
-use crate::{AuthorizedInput, ChannelSession, ObjectOwner, PayloadKind, SecurityCommand, SessionInput};
+use crate::{
+    AuthorizedInput, ChannelSession, ObjectOwner, PayloadKind, SecurityCommand, SessionInput,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CrashPoint {
@@ -73,8 +82,12 @@ pub(crate) struct BootstrapState {
 }
 
 impl BootstrapState {
-    pub(crate) fn active(&self) -> Option<&BootstrapRecord> { self.active.as_ref() }
-    pub(crate) fn staged(&self) -> Option<&BootstrapRecord> { self.staged.as_ref() }
+    pub(crate) fn active(&self) -> Option<&BootstrapRecord> {
+        self.active.as_ref()
+    }
+    pub(crate) fn staged(&self) -> Option<&BootstrapRecord> {
+        self.staged.as_ref()
+    }
 
     /// Recover the sole staged record. If active state already exists, an
     /// uncommitted duplicate is discarded rather than replacing active identity.
@@ -98,7 +111,13 @@ impl BootstrapState {
     ) -> Result<TransitionOutcome, BootstrapError> {
         let credential = PlatformCredentialStore::new();
         self.bootstrap_encoded_inner(
-            pipe, encoded_envelope, &credential, sink, None, event_time, endpoint_bytes,
+            pipe,
+            encoded_envelope,
+            &credential,
+            sink,
+            None,
+            event_time,
+            endpoint_bytes,
         )
     }
 
@@ -116,7 +135,11 @@ impl BootstrapState {
     }
 
     #[cfg(test)]
-    pub(crate) fn bootstrap_encoded_with_store_for_test<P: OsPipe + ?Sized, C: CredentialStore + ?Sized, S: SecurityEventSink + ?Sized>(
+    pub(crate) fn bootstrap_encoded_with_store_for_test<
+        P: OsPipe + ?Sized,
+        C: CredentialStore + ?Sized,
+        S: SecurityEventSink + ?Sized,
+    >(
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],
@@ -126,12 +149,22 @@ impl BootstrapState {
         endpoint_bytes: &[u8],
     ) -> Result<TransitionOutcome, BootstrapError> {
         self.bootstrap_encoded_inner(
-            pipe, encoded_envelope, credential, sink, None, event_time, endpoint_bytes,
+            pipe,
+            encoded_envelope,
+            credential,
+            sink,
+            None,
+            event_time,
+            endpoint_bytes,
         )
     }
 
     #[cfg(test)]
-    pub(crate) fn bootstrap_encoded_for_test<P: OsPipe + ?Sized, C: CredentialStore + ?Sized, S: SecurityEventSink + ?Sized>(
+    pub(crate) fn bootstrap_encoded_for_test<
+        P: OsPipe + ?Sized,
+        C: CredentialStore + ?Sized,
+        S: SecurityEventSink + ?Sized,
+    >(
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],
@@ -142,11 +175,21 @@ impl BootstrapState {
         endpoint_bytes: &[u8],
     ) -> Result<TransitionOutcome, BootstrapError> {
         self.bootstrap_encoded_inner(
-            pipe, encoded_envelope, credential, sink, crash, event_time, endpoint_bytes,
+            pipe,
+            encoded_envelope,
+            credential,
+            sink,
+            crash,
+            event_time,
+            endpoint_bytes,
         )
     }
 
-    fn bootstrap_encoded_inner<P: OsPipe + ?Sized, C: CredentialStore + ?Sized, S: SecurityEventSink + ?Sized>(
+    fn bootstrap_encoded_inner<
+        P: OsPipe + ?Sized,
+        C: CredentialStore + ?Sized,
+        S: SecurityEventSink + ?Sized,
+    >(
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],
@@ -158,13 +201,17 @@ impl BootstrapState {
     ) -> Result<TransitionOutcome, BootstrapError> {
         let mut inherited = pipe.acquire().map_err(BootstrapError::Pipe)?;
         let result = (|| {
-            let envelope = BootstrapEnvelope::parse(encoded_envelope)
-                .map_err(BootstrapError::Envelope)?;
+            let envelope =
+                BootstrapEnvelope::parse(encoded_envelope).map_err(BootstrapError::Envelope)?;
             let endpoint = BootstrapEnvelope::parse_endpoint(endpoint_bytes)
                 .map_err(BootstrapError::Envelope)?;
             self.apply(&envelope, credential, sink, crash, event_time, endpoint)
         })();
-        if result.is_err() { inherited.close_on_error(); } else { inherited.close(); }
+        if result.is_err() {
+            inherited.close_on_error();
+        } else {
+            inherited.close();
+        }
         result
     }
 
@@ -208,7 +255,9 @@ impl BootstrapState {
         if endpoint_class == EndpointClass::Loopback {
             return Err(BootstrapError::EndpointRejected);
         }
-        self.ledger.consume(envelope.nonce).map_err(|_| BootstrapError::AlreadyUsed)?;
+        self.ledger
+            .consume(envelope.nonce)
+            .map_err(|_| BootstrapError::AlreadyUsed)?;
         let binding = crate::adapters::credential_store::CredentialBinding::for_identities(
             envelope.state_directory,
             envelope.daemon,
@@ -235,13 +284,19 @@ impl BootstrapState {
             endpoint_class,
             event_time,
             envelope.state_directory,
-            vec![MetadataEntry { key: "operation".into(), value: "bootstrap".into() }],
-        ).map_err(|_| {
+            vec![MetadataEntry {
+                key: "operation".into(),
+                value: "bootstrap".into(),
+            }],
+        )
+        .map_err(|_| {
             self.ledger.release(&envelope.nonce);
             BootstrapError::EventUnavailable
         })?;
-        emit_required(sink.as_deref_mut(), bootstrap_event)
-            .map_err(|_| { self.ledger.release(&envelope.nonce); BootstrapError::EventUnavailable })?;
+        emit_required(sink.as_deref_mut(), bootstrap_event).map_err(|_| {
+            self.ledger.release(&envelope.nonce);
+            BootstrapError::EventUnavailable
+        })?;
         let identity_event = SecurityEvent::new(
             uuid::Uuid::from_u128(envelope.bootstrap.as_u128() ^ 1),
             EventBoundary::Bootstrap,
@@ -253,13 +308,19 @@ impl BootstrapState {
             endpoint_class,
             event_time,
             envelope.state_directory,
-            vec![MetadataEntry { key: "phase".into(), value: "identity".into() }],
-        ).map_err(|_| {
+            vec![MetadataEntry {
+                key: "phase".into(),
+                value: "identity".into(),
+            }],
+        )
+        .map_err(|_| {
             self.ledger.release(&envelope.nonce);
             BootstrapError::EventUnavailable
         })?;
-        emit_required(sink.as_deref_mut(), identity_event)
-            .map_err(|_| { self.ledger.release(&envelope.nonce); BootstrapError::EventUnavailable })?;
+        emit_required(sink.as_deref_mut(), identity_event).map_err(|_| {
+            self.ledger.release(&envelope.nonce);
+            BootstrapError::EventUnavailable
+        })?;
         if matches!(crash, Some(CrashPoint::AfterEvent)) {
             self.ledger.release(&envelope.nonce);
             return Err(BootstrapError::Crash(CrashPoint::AfterEvent));
@@ -286,11 +347,15 @@ impl BootstrapState {
 }
 
 fn classify_endpoint(endpoint: &str) -> EndpointClass {
-    if endpoint.starts_with("native://") { EndpointClass::Native }
-    else if endpoint.starts_with("chrome-extension://") { EndpointClass::Extension }
-    else if endpoint.starts_with("127.0.0.1:") || endpoint.starts_with("[::1]:") {
+    if endpoint.starts_with("native://") {
+        EndpointClass::Native
+    } else if endpoint.starts_with("chrome-extension://") {
+        EndpointClass::Extension
+    } else if endpoint.starts_with("127.0.0.1:") || endpoint.starts_with("[::1]:") {
         EndpointClass::Loopback
-    } else { EndpointClass::Unknown }
+    } else {
+        EndpointClass::Unknown
+    }
 }
 
 /// A refused transition: one closed outcome and one bounded failure.
@@ -462,29 +527,46 @@ fn transition_digest(
     let mut digest = CanonicalDigest::new();
     digest.bytes("domain", b"matinee.transition.replay.v1");
     match command {
-        SecurityCommand::Bootstrap { state_directory, idempotency } => {
+        SecurityCommand::Bootstrap {
+            state_directory,
+            idempotency,
+        } => {
             digest.byte("command", 0);
             digest.uuid("state-directory", state_directory.get());
             digest.uuid("idempotency", idempotency.get());
         }
-        SecurityCommand::CreateEnrollment { enrollment, daemon, idempotency } => {
+        SecurityCommand::CreateEnrollment {
+            enrollment,
+            daemon,
+            idempotency,
+        } => {
             digest.byte("command", 1);
             digest.uuid("enrollment", enrollment.get());
             digest.uuid("daemon", daemon.get());
             digest.uuid("idempotency", idempotency.get());
         }
-        SecurityCommand::ConsumeEnrollment { enrollment, idempotency } => {
+        SecurityCommand::ConsumeEnrollment {
+            enrollment,
+            idempotency,
+        } => {
             digest.byte("command", 2);
             digest.uuid("enrollment", enrollment.get());
             digest.uuid("idempotency", idempotency.get());
         }
-        SecurityCommand::Rotate { principal, new_fingerprint, idempotency } => {
+        SecurityCommand::Rotate {
+            principal,
+            new_fingerprint,
+            idempotency,
+        } => {
             digest.byte("command", 3);
             digest.uuid("principal", principal.get());
             digest.bytes("new-fingerprint", new_fingerprint.as_str().as_bytes());
             digest.uuid("idempotency", idempotency.get());
         }
-        SecurityCommand::Revoke { principal, idempotency } => {
+        SecurityCommand::Revoke {
+            principal,
+            idempotency,
+        } => {
             digest.byte("command", 4);
             digest.uuid("principal", principal.get());
             digest.uuid("idempotency", idempotency.get());
@@ -519,9 +601,15 @@ fn transition_digest(
             digest.uuid("identity", value.identity.get());
             digest.uuid("proof-identity", value.proof.identity.get());
             digest.bytes("proof-signature", &value.proof.signature);
-            digest.bytes("proof-public-key", value.proof.long_term_public_key.as_bytes());
+            digest.bytes(
+                "proof-public-key",
+                value.proof.long_term_public_key.as_bytes(),
+            );
             digest.u64("clock-occurrence", value.clock.occurrence_ms());
-            digest.byte("clock-expiry-status", expiry_code(value.clock.expiry().status()));
+            digest.byte(
+                "clock-expiry-status",
+                expiry_code(value.clock.expiry().status()),
+            );
             digest.u64("clock-expiry-deadline", value.clock.expiry().deadline_ms());
             digest.bytes("binding-origin", value.binding.origin.as_bytes());
             digest.bytes("binding-endpoint", value.binding.endpoint.as_bytes());
@@ -530,8 +618,12 @@ fn transition_digest(
             digest.bytes("binding-install", value.binding.install_metadata.as_bytes());
             let development = match value.binding.development_allowance {
                 DevelopmentIdentityAllowance::None => 0,
-                DevelopmentIdentityAllowance::Explicit { warning_acknowledged: false } => 1,
-                DevelopmentIdentityAllowance::Explicit { warning_acknowledged: true } => 2,
+                DevelopmentIdentityAllowance::Explicit {
+                    warning_acknowledged: false,
+                } => 1,
+                DevelopmentIdentityAllowance::Explicit {
+                    warning_acknowledged: true,
+                } => 2,
             };
             digest.byte("binding-development", development);
             add_chrome_capability(&mut digest, value.capability);
@@ -589,7 +681,10 @@ fn add_credential(digest: &mut CanonicalDigest, credential: &CredentialReference
     digest.bytes("credential-provider", credential.provider().as_bytes());
     digest.bytes("credential-locator", credential.key_locator().as_bytes());
     digest.uuid("credential-daemon", credential.daemon().get());
-    digest.uuid("credential-state-directory", credential.state_directory().get());
+    digest.uuid(
+        "credential-state-directory",
+        credential.state_directory().get(),
+    );
 }
 
 const fn operation_code(operation: &TransitionOperation) -> u8 {
@@ -650,7 +745,11 @@ impl CanonicalDigest {
     }
 
     fn finish(self) -> [u8; 32] {
-        self.0.finish().as_ref().try_into().expect("SHA-256 is 32 bytes")
+        self.0
+            .finish()
+            .as_ref()
+            .try_into()
+            .expect("SHA-256 is 32 bytes")
     }
 }
 
@@ -757,7 +856,6 @@ impl SecurityTransitions {
         gate
     }
 
-
     /// Apply one closed lifecycle command against the durable transition record the
     /// owning state actor reported.
     ///
@@ -780,8 +878,7 @@ impl SecurityTransitions {
             gate.acquired.wait();
             gate.release.wait();
         }
-        if *input.operation() != command.operation()
-            || input.idempotency() != command.idempotency()
+        if *input.operation() != command.operation() || input.idempotency() != command.idempotency()
         {
             return Err(TransitionRejection::undecided(
                 FailureCode::TransitionUnknown,
@@ -817,13 +914,30 @@ impl SecurityTransitions {
                     state_directory, ..
                 },
                 TransitionMaterial::Bootstrap(bootstrap),
-            ) => state.bootstrap(command, input, digest, *state_directory, bootstrap, sink, time),
+            ) => state.bootstrap(
+                command,
+                input,
+                digest,
+                *state_directory,
+                bootstrap,
+                sink,
+                time,
+            ),
             (
                 SecurityCommand::CreateEnrollment {
                     enrollment, daemon, ..
                 },
                 TransitionMaterial::Enrollment(creation),
-            ) => state.create_enrollment(command, input, digest, *enrollment, *daemon, creation, sink, time),
+            ) => state.create_enrollment(
+                command,
+                input,
+                digest,
+                *enrollment,
+                *daemon,
+                creation,
+                sink,
+                time,
+            ),
             (
                 SecurityCommand::ConsumeEnrollment { enrollment, .. },
                 TransitionMaterial::Pairing(pairing),
@@ -845,10 +959,9 @@ impl SecurityTransitions {
                 sink,
                 time,
             ),
-            (
-                SecurityCommand::Revoke { principal, .. },
-                TransitionMaterial::Revocation(reason),
-            ) => state.revoke(command, input, digest, *principal, reason, sink, time),
+            (SecurityCommand::Revoke { principal, .. }, TransitionMaterial::Revocation(reason)) => {
+                state.revoke(command, input, digest, *principal, reason, sink, time)
+            }
             _ => Err(TransitionRejection::undecided(
                 FailureCode::TransitionUnknown,
                 None,
@@ -861,10 +974,7 @@ impl SecurityTransitions {
     /// This registry is the only snapshot source a handshake configuration may read,
     /// so every committed rotation and revocation is visible to every later handshake,
     /// frame, grant, and decision.
-    pub fn register_principal(
-        &self,
-        principal: Principal,
-    ) -> Result<(), TransitionRejection> {
+    pub fn register_principal(&self, principal: Principal) -> Result<(), TransitionRejection> {
         let mut state = self.lock()?;
         let id = principal.id();
         if principal.lifecycle() != PrincipalLifecycle::Active {
@@ -1067,9 +1177,10 @@ impl SecurityTransitions {
         time: EventTime,
     ) -> Result<TransitionOutcome, TransitionRejection> {
         let mut state = self.lock()?;
-        let pending = state.decisions.get(&decision).ok_or_else(|| {
-            TransitionRejection::rejected(FailureCode::AuthorizationDenied, None)
-        })?;
+        let pending = state
+            .decisions
+            .get(&decision)
+            .ok_or_else(|| TransitionRejection::rejected(FailureCode::AuthorizationDenied, None))?;
         let extension = pending.extension;
         match pending.state {
             DecisionState::Pending => {}
@@ -1199,7 +1310,12 @@ impl SecurityTransitions {
         sink: &mut dyn SecurityEventSink,
     ) -> Result<Vec<u8>, SecurityFailure> {
         let mut state = self.lock_for_frame()?;
-        let TransitionState { principals, channels, grants, .. } = &mut *state;
+        let TransitionState {
+            principals,
+            channels,
+            grants,
+            ..
+        } = &mut *state;
         let session = channels
             .get_mut(&connection)
             .ok_or_else(|| SecurityFailure::new(FailureCode::AuthenticationFailed))?;
@@ -1251,7 +1367,6 @@ impl SecurityTransitions {
         session.send_projection(&coordinated, sink)
     }
 
-
     /// Commit one object mutation the receive path authorized.
     ///
     /// The authorized input carries the epoch it was minted at, so an input that
@@ -1282,8 +1397,7 @@ impl SecurityTransitions {
                 safe_ids.1,
             ));
         }
-        if principal.lifecycle() != PrincipalLifecycle::Active
-            || principal.epoch() != input.epoch()
+        if principal.lifecycle() != PrincipalLifecycle::Active || principal.epoch() != input.epoch()
         {
             return Err(SecurityFailure::with_safe_ids(
                 FailureCode::StaleEpoch,
@@ -1352,7 +1466,11 @@ impl SecurityTransitions {
 
     /// The long-term fingerprint the enrollment host holds for one principal.
     pub(crate) fn custody_fingerprint(&self, principal: IdentityId) -> Option<Fingerprint> {
-        self.state.lock().ok()?.host.registered_fingerprint(principal)
+        self.state
+            .lock()
+            .ok()?
+            .host
+            .registered_fingerprint(principal)
     }
 
     #[cfg(test)]
@@ -1377,8 +1495,6 @@ impl SecurityTransitions {
         let mut state = self.state.lock().expect("transition state lock");
         state.host.fail_next_custody_revocation();
     }
-
-
 
     /// Seal one bundle's one-time key over an authenticated native channel. The
     /// pending registration keeps the only copy of that key, and it leaves exactly
@@ -1644,10 +1760,7 @@ impl TransitionState {
             )
         })?;
         candidate.activate().map_err(|_| {
-            TransitionRejection::rejected(
-                FailureCode::AuthenticationFailed,
-                Some(pairing.identity),
-            )
+            TransitionRejection::rejected(FailureCode::AuthenticationFailed, Some(pairing.identity))
         })?;
         let Self {
             host, enrollments, ..
@@ -1722,18 +1835,19 @@ impl TransitionState {
         let reactivates_retired = self
             .retired_credentials
             .get(&principal)
-            .is_some_and(|retired| retired.iter().any(|retired| {
-                retired.public_key == replacement.public_key
-                    || retired.fingerprint == fingerprint
-                    || retired.credential == replacement.credential
-            }));
+            .is_some_and(|retired| {
+                retired.iter().any(|retired| {
+                    retired.public_key == replacement.public_key
+                        || retired.fingerprint == fingerprint
+                        || retired.credential == replacement.credential
+                })
+            });
         if &fingerprint != new_fingerprint
             || replacement.public_key == *current.public_key()
             || replacement.credential == *current.credential()
             || reactivates_retired
             || replacement.credential.daemon() != current.owner()
-            || replacement.credential.state_directory()
-                != current.credential().state_directory()
+            || replacement.credential.state_directory() != current.credential().state_directory()
         {
             return Err(TransitionRejection::rejected(
                 FailureCode::CredentialStoreMismatch,
@@ -1759,10 +1873,9 @@ impl TransitionState {
             ),
             (None, _) => None,
         };
-        let next_epoch = current
-            .epoch()
-            .checked_add(1)
-            .ok_or_else(|| TransitionRejection::rejected(FailureCode::ResourceLimit, Some(principal)))?;
+        let next_epoch = current.epoch().checked_add(1).ok_or_else(|| {
+            TransitionRejection::rejected(FailureCode::ResourceLimit, Some(principal))
+        })?;
         // The auditable carrier validates the epoch boundary and the fingerprint
         // change before anything is written.
         let carrier = RotationTransition::new(
@@ -1791,10 +1904,7 @@ impl TransitionState {
                 )
             })
             .map_err(|_| {
-                TransitionRejection::rejected(
-                    FailureCode::CredentialStoreMismatch,
-                    Some(principal),
-                )
+                TransitionRejection::rejected(FailureCode::CredentialStoreMismatch, Some(principal))
             })?;
         require_event(
             sink,
@@ -1876,9 +1986,7 @@ impl TransitionState {
             grants,
             TransitionOutcome::Committed,
         )
-        .map_err(|_| {
-            TransitionRejection::rejected(FailureCode::MalformedInput, Some(principal))
-        })?;
+        .map_err(|_| TransitionRejection::rejected(FailureCode::MalformedInput, Some(principal)))?;
         // The outer transition-state guard owns the host for the entire stage/event/commit
         // sequence, so this validated plan cannot become stale before its infallible commit.
         let custody_revocation = self
@@ -1927,10 +2035,7 @@ impl TransitionState {
     }
 
     /// The registered principal a transition targets, refused unless it is active.
-    fn active_principal(
-        &self,
-        principal: IdentityId,
-    ) -> Result<&Principal, TransitionRejection> {
+    fn active_principal(&self, principal: IdentityId) -> Result<&Principal, TransitionRejection> {
         let registered = self.principals.get(&principal).ok_or_else(|| {
             TransitionRejection::rejected(FailureCode::AuthenticationFailed, Some(principal))
         })?;
@@ -2017,9 +2122,8 @@ fn require_event<S: SecurityEventSink + ?Sized>(
     time: EventTime,
     metadata: Vec<MetadataEntry>,
 ) -> Result<(), TransitionRejection> {
-    let unavailable = || {
-        TransitionRejection::rejected(FailureCode::EventSinkUnavailable, Some(principal.id()))
-    };
+    let unavailable =
+        || TransitionRejection::rejected(FailureCode::EventSinkUnavailable, Some(principal.id()));
     let event = SecurityEvent::new(
         event_id,
         boundary,
@@ -2084,8 +2188,7 @@ fn consume_rejection(error: EnrollmentConsumeError, principal: IdentityId) -> Tr
         EnrollmentConsumeError::RateLimited => {
             TransitionRejection::rejected(FailureCode::RateLimited, Some(principal))
         }
-        EnrollmentConsumeError::CredentialMismatch
-        | EnrollmentConsumeError::CapabilityRejected => {
+        EnrollmentConsumeError::CredentialMismatch | EnrollmentConsumeError::CapabilityRejected => {
             TransitionRejection::rejected(FailureCode::CredentialStoreMismatch, Some(principal))
         }
     }

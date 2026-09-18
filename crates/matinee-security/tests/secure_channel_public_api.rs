@@ -170,14 +170,17 @@ fn external_consumer_establishes_and_uses_only_the_typed_boundary() {
 
     let output = AuthorizedOutput::filtered(PayloadKind::Command, b"status".to_vec()).unwrap();
     let frame = pair.client.send(&output, &mut sink).unwrap();
-    let input = pair.transitions.receive(
-        pair.connection,
-        &frame,
-        capability(CapabilityAction::Read, "matinee/status"),
-        PayloadKind::Command,
-        ObjectOwner::Owned(pair.owner),
-        &mut sink,
-    ).unwrap();
+    let input = pair
+        .transitions
+        .receive(
+            pair.connection,
+            &frame,
+            capability(CapabilityAction::Read, "matinee/status"),
+            PayloadKind::Command,
+            ObjectOwner::Owned(pair.owner),
+            &mut sink,
+        )
+        .unwrap();
     assert_eq!(input.payload(), b"status");
     assert_eq!(input.granted().resource_scope(), "matinee/status");
 
@@ -188,7 +191,10 @@ fn external_consumer_establishes_and_uses_only_the_typed_boundary() {
         None,
         b"ready",
     );
-    let response = pair.transitions.send_projection(pair.connection, &projection, &mut sink).unwrap();
+    let response = pair
+        .transitions
+        .send_projection(pair.connection, &projection, &mut sink)
+        .unwrap();
     let filtered = pair
         .client
         .receive_filtered(&response, PayloadKind::Response, &mut sink)
@@ -204,14 +210,17 @@ fn an_external_consumer_cannot_bypass_coordinator_authorization() {
     let output = AuthorizedOutput::filtered(PayloadKind::Command, b"status".to_vec()).unwrap();
     let frame = pair.client.send(&output, &mut sink).unwrap();
 
-    let failure = pair.transitions.receive(
-        pair.connection,
-        &frame,
-        capability(CapabilityAction::Read, "matinee/status"),
-        PayloadKind::Command,
-        ObjectOwner::Owned(id(99)),
-        &mut sink,
-    ).expect_err("the coordinator refuses a foreign object");
+    let failure = pair
+        .transitions
+        .receive(
+            pair.connection,
+            &frame,
+            capability(CapabilityAction::Read, "matinee/status"),
+            PayloadKind::Command,
+            ObjectOwner::Owned(id(99)),
+            &mut sink,
+        )
+        .expect_err("the coordinator refuses a foreign object");
     assert_eq!(failure.code(), FailureCode::ObjectNotFound);
     assert!(pair.transitions.channel_is_open(pair.connection));
 }
