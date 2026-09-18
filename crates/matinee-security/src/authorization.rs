@@ -5,11 +5,10 @@ use crate::events::{
 };
 use crate::failures::{FailureCode, SecurityFailure};
 use crate::identity::{
-    Capability, CapabilityAction, ExtensionGrant, GrantLifecycle, IdentityId, Principal,
-    PrincipalKind, PrincipalLifecycle,
+    Capability, ExtensionGrant, GrantLifecycle, IdentityId, Principal, PrincipalKind,
+    PrincipalLifecycle,
 };
 use crate::{AuthorizedInput, SessionInput};
-use uuid::Uuid;
 
 /// Inputs evaluated as one authorization decision. The object owner is an authorization fact.
 pub(crate) struct AuthorizationRequest<'a> {
@@ -221,6 +220,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::identity::CapabilityAction;
+    use uuid::Uuid;
     use super::*;
     use crate::events::{SecurityEvent, SecurityEventSinkResult};
     use crate::identity::{ConnectionId, CredentialReference, Fingerprint, PublicKey};

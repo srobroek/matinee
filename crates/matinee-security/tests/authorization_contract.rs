@@ -212,5 +212,17 @@ macro_rules! authorization_contract_tests {
             grant.revoke();
             assert_eq!(grant, revoked);
         }
-    };
-}
+
+        #[test]
+        fn administrator_actions_are_not_conferred_by_mcp_or_extension_ceilings() {
+            let owner = id(2);
+            for kind in [PrincipalKind::McpClient, PrincipalKind::BrowserExtension] {
+                let principal = principal(kind, id(3), owner, vec![cap(CapabilityAction::Read, "global")]);
+                let context = context(principal.id(), 0, cap(CapabilityAction::ManagePrincipals, "global"), PayloadKind::Command);
+                let grant = (kind == PrincipalKind::BrowserExtension).then(|| ExtensionGrant::new(principal.id(), owner, vec![cap(CapabilityAction::Read, "global")], 0).unwrap());
+                let mut sink = Sink { unavailable: false, events: Vec::new() };
+                assert_eq!(authorize(request(&principal, &context, Some(owner), grant.as_ref()), vec![1], Some(&mut sink)).unwrap_err().code(), crate::failures::FailureCode::AuthorizationDenied);
+            }
+        }
+     };
+ }

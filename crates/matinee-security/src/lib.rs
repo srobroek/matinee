@@ -553,6 +553,16 @@ mod secure_channel_faults_contract {
     secure_channel_faults_tests!();
 }
 #[cfg(test)]
+mod authorization_contract {
+    include!("../tests/authorization_contract.rs");
+    authorization_contract_tests!();
+}
+#[cfg(test)]
+mod authorization_privacy {
+    include!("../tests/authorization_privacy.rs");
+    authorization_privacy_tests!();
+}
+#[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
