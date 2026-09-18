@@ -468,6 +468,18 @@ impl ChannelSession {
         }
     }
 
+    /// The whole authenticated principal snapshot a daemon session captured, exactly as
+    /// the registry held it when the handshake bound the traffic keys.
+    ///
+    /// A client session authenticates no principal of its own, so it has none: it can
+    /// never be bound to a registered snapshot and never becomes a live daemon channel.
+    pub(crate) fn authenticated_principal_snapshot(&self) -> Option<&Principal> {
+        match &self.peer {
+            SessionPeer::Principal(context) => Some(context.principal()),
+            SessionPeer::Daemon { .. } => None,
+        }
+    }
+
     pub fn epoch(&self) -> u64 {
         self.epoch
     }

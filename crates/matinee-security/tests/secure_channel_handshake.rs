@@ -2,11 +2,14 @@ macro_rules! secure_channel_handshake_tests {
     () => {
         use crate::test_support_channel::{
             CONNECTION, DAEMON, ENDPOINT, PRINCIPAL, RecordingSink, RingSigner, establish_pair,
-            establish_pair_with_ranges, fixture_principal, id, owned_operation,
+            establish_pair_for, establish_pair_with_ranges, fixture_principal, id, owned_operation,
+            registered_principal,
         };
+        use crate::test_support_transitions::{EXTENSION, ceiling, connection, registered};
         use crate::{
             AuthorizedOutput, ChannelSigner, ClientHandshake, ClientHandshakeConfig, ConnectionId,
-            FailureCode, IdentityId, PayloadKind, ServerHandshake, ServerHandshakeConfig,
+            FailureCode, IdentityId, PayloadKind, PrincipalKind, SecurityTransitions,
+            ServerHandshake, ServerHandshakeConfig,
         };
         use uuid::Uuid;
 
@@ -366,6 +369,45 @@ macro_rules! secure_channel_handshake_tests {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(String::from_utf8_lossy(&output.stdout).contains("\"result\":\"pass\""));
+        }
+
+        /// FR-010, FR-025: a handshake proves custody of the bound key and nothing about
+        /// the rest of the snapshot it was configured with. A forged principal kind
+        /// therefore completes a valid handshake and still never reaches an accepted
+        /// channel, because acceptance is what binds the snapshot to the registry.
+        #[test]
+        fn a_forged_principal_kind_never_reaches_an_accepted_handshake() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let enrolled = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+
+            let forged = registered_principal(
+                EXTENSION,
+                PrincipalKind::NativeAdmin,
+                signer.public_key().clone(),
+                ceiling(),
+                0,
+            );
+            assert_eq!(forged.id(), enrolled.id());
+            assert_eq!(forged.epoch(), enrolled.epoch());
+            assert_eq!(forged.public_key(), enrolled.public_key());
+            assert_ne!(forged.kind(), enrolled.kind());
+
+            // The transcript carries no evidence of the kind, so the handshake itself
+            // succeeds and both halves agree on the connection.
+            let (client, daemon) = establish_pair_for(&forged, &signer, connection(1))
+                .expect("a forged kind is cryptographically indistinguishable");
+            assert_eq!(client.connection_id(), daemon.connection_id());
+
+            assert_eq!(
+                transitions
+                    .register_channel(daemon)
+                    .expect_err("a forged principal kind is never accepted")
+                    .code(),
+                FailureCode::CredentialStoreMismatch
+            );
+            assert!(!transitions.channel_is_open(connection(1)));
+            assert_eq!(transitions.open_channels(), 0);
         }
     };
 }

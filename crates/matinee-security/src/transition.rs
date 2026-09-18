@@ -1050,6 +1050,13 @@ impl SecurityTransitions {
     /// A handshake that completed against a retired epoch, a revoked principal, or an
     /// identity this registry does not hold never becomes a live channel, so a
     /// concurrent handshake cannot outlive the transition it raced.
+    ///
+    /// The whole authenticated snapshot is bound too, not just the identity, the
+    /// lifecycle, and the epoch it names: a caller that assembled its own principal
+    /// cannot present a kind, a key, a fingerprint, an owner, a ceiling, or a credential
+    /// locator the registry does not hold for that identity. Every later decision reads
+    /// the registry, so binding here is what makes the snapshot the session carries for
+    /// life the same one the registry committed.
     pub fn register_channel(
         &self,
         session: ChannelSession,
@@ -1078,6 +1085,12 @@ impl SecurityTransitions {
         if session.epoch() != principal.epoch() {
             return Err(TransitionRejection::rejected(
                 FailureCode::StaleEpoch,
+                Some(id),
+            ));
+        }
+        if session.authenticated_principal_snapshot() != Some(principal) {
+            return Err(TransitionRejection::rejected(
+                FailureCode::CredentialStoreMismatch,
                 Some(id),
             ));
         }

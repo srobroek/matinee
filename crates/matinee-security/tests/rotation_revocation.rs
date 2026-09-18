@@ -2,19 +2,21 @@ macro_rules! rotation_revocation_tests {
     () => {
         use crate::enrollment::{EnrollmentChannel, EnrollmentClock};
         use crate::events::{EventBoundary, EventTime, SecurityCode};
-        use crate::failures::FailureCode;
+        use crate::failures::{FailureBoundary, FailureCode, SafeNextAction};
         use crate::identity::{
-            CredentialReference, EnrollmentLifecycle, ExpiryResult, Fingerprint, GrantLifecycle,
-            PrincipalKind, PrincipalLifecycle, TransitionOperation, TransitionOutcome,
+            Capability, CredentialReference, EnrollmentLifecycle, ExpiryResult, Fingerprint,
+            GrantLifecycle, Principal, PrincipalKind, PrincipalLifecycle, PublicKey,
+            TransitionOperation, TransitionOutcome,
         };
         use crate::test_support_channel::{
-            id, establish_pair_for, RecordingSink, RingSigner, DAEMON, STATE_DIRECTORY,
+            capability, id, establish_pair_for, registered_principal, RecordingSink, RingSigner,
+            DAEMON, STATE_DIRECTORY,
         };
         use crate::test_support_fakes::{FakeCredentialStore, FakeOsPipe};
         use crate::test_support_transitions::{
-            browser_capability, commit_mutation, connection, consume_enrollment, create_enrollment,
-            credential, grant, input, key, live_channel, paired_proof, receive, registered, request,
-            revoke, rotate, transition, ADMINISTRATOR, EXTENSION,
+            browser_capability, ceiling, commit_mutation, connection, consume_enrollment,
+            create_enrollment, credential, grant, input, key, live_channel, paired_proof, receive,
+            registered, request, revoke, rotate, transition, ADMINISTRATOR, EXTENSION,
         };
         use crate::transition::{
             BootstrapMaterial, DecisionState, ReplacementCredential, SecurityTransitions,
@@ -1138,6 +1140,285 @@ macro_rules! rotation_revocation_tests {
                 Ok(TransitionOutcome::AlreadyCommitted)
             );
             assert_eq!(sink.events.len(), before_events + 1, "retry emits no second event");
+        }
+
+        /// The fingerprint the fixture registry holds at epoch 0.
+        fn fixture_fingerprint() -> Fingerprint {
+            Fingerprint::new("a".repeat(64)).expect("64 lowercase hex digits")
+        }
+
+        /// One principal snapshot a caller assembled for itself: active, at epoch 0, under
+        /// the fixture identity and owning daemon.
+        ///
+        /// `ServerHandshakeConfig::new` is public, so this is exactly what a caller can
+        /// hand a handshake in place of the registry's own snapshot. Every argument is a
+        /// field the registry decides, so every argument is a forgery surface.
+        fn self_built(
+            kind: PrincipalKind,
+            key: &PublicKey,
+            fingerprint: Fingerprint,
+            ceiling: Vec<Capability>,
+            reference: CredentialReference,
+        ) -> Principal {
+            let mut snapshot = Principal::new(
+                id(EXTENSION),
+                kind,
+                key.clone(),
+                fingerprint,
+                id(DAEMON),
+                ceiling,
+                reference,
+            )
+            .expect("valid principal binding");
+            snapshot.activate().expect("pending principal");
+            snapshot
+        }
+
+        /// The registered snapshot of the fixture principal, rebuilt field for field.
+        fn faithful(key: &PublicKey) -> Principal {
+            self_built(
+                PrincipalKind::McpClient,
+                key,
+                fixture_fingerprint(),
+                ceiling(),
+                credential("principal-key-0"),
+            )
+        }
+
+        /// FR-025: a channel is admitted bound to the registered snapshot, so a self-built
+        /// one is refused before it is ever inserted.
+        #[test]
+        fn a_forged_principal_snapshot_is_rejected_before_channel_insertion() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+
+            // The control: a snapshot rebuilt faithfully is the registered one, so it is
+            // admitted. Every forgery below diverges from exactly this in one field.
+            let honest_snapshot = faithful(signer.public_key());
+            assert_eq!(
+                honest_snapshot, principal,
+                "the fixture rebuilds the registered snapshot field for field"
+            );
+            let (_, honest) = establish_pair_for(&honest_snapshot, &signer, connection(1))
+                .expect("production handshake fixture");
+            assert_eq!(transitions.register_channel(honest), Ok(connection(1)));
+            assert!(transitions.channel_is_open(connection(1)));
+
+            // A forged kind is indistinguishable to the handshake: the same identity, the
+            // same live epoch, the same bound key, a valid transcript signature.
+            let forged = self_built(
+                PrincipalKind::BrowserExtension,
+                signer.public_key(),
+                fixture_fingerprint(),
+                ceiling(),
+                credential("principal-key-0"),
+            );
+            let (_, daemon) = establish_pair_for(&forged, &signer, connection(2))
+                .expect("two peers can agree on a snapshot the registry never held");
+            let rejection = transitions
+                .register_channel(daemon)
+                .expect_err("a self-built snapshot is not the registered snapshot");
+            assert_eq!(rejection.outcome(), TransitionOutcome::Rejected);
+            assert_eq!(rejection.code(), FailureCode::CredentialStoreMismatch);
+            assert_eq!(
+                rejection.failure().boundary(),
+                FailureBoundary::CredentialStore
+            );
+            assert_eq!(
+                rejection.failure().safe_next_action(),
+                SafeNextAction::StopAndAdministratorRepair
+            );
+            assert!(!transitions.channel_is_open(connection(2)));
+
+            // The refusal precedes insertion: the connection slot is still free, so an
+            // honest session takes it instead of colliding with a recorded replay.
+            let (_, retry) = establish_pair_for(&principal, &signer, connection(2))
+                .expect("production handshake fixture");
+            assert_eq!(transitions.register_channel(retry), Ok(connection(2)));
+            assert_eq!(transitions.open_channels(), 2);
+        }
+
+        /// FR-021: the ceiling and the fingerprint every later decision reads are the
+        /// registry's, so a session cannot arrive carrying its own.
+        #[test]
+        fn forged_metadata_is_rejected_at_daemon_admission() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            assert_eq!(principal.ceiling(), ceiling().as_slice());
+            assert_eq!(principal.fingerprint(), &fixture_fingerprint());
+
+            // A ceiling the registry never granted, widened to principal management.
+            let widened = self_built(
+                PrincipalKind::McpClient,
+                signer.public_key(),
+                fixture_fingerprint(),
+                vec![
+                    capability(CapabilityAction::Write, "matinee"),
+                    capability(CapabilityAction::ManagePrincipals, "matinee"),
+                ],
+                credential("principal-key-0"),
+            );
+            let (_, wide) = establish_pair_for(&widened, &signer, connection(1))
+                .expect("two peers can agree on a widened ceiling between themselves");
+            assert_eq!(
+                transitions
+                    .register_channel(wide)
+                    .expect_err("a widened ceiling is not the registered ceiling")
+                    .code(),
+                FailureCode::CredentialStoreMismatch
+            );
+            assert!(!transitions.channel_is_open(connection(1)));
+
+            // A fingerprint that names the bound key is still not the one the registry
+            // recorded, so it does not become a live channel either.
+            let renamed = self_built(
+                PrincipalKind::McpClient,
+                signer.public_key(),
+                Fingerprint::from_public_key(signer.public_key()),
+                ceiling(),
+                credential("principal-key-0"),
+            );
+            assert_ne!(renamed.fingerprint(), principal.fingerprint());
+            let (_, named) = establish_pair_for(&renamed, &signer, connection(2))
+                .expect("two peers can agree on a recomputed fingerprint between themselves");
+            assert_eq!(
+                transitions
+                    .register_channel(named)
+                    .expect_err("a recomputed fingerprint is not the registered fingerprint")
+                    .code(),
+                FailureCode::CredentialStoreMismatch
+            );
+            assert_eq!(transitions.open_channels(), 0);
+        }
+
+        /// FR-025: the boundary reads the store, the locator, and the owning state
+        /// directory off the registered credential reference, so each of its fields has to
+        /// match and none may be compared loosely.
+        #[test]
+        fn a_forged_credential_reference_is_rejected_at_daemon_admission() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+
+            let forgeries = [
+                (
+                    "a foreign provider",
+                    CredentialReference::new(
+                        "forged-store",
+                        "principal-key-0",
+                        id(DAEMON),
+                        id(STATE_DIRECTORY),
+                    ),
+                ),
+                (
+                    "a foreign locator",
+                    CredentialReference::new(
+                        "fixture-store",
+                        "forged-key",
+                        id(DAEMON),
+                        id(STATE_DIRECTORY),
+                    ),
+                ),
+                (
+                    "a foreign state directory",
+                    CredentialReference::new(
+                        "fixture-store",
+                        "principal-key-0",
+                        id(DAEMON),
+                        id(STATE_DIRECTORY + 1),
+                    ),
+                ),
+            ];
+            for (index, (what, reference)) in forgeries.into_iter().enumerate() {
+                let forged = self_built(
+                    PrincipalKind::McpClient,
+                    signer.public_key(),
+                    fixture_fingerprint(),
+                    ceiling(),
+                    reference.expect("bounded credential reference"),
+                );
+                let slot = connection(10 + index as u128);
+                let (_, daemon) = establish_pair_for(&forged, &signer, slot)
+                    .expect("two peers can agree on a forged locator between themselves");
+                assert_eq!(
+                    transitions.register_channel(daemon).expect_err(what).code(),
+                    FailureCode::CredentialStoreMismatch,
+                    "{what} is not the registered credential reference"
+                );
+                assert!(!transitions.channel_is_open(slot));
+            }
+            assert_eq!(transitions.open_channels(), 0);
+        }
+
+        /// FR-024, FR-025: an epoch the registry never reached is the stale epoch it is,
+        /// and a retired credential presented at the live epoch -- the epoch check's blind
+        /// spot -- is refused by the snapshot binding.
+        #[test]
+        fn a_forged_epoch_is_rejected_at_daemon_admission() {
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let principal = registered(&transitions, EXTENSION, PrincipalKind::McpClient, &signer);
+            let mut sink = RecordingSink::default();
+
+            // The retired key held at epoch 1. Before the rotation the registry is at
+            // epoch 0, so this is simply ahead of it.
+            let at_epoch_one = registered_principal(
+                EXTENSION,
+                PrincipalKind::McpClient,
+                signer.public_key().clone(),
+                ceiling(),
+                1,
+            );
+            let (_, early) = establish_pair_for(&at_epoch_one, &signer, connection(1))
+                .expect("two peers can agree on an epoch the registry never reached");
+            assert_eq!(
+                transitions
+                    .register_channel(early)
+                    .expect_err("an epoch the registry does not hold is refused")
+                    .code(),
+                FailureCode::StaleEpoch
+            );
+
+            // The committed rotation moves the registry to epoch 1 under the replacement
+            // key. The same snapshot now names the live epoch while still carrying the
+            // retired key, so lifecycle and epoch both pass and only the binding refuses.
+            let replacement = RingSigner::generate();
+            assert_eq!(
+                rotate(
+                    &transitions,
+                    principal.id(),
+                    &replacement,
+                    "key-1",
+                    40,
+                    0,
+                    None,
+                    Some(&mut sink)
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            let rotated = transitions
+                .registered_principal(principal.id())
+                .expect("registered snapshot");
+            assert_eq!(rotated.epoch(), at_epoch_one.epoch());
+            assert_eq!(rotated.lifecycle(), PrincipalLifecycle::Active);
+            assert_ne!(rotated.public_key(), at_epoch_one.public_key());
+            let (_, retired) = establish_pair_for(&at_epoch_one, &signer, connection(2))
+                .expect("two peers can still agree on the retired key between themselves");
+            assert_eq!(
+                transitions
+                    .register_channel(retired)
+                    .expect_err("the retired key is not the registered credential at epoch 1")
+                    .code(),
+                FailureCode::CredentialStoreMismatch
+            );
+            assert!(!transitions.channel_is_open(connection(2)));
+
+            // The replacement signer still reconnects: the binding refuses the retired
+            // credential, not the principal.
+            let _live = live_channel(&transitions, &rotated, &replacement, 3);
+            assert!(transitions.channel_is_open(connection(3)));
         }
     };
 }
