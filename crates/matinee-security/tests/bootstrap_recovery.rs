@@ -172,7 +172,7 @@ macro_rules! bootstrap_recovery_tests {
         fn endpoint_and_envelope_validation_are_meaningful() {
             assert_eq!(Envelope::parse_endpoint(&[0xff]), Err(EnvelopeError::InvalidUtf8));
             assert_eq!(Envelope::parse_endpoint(b""), Err(EnvelopeError::InvalidType));
-            assert_eq!(Envelope::parse_endpoint(&[b'a'; 257]), Err(EnvelopeError::InvalidType));
+            assert_eq!(Envelope::parse_endpoint(&[b'a'; 257]), Err(EnvelopeError::Oversized));
             let mut malformed = envelope(70, 7).encode();
             malformed[2] = 0;
             assert_eq!(Envelope::parse(&malformed), Err(EnvelopeError::Malformed));

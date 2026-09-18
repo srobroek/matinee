@@ -882,6 +882,7 @@ mod tests {
         assert_serde::<PublicKey>();
         assert_serde::<Fingerprint>();
         assert_serde::<IdentityId>();
+        assert_serde::<ConnectionId>();
         assert_serde::<TransitionId>();
         assert_serde::<IdempotencyKey>();
         assert_serde::<CredentialReference>();

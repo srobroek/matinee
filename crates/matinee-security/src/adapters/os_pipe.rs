@@ -259,9 +259,8 @@ impl BootstrapEnvelope {
 
     /// Decode and bound the endpoint supplied by the owning transport.
     pub(crate) fn parse_endpoint(bytes: &[u8]) -> Result<&str, EnvelopeError> {
-        if bytes.is_empty() || bytes.len() > MAX_ENDPOINT_BYTES {
-            return Err(EnvelopeError::InvalidType);
-        }
+        if bytes.is_empty() { return Err(EnvelopeError::InvalidType); }
+        if bytes.len() > MAX_ENDPOINT_BYTES { return Err(EnvelopeError::Oversized); }
         let endpoint = core::str::from_utf8(bytes).map_err(|_| EnvelopeError::InvalidUtf8)?;
         if endpoint.chars().any(char::is_control) { return Err(EnvelopeError::InvalidType); }
         Ok(endpoint)
@@ -356,9 +355,13 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn owned_fd_sets_cloexec_and_drop_closes_with_ebadf() {
+    fn owned_fd_sets_cloexec_and_drop_closes_peer_with_eof() {
+        use std::io::Read;
         use std::os::fd::IntoRawFd;
-        let (left, _right) = std::os::unix::net::UnixStream::pair().unwrap();
+        use std::time::Duration;
+
+        let (left, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         let raw = left.into_raw_fd();
         let pipe = InheritedPipe::from_inherited_handle(raw as u64).unwrap();
         assert!(pipe.close_on_exec());
@@ -366,22 +369,28 @@ mod tests {
         assert_ne!(flags, -1);
         assert_ne!(flags & libc::FD_CLOEXEC, 0);
         drop(pipe);
-        assert_eq!(unsafe { libc::fcntl(raw, libc::F_GETFD) }, -1);
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+
+        let mut byte = [0; 1];
+        assert_eq!(peer.read(&mut byte).unwrap(), 0);
     }
 
     #[cfg(unix)]
     #[test]
-    fn explicit_error_close_closes_owned_fd_exactly_once() {
+    fn explicit_error_close_closes_owned_fd_exactly_once_with_peer_eof() {
+        use std::io::Read;
         use std::os::fd::IntoRawFd;
-        let (left, _right) = std::os::unix::net::UnixStream::pair().unwrap();
+        use std::time::Duration;
+
+        let (left, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         let raw = left.into_raw_fd();
         let mut pipe = InheritedPipe::from_inherited_handle(raw as u64).unwrap();
         pipe.close_on_error();
         pipe.close();
         assert!(pipe.is_closed());
         assert!(!pipe.is_present());
-        assert_eq!(unsafe { libc::fcntl(raw, libc::F_GETFD) }, -1);
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+
+        let mut byte = [0; 1];
+        assert_eq!(peer.read(&mut byte).unwrap(), 0);
     }
 }
