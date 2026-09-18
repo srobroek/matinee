@@ -105,7 +105,9 @@ impl BootstrapEnvelope {
         nonce: [u8; 32], state_directory: uuid::Uuid, daemon: uuid::Uuid,
         bootstrap: uuid::Uuid, public_key: [u8; 65],
     ) -> Result<Self, EnvelopeError> {
-        if public_key[0] != 0x04 { return Err(EnvelopeError::InvalidType); }
+        if p256::PublicKey::from_sec1_bytes(&public_key).is_err() {
+            return Err(EnvelopeError::Malformed);
+        }
         Ok(Self { nonce, state_directory, daemon, bootstrap, public_key })
     }
 

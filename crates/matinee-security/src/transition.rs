@@ -63,8 +63,38 @@ impl BootstrapState {
 
     /// Production entrypoint for the actual bounded pipe bytes. Parsing happens
     /// after handle acquisition and the handle is closed if parsing or transition
-    /// validation fails.
+    /// validation fails. Crash injection is available only through the test seam.
     pub(crate) fn bootstrap_encoded<P: OsPipe, C: CredentialStore, S: SecurityEventSink>(
+        &mut self,
+        pipe: &P,
+        encoded_envelope: &[u8],
+        credential: &C,
+        sink: Option<&mut S>,
+        event_time: EventTime,
+        endpoint_bytes: &[u8],
+    ) -> Result<TransitionOutcome, BootstrapError> {
+        self.bootstrap_encoded_inner(
+            pipe, encoded_envelope, credential, sink, None, event_time, endpoint_bytes,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bootstrap_encoded_for_test<P: OsPipe, C: CredentialStore, S: SecurityEventSink>(
+        &mut self,
+        pipe: &P,
+        encoded_envelope: &[u8],
+        credential: &C,
+        sink: Option<&mut S>,
+        crash: Option<CrashPoint>,
+        event_time: EventTime,
+        endpoint_bytes: &[u8],
+    ) -> Result<TransitionOutcome, BootstrapError> {
+        self.bootstrap_encoded_inner(
+            pipe, encoded_envelope, credential, sink, crash, event_time, endpoint_bytes,
+        )
+    }
+
+    fn bootstrap_encoded_inner<P: OsPipe, C: CredentialStore, S: SecurityEventSink>(
         &mut self,
         pipe: &P,
         encoded_envelope: &[u8],

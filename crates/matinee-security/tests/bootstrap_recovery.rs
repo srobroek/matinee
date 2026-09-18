@@ -8,8 +8,14 @@ macro_rules! bootstrap_recovery_tests {
         use uuid::Uuid;
 
         fn envelope(value: u128, nonce_byte: u8) -> BootstrapEnvelope {
-            let mut key = [value as u8; 65];
-            key[0] = 0x04;
+            let key = [
+                0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc,
+                0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d,
+                0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96,
+                0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a,
+                0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce,
+                0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+            ];
             BootstrapEnvelope::new(
                 [nonce_byte; 32],
                 Uuid::from_u128(value + 1),
@@ -36,15 +42,25 @@ macro_rules! bootstrap_recovery_tests {
             crash: Option<CrashPoint>,
         ) -> Result<crate::identity::TransitionOutcome, BootstrapError> {
             let pipe = FakeOsPipe::present(9);
-            state.bootstrap_encoded(
-                &pipe,
-                &envelope.encode(),
-                store,
-                Some(sink),
-                crash,
-                EventTime(42),
-                b"native://bootstrap",
-            )
+            match crash {
+                Some(crash) => state.bootstrap_encoded_for_test(
+                    &pipe,
+                    &envelope.encode(),
+                    store,
+                    Some(sink),
+                    Some(crash),
+                    EventTime(42),
+                    b"native://bootstrap",
+                ),
+                None => state.bootstrap_encoded(
+                    &pipe,
+                    &envelope.encode(),
+                    store,
+                    Some(sink),
+                    EventTime(42),
+                    b"native://bootstrap",
+                ),
+            }
         }
 
         #[test]
@@ -196,6 +212,26 @@ macro_rules! bootstrap_recovery_tests {
                 assert!(state.active().is_some());
                 assert!(state.staged().is_none());
             }
+        }
+        #[test]
+        fn malformed_public_keys_fail_closed_before_registration() {
+            let valid = envelope(70, 7);
+            let encoded = valid.encode();
+
+            let mut invalid_prefix = encoded.clone();
+            let prefix_offset = invalid_prefix.len() - 65;
+            invalid_prefix[prefix_offset] = 0x02;
+            assert_eq!(Envelope::parse(&invalid_prefix), Err(EnvelopeError::Malformed));
+
+            let mut invalid_length = encoded.clone();
+            let key_length_offset = invalid_length.len() - 67;
+            invalid_length[key_length_offset + 1] = 64;
+            assert_eq!(Envelope::parse(&invalid_length), Err(EnvelopeError::Malformed));
+
+            let mut off_curve = encoded;
+            let last_offset = off_curve.len() - 1;
+            off_curve[last_offset] ^= 1;
+            assert_eq!(Envelope::parse(&off_curve), Err(EnvelopeError::Malformed));
         }
     };
 }
