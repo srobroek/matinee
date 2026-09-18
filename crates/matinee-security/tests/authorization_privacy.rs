@@ -7,11 +7,12 @@ macro_rules! authorization_privacy_tests {
                 registered_principal,
             };
             use crate::{
-                AuthorizedOutput, CapabilityAction, ChannelSession, ChannelSigner, ClientHandshake,
-                ClientHandshakeConfig, ConnectionId, EventBoundary, EventOutcome, ExtensionGrant,
-                FailureCode, ObjectOwner, PayloadKind, PrincipalKind, ProjectionClass,
-                SafeNextAction, SecurityCode, ServerHandshake, ServerHandshakeConfig, SessionInput,
-                SessionProjection,
+                AuthorizedOutput, Capability, CapabilityAction, ChannelSession, ChannelSigner,
+                ClientHandshake, ClientHandshakeConfig, ConnectionId, EventBoundary, EventOutcome,
+                ExtensionGrant, FailureCode, LoopbackHost, ObjectOwner, PayloadKind, PrincipalKind,
+                ProjectionClass, SafeNextAction, SecurityCode, ServerHandshake,
+                ServerHandshakeConfig, SessionInput, SessionProjection, StateBearingRequest,
+                StateBearingRoute,
             };
             use uuid::Uuid;
 
@@ -554,6 +555,699 @@ macro_rules! authorization_privacy_tests {
                 assert_eq!(filtered.payload(), b"ready");
                 assert_eq!(client.receive_counter(), 1);
                 assert!(client.is_open() && daemon.is_open());
+            }
+
+            // ---------------------------------------------------------------------------
+            // SC-004, in full: the complete route/object/role/ceiling/owner/grant matrix.
+            // ---------------------------------------------------------------------------
+
+            /// The epoch every matrix principal is registered at. A grant bound to any other
+            /// epoch is one of the grant shapes below.
+            const MATRIX_EPOCH: u64 = 0;
+            /// An owner no matrix principal holds. Its hexadecimal tail is searched for in
+            /// every rendering a probe can observe.
+            const FOREIGN_OWNER: u128 = 0xfeed_face;
+            /// An extension identity no matrix principal holds.
+            const FOREIGN_EXTENSION: u128 = 0x0bad_0001;
+            const ROUTE_AUTHORITY: &str = "127.0.0.1:7777";
+            const ROUTE_PATH: &str = "/v1/session";
+            const ROUTE_SUBPROTOCOL: &str = "matinee.v1";
+            const ROUTE_ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+
+            /// The state-bearing route FR-018 configures: one loopback authority, one exact
+            /// path, one versioned subprotocol, one allowed Origin.
+            fn configured_route() -> StateBearingRoute {
+                StateBearingRoute::new(
+                    LoopbackHost::Ipv4,
+                    7777,
+                    ROUTE_PATH,
+                    ROUTE_SUBPROTOCOL,
+                    [ROUTE_ORIGIN],
+                )
+                .expect("a configured state-bearing route")
+            }
+
+            /// The route dimension: the upgrade production admits, and every shape
+            /// `StateBearingRoute::admit` refuses.
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            enum RouteCase {
+                Admitted,
+                UnexpectedPath,
+                UnexpectedSubprotocol,
+                NonLoopbackAuthority,
+                ForeignOrigin,
+            }
+
+            const MATRIX_ROUTES: [RouteCase; 5] = [
+                RouteCase::Admitted,
+                RouteCase::UnexpectedPath,
+                RouteCase::UnexpectedSubprotocol,
+                RouteCase::NonLoopbackAuthority,
+                RouteCase::ForeignOrigin,
+            ];
+
+            fn route_request(case: RouteCase) -> StateBearingRequest<'static> {
+                let mut request = StateBearingRequest {
+                    authority: ROUTE_AUTHORITY,
+                    route: ROUTE_PATH,
+                    subprotocol: ROUTE_SUBPROTOCOL,
+                    origin: ROUTE_ORIGIN,
+                };
+                match case {
+                    RouteCase::Admitted => {}
+                    RouteCase::UnexpectedPath => request.route = "/v1/session/admin",
+                    RouteCase::UnexpectedSubprotocol => request.subprotocol = "matinee.v2",
+                    RouteCase::NonLoopbackAuthority => request.authority = "10.0.0.5:7777",
+                    RouteCase::ForeignOrigin => request.origin = "https://attacker.example",
+                }
+                request
+            }
+
+            /// The object-type dimension: every daemon projection class production names, so
+            /// every shape an object lookup can arrive on and be disclosed through.
+            const MATRIX_CLASSES: [ProjectionClass; 5] = [
+                ProjectionClass::Response,
+                ProjectionClass::Status,
+                ProjectionClass::Event,
+                ProjectionClass::Artifact,
+                ProjectionClass::StreamChunk,
+            ];
+
+            /// The role dimension: every principal kind.
+            const MATRIX_ROLES: [PrincipalKind; 3] = [
+                PrincipalKind::NativeAdmin,
+                PrincipalKind::McpClient,
+                PrincipalKind::BrowserExtension,
+            ];
+
+            /// The ownership dimension, as the daemon's own lookup resolved it.
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            enum OwnerCase {
+                Owned,
+                CrossOwner,
+                Unresolved,
+            }
+
+            const MATRIX_OWNERS: [OwnerCase; 3] = [
+                OwnerCase::Owned,
+                OwnerCase::CrossOwner,
+                OwnerCase::Unresolved,
+            ];
+
+            /// One capability-ceiling cell: the ceiling the principal is registered with and
+            /// the capability the probe requests against it.
+            ///
+            /// `covers` and `administrative` are authored labels of the cell itself, never
+            /// values read back out of the gate: `covers` states the scope relation the
+            /// contract's ceiling rules give this pair, and `administrative` states whether
+            /// FR-021 reserves the requested action for the native administrator.
+            struct CeilingCase {
+                name: &'static str,
+                ceiling_action: CapabilityAction,
+                ceiling_scope: &'static str,
+                requested_action: CapabilityAction,
+                requested_scope: &'static str,
+                covers: bool,
+                administrative: bool,
+            }
+
+            impl CeilingCase {
+                fn ceiling(&self) -> Capability {
+                    capability(self.ceiling_action.clone(), self.ceiling_scope)
+                }
+                fn requested(&self) -> Capability {
+                    capability(self.requested_action.clone(), self.requested_scope)
+                }
+            }
+
+            /// Every `CapabilityAction` appears, and every scope relation the ceiling rules
+            /// distinguish: exact, parent prefix, global, disjoint, a sibling prefix that is
+            /// not a path boundary, and a matching scope under the wrong action.
+            fn matrix_ceilings() -> [CeilingCase; 11] {
+                [
+                    CeilingCase {
+                        name: "exact-scope-read",
+                        ceiling_action: CapabilityAction::Read,
+                        ceiling_scope: SCOPE,
+                        requested_action: CapabilityAction::Read,
+                        requested_scope: SCOPE,
+                        covers: true,
+                        administrative: false,
+                    },
+                    CeilingCase {
+                        name: "parent-scope-read",
+                        ceiling_action: CapabilityAction::Read,
+                        ceiling_scope: "matinee",
+                        requested_action: CapabilityAction::Read,
+                        requested_scope: SCOPE,
+                        covers: true,
+                        administrative: false,
+                    },
+                    CeilingCase {
+                        name: "global-scope-read",
+                        ceiling_action: CapabilityAction::Read,
+                        ceiling_scope: "global",
+                        requested_action: CapabilityAction::Read,
+                        requested_scope: SCOPE,
+                        covers: true,
+                        administrative: false,
+                    },
+                    CeilingCase {
+                        name: "disjoint-scope-read",
+                        ceiling_action: CapabilityAction::Read,
+                        ceiling_scope: "other",
+                        requested_action: CapabilityAction::Read,
+                        requested_scope: SCOPE,
+                        covers: false,
+                        administrative: false,
+                    },
+                    CeilingCase {
+                        name: "sibling-prefix-read",
+                        ceiling_action: CapabilityAction::Read,
+                        ceiling_scope: "matinee",
+                        requested_action: CapabilityAction::Read,
+                        requested_scope: "matinee-secret/status",
+                        covers: false,
+                        administrative: false,
+                    },
+                    CeilingCase {
+                        name: "write-ceiling-read-request",
+                        ceiling_action: CapabilityAction::Write,
+                        ceiling_scope: "matinee",
+                        requested_action: CapabilityAction::Read,
+                        requested_scope: SCOPE,
+                        covers: false,
+                        administrative: false,
+                    },
+                    CeilingCase {
+                        name: "manage-principals",
+                        ceiling_action: CapabilityAction::ManagePrincipals,
+                        ceiling_scope: "global",
+                        requested_action: CapabilityAction::ManagePrincipals,
+                        requested_scope: "global",
+                        covers: true,
+                        administrative: true,
+                    },
+                    CeilingCase {
+                        name: "revoke-without-admin-ceiling",
+                        ceiling_action: CapabilityAction::Read,
+                        ceiling_scope: "global",
+                        requested_action: CapabilityAction::Revoke,
+                        requested_scope: "global",
+                        covers: false,
+                        administrative: true,
+                    },
+                    CeilingCase {
+                        name: "rotate-with-rotate-ceiling",
+                        ceiling_action: CapabilityAction::Rotate,
+                        ceiling_scope: "global",
+                        requested_action: CapabilityAction::Rotate,
+                        requested_scope: "global",
+                        covers: true,
+                        administrative: true,
+                    },
+                    CeilingCase {
+                        name: "execute-parent-scope",
+                        ceiling_action: CapabilityAction::Execute,
+                        ceiling_scope: "matinee",
+                        requested_action: CapabilityAction::Execute,
+                        requested_scope: SCOPE,
+                        covers: true,
+                        administrative: false,
+                    },
+                    CeilingCase {
+                        name: "administer-with-admin-ceiling",
+                        ceiling_action: CapabilityAction::Administer,
+                        ceiling_scope: "global",
+                        requested_action: CapabilityAction::Administer,
+                        requested_scope: "global",
+                        covers: true,
+                        administrative: true,
+                    },
+                ]
+            }
+
+            /// The grant dimension: an absent grant, the grant that binds, and every binding
+            /// an extension grant can miss.
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            enum GrantCase {
+                Absent,
+                Matching,
+                ForeignExtension,
+                ForeignOwner,
+                StaleEpoch,
+                Revoked,
+                ExceedsCeiling,
+                MissesRequest,
+            }
+
+            const MATRIX_GRANTS: [GrantCase; 8] = [
+                GrantCase::Absent,
+                GrantCase::Matching,
+                GrantCase::ForeignExtension,
+                GrantCase::ForeignOwner,
+                GrantCase::StaleEpoch,
+                GrantCase::Revoked,
+                GrantCase::ExceedsCeiling,
+                GrantCase::MissesRequest,
+            ];
+
+            /// The grant a cell presents, built from that cell's own requested capability so
+            /// a matching grant is exactly a subset of the ceiling that covers the request.
+            ///
+            /// `ExceedsCeiling` adds a `Revoke` capability at global scope, which no ceiling
+            /// in the matrix names, and `MissesRequest` names the requested action at a scope
+            /// no requested scope sits under. Neither defect is ceiling-dependent.
+            fn matrix_grant(case: GrantCase, requested: &Capability) -> Option<ExtensionGrant> {
+                let mut grant = match case {
+                    GrantCase::Absent => return None,
+                    GrantCase::ForeignExtension => ExtensionGrant::new(
+                        id(FOREIGN_EXTENSION),
+                        id(OWNER),
+                        vec![requested.clone()],
+                        MATRIX_EPOCH,
+                    ),
+                    GrantCase::ForeignOwner => ExtensionGrant::new(
+                        id(PRINCIPAL),
+                        id(FOREIGN_OWNER),
+                        vec![requested.clone()],
+                        MATRIX_EPOCH,
+                    ),
+                    GrantCase::StaleEpoch => ExtensionGrant::new(
+                        id(PRINCIPAL),
+                        id(OWNER),
+                        vec![requested.clone()],
+                        MATRIX_EPOCH + 1,
+                    ),
+                    GrantCase::ExceedsCeiling => ExtensionGrant::new(
+                        id(PRINCIPAL),
+                        id(OWNER),
+                        vec![
+                            requested.clone(),
+                            capability(CapabilityAction::Revoke, "global"),
+                        ],
+                        MATRIX_EPOCH,
+                    ),
+                    GrantCase::MissesRequest => ExtensionGrant::new(
+                        id(PRINCIPAL),
+                        id(OWNER),
+                        vec![capability(requested.action().clone(), "unrelated")],
+                        MATRIX_EPOCH,
+                    ),
+                    GrantCase::Matching | GrantCase::Revoked => ExtensionGrant::new(
+                        id(PRINCIPAL),
+                        id(OWNER),
+                        vec![requested.clone()],
+                        MATRIX_EPOCH,
+                    ),
+                }
+                .expect("a grant fixture always names capabilities");
+                if case == GrantCase::Revoked {
+                    grant.revoke();
+                }
+                Some(grant)
+            }
+
+            /// FR-021: only an extension presents a grant, and only its own active one.
+            fn grant_admits(role: PrincipalKind, case: GrantCase) -> bool {
+                if role == PrincipalKind::BrowserExtension {
+                    case == GrantCase::Matching
+                } else {
+                    case == GrantCase::Absent
+                }
+            }
+
+            /// One observation with the per-emission event identifier elided.
+            ///
+            /// A freshly minted event UUID is not a coordinate of the cell and carries no
+            /// object fact; everything else about two observations still has to match byte
+            /// for byte. The leak scan always runs on the unedited rendering.
+            fn without_event_ids(rendered: &str) -> String {
+                const MARKER: &str = "event_id: ";
+                const UUID_LEN: usize = 36;
+                let mut out = String::with_capacity(rendered.len());
+                let mut rest = rendered;
+                while let Some(at) = rest.find(MARKER) {
+                    let (head, tail) = rest.split_at(at + MARKER.len());
+                    out.push_str(head);
+                    out.push_str("<elided>");
+                    rest = &tail[UUID_LEN..];
+                }
+                out.push_str(rest);
+                out
+            }
+
+            /// One authenticated pair on the endpoint route admission produced.
+            ///
+            /// The daemon identity is the fixture owner identity, which is the identity the
+            /// fixture credential registers objects under.
+            fn matrix_pair(
+                role: PrincipalKind,
+                ceiling: Capability,
+                endpoint: &str,
+            ) -> (ChannelSession, ChannelSession) {
+                let client_signer = RingSigner::generate();
+                let daemon_signer = RingSigner::generate();
+                let client = ClientHandshakeConfig::new(
+                    endpoint,
+                    id(PRINCIPAL),
+                    client_signer.public_key().clone(),
+                    id(OWNER),
+                    daemon_signer.public_key().clone(),
+                    MATRIX_EPOCH,
+                    1,
+                    3,
+                )
+                .expect("a client bound to the admitted endpoint");
+                let server = ServerHandshakeConfig::new(
+                    endpoint,
+                    registered_principal(
+                        PRINCIPAL,
+                        role,
+                        client_signer.public_key().clone(),
+                        vec![ceiling],
+                        MATRIX_EPOCH,
+                    ),
+                    id(OWNER),
+                    daemon_signer.public_key().clone(),
+                    2,
+                    4,
+                    ConnectionId::new(Uuid::from_u128(CONNECTION)),
+                )
+                .expect("a daemon bound to the admitted endpoint");
+                let mut sink = RecordingSink::default();
+                let (client_pending, hello) = ClientHandshake::start(client).expect("client hello");
+                let (server_pending, proof) =
+                    ServerHandshake::accept(server, &hello, &daemon_signer, &mut sink)
+                        .expect("daemon proof");
+                let (client_session, client_proof) = client_pending
+                    .finish(&proof, &client_signer, &mut sink)
+                    .expect("client completes the transcript");
+                let daemon_session = server_pending
+                    .finish(&client_proof, &mut sink)
+                    .expect("daemon completes the transcript");
+                (client_session, daemon_session)
+            }
+
+            /// Nothing a probe can observe may name a protected value: not the payload, not
+            /// the owner it did not own, not the scope or ceiling it probed.
+            fn assert_discloses_nothing(rendered: &str, label: &str) {
+                let lowered = rendered.to_ascii_lowercase();
+                for forbidden in [
+                    "protected", "feedface", "matinee", "secret", "unrelated", "global",
+                ] {
+                    assert!(
+                        !lowered.contains(forbidden),
+                        "cell {label} disclosed {forbidden} through {rendered}"
+                    );
+                }
+            }
+
+            /// SC-004, quoted: "In a matrix covering every route, object type, role,
+            /// capability ceiling, ownership, and grant, 100% of unauthorized probes disclose
+            /// neither protected data nor object existence."
+            ///
+            /// The matrix is the complete cross-product of those six dimensions as production
+            /// spells them: 5 route admissions x 5 object projection classes x 3 principal
+            /// kinds x 11 ceiling/request pairs x 3 ownership resolutions x 8 grant shapes =
+            /// 19,800 cells. 3,960 sit on the admitted route and reach the gate; the other
+            /// 15,840 are refused at admission, which yields no `AdmittedEndpoint` and so no
+            /// session for any inner coordinate to run on.
+            ///
+            /// Every cell drives production: `StateBearingRoute::admit` for the route, and
+            /// both disclosure directions of the real gate -- `ChannelSession::receive` and
+            /// `ChannelSession::send_projection` -- for the rest.
+            ///
+            /// The criterion is asserted three ways, none depending on the gate's internal
+            /// ordering:
+            ///
+            /// 1. A cell is authorized exactly when all six of its own coordinates admit it,
+            ///    which is 75 of the 3,960 reachable cells.
+            /// 2. Every denial carries a code from the closed denial set and renders no
+            ///    protected value, and a denied projection serializes no byte at all.
+            /// 3. For fixed route, object type, role, ceiling, and grant, the cross-owner cell
+            ///    and the unresolved cell render identically -- failure and event alike -- so
+            ///    no probe can infer that a protected object exists.
+            #[test]
+            fn the_complete_route_object_role_ceiling_owner_grant_matrix_discloses_nothing() {
+                let started = std::time::Instant::now();
+                let route = configured_route();
+                let ceilings = matrix_ceilings();
+                let mut cells = 0usize;
+                let mut unreachable = 0usize;
+                let mut authorized = 0usize;
+                let mut object_not_found = 0usize;
+                let mut authorization_denied = 0usize;
+                let mut authorized_by_role = [0usize; 3];
+
+                for route_case in MATRIX_ROUTES {
+                    let request = route_request(route_case);
+                    if route_case != RouteCase::Admitted {
+                        // A refused upgrade carries no object, role, ceiling, owner, or grant.
+                        // Re-admitting it once per inner cell is what proves those coordinates
+                        // cannot reach admission: every refusal must render identically, and
+                        // none of them yields an endpoint to bind a session to.
+                        let expected = if route_case == RouteCase::ForeignOrigin {
+                            FailureCode::OriginRejected
+                        } else {
+                            FailureCode::EndpointRejected
+                        };
+                        let mut reference: Option<String> = None;
+                        for class in MATRIX_CLASSES {
+                            for role in MATRIX_ROLES {
+                                for ceiling_case in &ceilings {
+                                    for owner_case in MATRIX_OWNERS {
+                                        for grant_case in MATRIX_GRANTS {
+                                            let label = format!(
+                                                "{route_case:?}/{class:?}/{role:?}/{}/{owner_case:?}/{grant_case:?}",
+                                                ceiling_case.name
+                                            );
+                                            let mut sink = RecordingSink::default();
+                                            let failure = route
+                                                .admit(&request, 1, &mut sink)
+                                                .expect_err("a refused upgrade admits nothing");
+                                            assert_eq!(failure.code(), expected, "cell {label}");
+                                            let rendered =
+                                                format!("{failure} {failure:?} {:?}", sink.events);
+                                            assert_discloses_nothing(&rendered, &label);
+                                            let comparable = without_event_ids(&rendered);
+                                            match &reference {
+                                                None => reference = Some(comparable),
+                                                Some(first) => assert_eq!(
+                                                    first, &comparable,
+                                                    "cell {label} refused distinguishably"
+                                                ),
+                                            }
+                                            cells += 1;
+                                            unreachable += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    let mut admission_sink = RecordingSink::default();
+                    let admitted = route
+                        .admit(&request, 1, &mut admission_sink)
+                        .expect("the configured upgrade is admitted");
+                    assert!(
+                        admission_sink.events.is_empty(),
+                        "an admitted upgrade is not a rejection fact"
+                    );
+
+                    for (role_index, role) in MATRIX_ROLES.into_iter().enumerate() {
+                        for ceiling_case in &ceilings {
+                            // Ownership, grant, and object type are named per operation, so
+                            // one session per (role, ceiling) carries every inner cell.
+                            let (mut client, mut daemon) =
+                                matrix_pair(role, ceiling_case.ceiling(), admitted.as_str());
+                            assert_eq!(daemon.endpoint(), admitted.as_str());
+                            let requested = ceiling_case.requested();
+                            let role_admits =
+                                !ceiling_case.administrative || role == PrincipalKind::NativeAdmin;
+
+                            for class in MATRIX_CLASSES {
+                                for grant_case in MATRIX_GRANTS {
+                                    let grant = matrix_grant(grant_case, &requested);
+                                    let mut renderings = Vec::with_capacity(3);
+                                    for owner_case in MATRIX_OWNERS {
+                                        let label = format!(
+                                            "Admitted/{class:?}/{role:?}/{}/{owner_case:?}/{grant_case:?}",
+                                            ceiling_case.name
+                                        );
+                                        let owner = match owner_case {
+                                            OwnerCase::Owned => ObjectOwner::Owned(id(OWNER)),
+                                            OwnerCase::CrossOwner => {
+                                                ObjectOwner::Owned(id(FOREIGN_OWNER))
+                                            }
+                                            OwnerCase::Unresolved => ObjectOwner::Unknown,
+                                        };
+                                        let expected_ok = owner_case == OwnerCase::Owned
+                                            && ceiling_case.covers
+                                            && role_admits
+                                            && grant_admits(role, grant_case);
+
+                                        // Direction one: the object lookup the probe sends.
+                                        let frame =
+                                            request_frame(&mut client, class.payload_kind(), PROTECTED);
+                                        let operation = SessionInput::new(
+                                            requested.clone(),
+                                            class.payload_kind(),
+                                            owner,
+                                            grant.as_ref(),
+                                        );
+                                        let mut sink = RecordingSink::default();
+                                        let received = daemon.receive(&frame, &operation, &mut sink);
+                                        assert_eq!(sink.events.len(), 1, "cell {label}");
+                                        assert_eq!(
+                                            sink.events[0].boundary(),
+                                            EventBoundary::Authorization,
+                                            "cell {label}"
+                                        );
+                                        match &received {
+                                            Ok(input) => {
+                                                assert!(
+                                                    expected_ok,
+                                                    "cell {label} was authorized but its own coordinates deny it"
+                                                );
+                                                assert_eq!(input.payload(), PROTECTED);
+                                                assert_eq!(input.owner(), owner);
+                                                assert_eq!(
+                                                    sink.events[0].code(),
+                                                    SecurityCode::AuthorizationAccepted
+                                                );
+                                                assert_eq!(
+                                                    sink.events[0].outcome(),
+                                                    EventOutcome::Accepted
+                                                );
+                                            }
+                                            Err(failure) => {
+                                                assert!(
+                                                    !expected_ok,
+                                                    "cell {label} was denied but its own coordinates admit it"
+                                                );
+                                                assert!(
+                                                    matches!(
+                                                        failure.code(),
+                                                        FailureCode::AuthorizationDenied
+                                                            | FailureCode::ObjectNotFound
+                                                    ),
+                                                    "cell {label} left the closed denial set with {}",
+                                                    failure.code().as_str()
+                                                );
+                                                if failure.code() == FailureCode::ObjectNotFound {
+                                                    assert_eq!(
+                                                        failure.safe_next_action(),
+                                                        SafeNextAction::DoNotInferObjectExistence,
+                                                        "cell {label}"
+                                                    );
+                                                }
+                                                assert_eq!(
+                                                    sink.events[0].code(),
+                                                    SecurityCode::AuthorizationDenied
+                                                );
+                                                assert_eq!(
+                                                    sink.events[0].outcome(),
+                                                    EventOutcome::Rejected
+                                                );
+                                            }
+                                        }
+                                        assert!(
+                                            daemon.is_open(),
+                                            "cell {label} cost the channel its life"
+                                        );
+
+                                        // Direction two: the disclosure the daemon would make.
+                                        let projection = SessionProjection::new(
+                                            class,
+                                            requested.clone(),
+                                            owner,
+                                            grant.as_ref(),
+                                            PROTECTED,
+                                        );
+                                        let before = daemon.send_counter();
+                                        let mut send_sink = RecordingSink::default();
+                                        let sent = daemon.send_projection(&projection, &mut send_sink);
+                                        assert_eq!(sent.is_ok(), expected_ok, "cell {label}");
+                                        match &sent {
+                                            Ok(frame) => {
+                                                assert_eq!(daemon.send_counter(), before + 1);
+                                                let mut client_sink = RecordingSink::default();
+                                                let filtered = client
+                                                    .receive_filtered(
+                                                        frame,
+                                                        class.payload_kind(),
+                                                        &mut client_sink,
+                                                    )
+                                                    .expect("an authorized projection arrives");
+                                                assert_eq!(filtered.payload(), PROTECTED);
+                                                authorized += 1;
+                                                authorized_by_role[role_index] += 1;
+                                            }
+                                            Err(failure) => {
+                                                assert_eq!(
+                                                    daemon.send_counter(),
+                                                    before,
+                                                    "cell {label} serialized a refused projection"
+                                                );
+                                                if failure.code() == FailureCode::ObjectNotFound {
+                                                    object_not_found += 1;
+                                                } else {
+                                                    authorization_denied += 1;
+                                                }
+                                            }
+                                        }
+
+                                        let rendered = format!(
+                                            "{received:?} {sent:?} {:?} {:?}",
+                                            sink.events, send_sink.events
+                                        );
+                                        if !expected_ok {
+                                            assert_discloses_nothing(&rendered, &label);
+                                        }
+                                        renderings.push(without_event_ids(&rendered));
+                                        cells += 1;
+                                    }
+                                    // SC-004 itself: a cross-owner object and an object that did
+                                    // not resolve are one observation, so existence never leaks.
+                                    assert_eq!(
+                                        renderings[1], renderings[2],
+                                        "a cross-owner object and an unresolved object must be \
+                                         indistinguishable at {}/{class:?}/{role:?}/{grant_case:?}",
+                                        ceiling_case.name
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                assert_eq!(cells, 19_800, "the matrix must be the complete cross-product");
+                assert_eq!(unreachable, 15_840);
+                assert_eq!(cells - unreachable, 3_960);
+                assert_eq!(
+                    authorized + object_not_found + authorization_denied,
+                    3_960,
+                    "every reachable cell must be authorized or denied"
+                );
+                // Seven of the eleven ceilings cover their request; four of those name an
+                // administrator-only action. Five object types, one admitting owner, one
+                // admitting grant shape per role.
+                assert_eq!(authorized, 75, "exactly the admitting cells are authorized");
+                assert_eq!(authorized_by_role, [35, 20, 20]);
+                assert!(
+                    object_not_found > 0 && authorization_denied > 0,
+                    "both denial classes must be exercised"
+                );
+                println!(
+                    "SC-004 matrix: {cells} cells ({} reachable, {unreachable} refused at \
+                     admission), {authorized} authorized, {object_not_found} object.not_found, \
+                     {authorization_denied} authorization.denied, {:?}",
+                    cells - unreachable,
+                    started.elapsed()
+                );
             }
         }
     };
