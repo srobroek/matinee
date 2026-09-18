@@ -1032,9 +1032,11 @@ macro_rules! rotation_revocation_tests {
                 .expect_err("a retired daemon session emits no protected projection");
             assert_eq!(failure.code(), FailureCode::StaleEpoch);
         }
-        /// A refused admission that cannot be recorded is reported as the sink failure,
-        /// and an admission is never the fallback: the registry stays empty either way.
-        /// The positive control is the same snapshot against a sink that accepts.
+
+        /// Each refusal admission emits must also fail closed when nobody can record it:
+        /// the sink failure is what the caller sees, and the registry is left exactly as
+        /// it was. Both wired paths are covered, because a path that only proves the
+        /// happy half proves nothing about what happens when the sink is gone.
         #[test]
         fn an_unrecordable_admission_refusal_fails_closed_and_admits_nothing() {
             let transitions = SecurityTransitions::default();
@@ -1072,6 +1074,26 @@ macro_rules! rotation_revocation_tests {
             assert!(
                 accepting.events.is_empty(),
                 "an admitted channel is not one of the facts the contract enumerates"
+            );
+
+            // The replay path, second half: the duplicate of a live connection cannot be
+            // recorded, so it is the sink failure, and the channel already admitted is
+            // neither closed nor replaced.
+            let (_, duplicate) = establish_pair_for(&principal, &signer, connection(121))
+                .expect("production handshake fixture");
+            let rejection = transitions
+                .register_channel(duplicate, &mut unavailable)
+                .expect_err("a replay nobody can record is still refused");
+            assert_eq!(rejection.code(), FailureCode::EventSinkUnavailable);
+            assert!(transitions.channel_is_open(connection(121)));
+            assert_eq!(
+                transitions.open_channels(),
+                1,
+                "the duplicate registered nothing"
+            );
+            assert!(
+                unavailable.events.is_empty(),
+                "an unavailable sink records neither refusal"
             );
         }
 

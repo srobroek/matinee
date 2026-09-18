@@ -22,6 +22,67 @@ macro_rules! events_contract_tests {
             .expect("valid event fixture")
         }
 
+        /// One pending enrollment at the ten-minute default, as an administrator opens it.
+        fn pairing_bundle(value: u128) -> crate::enrollment::EnrollmentBundle {
+            use crate::test_support_channel::ENDPOINT;
+            use crate::test_support_transitions::{INSTALL, ORIGIN, STORE, UPDATE};
+            crate::enrollment::EnrollmentBundle::create(
+                crate::enrollment::EnrollmentCreation::with_default_expiry(
+                    crate::identity::TransitionId::new(Uuid::from_u128(value)),
+                    ORIGIN,
+                    STORE,
+                    UPDATE,
+                    INSTALL,
+                    crate::identity::IdentityId::new(Uuid::from_u128(0x2f)),
+                    ENDPOINT,
+                ),
+            )
+            .expect("the ten-minute default is inside the creation bounds")
+        }
+
+        /// A proof no one-time key ever signed. Every consumption below is meant to be
+        /// refused, so the signature never has to be the valid one.
+        fn unsigned_proof(
+            identity: crate::identity::IdentityId,
+        ) -> crate::enrollment::EnrollmentProof {
+            crate::enrollment::EnrollmentProof {
+                identity,
+                signature: vec![0; 8],
+                long_term_public_key: crate::test_support_transitions::long_term_key(),
+            }
+        }
+
+        fn pairing_channel() -> crate::enrollment::EnrollmentChannel {
+            crate::enrollment::EnrollmentChannel::open(
+                crate::ConnectionId::new(Uuid::from_u128(0x9100)),
+                1,
+            )
+            .expect("native pairing channel")
+        }
+
+        fn pairing_clock(occurrence_ms: u64) -> crate::enrollment::EnrollmentClock {
+            crate::enrollment::EnrollmentClock::new(
+                occurrence_ms,
+                crate::identity::ExpiryResult::valid(600_000).expect("bounded ten-minute deadline"),
+            )
+        }
+
+        /// The enrolled bounds with one exception: an Origin the enrollment was not
+        /// created for. A browser reports whatever origin it actually loaded, so the
+        /// reported capability is built from this binding too.
+        fn wrong_origin_binding() -> crate::enrollment::EnrollmentBinding<'static> {
+            use crate::test_support_channel::ENDPOINT;
+            use crate::test_support_transitions::{INSTALL, STORE, UPDATE};
+            crate::enrollment::EnrollmentBinding {
+                origin: "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba",
+                endpoint: ENDPOINT,
+                store_metadata: STORE,
+                update_metadata: UPDATE,
+                install_metadata: INSTALL,
+                development_allowance: crate::enrollment::DevelopmentIdentityAllowance::None,
+            }
+        }
+
         /// Every required fact, and the production operation that owes it.
         ///
         /// `contracts/failures-events.md` says "the security module emits one typed
@@ -368,51 +429,12 @@ macro_rules! events_contract_tests {
         /// through the enrollment host's own proof consumption.
         fn pairing_facts() -> Vec<events::SecurityCode> {
             use crate::enrollment::{
-                ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding,
-                EnrollmentBundle, EnrollmentChannel, EnrollmentChannelState, EnrollmentClock,
-                EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreation,
-                EnrollmentProof,
+                ChromeCapability, EnrollmentChannelState, EnrollmentConsumeError,
+                EnrollmentConsumptionService,
             };
-            use crate::identity::{ExpiryResult, IdentityId, TransitionId};
-            use crate::test_support_channel::{ENDPOINT, RecordingSink};
-            use crate::test_support_transitions::{
-                INSTALL, ORIGIN, STORE, UPDATE, binding, long_term_key,
-            };
-
-            fn bundle(value: u128) -> EnrollmentBundle {
-                EnrollmentBundle::create(EnrollmentCreation::with_default_expiry(
-                    TransitionId::new(Uuid::from_u128(value)),
-                    ORIGIN,
-                    STORE,
-                    UPDATE,
-                    INSTALL,
-                    IdentityId::new(Uuid::from_u128(0x2f)),
-                    ENDPOINT,
-                ))
-                .expect("the ten-minute default is inside the creation bounds")
-            }
-
-            /// A proof no one-time key ever signed. Every consumption below is meant to
-            /// be refused, so the signature never has to be the valid one.
-            fn unsigned_proof(identity: IdentityId) -> EnrollmentProof {
-                EnrollmentProof {
-                    identity,
-                    signature: vec![0; 8],
-                    long_term_public_key: long_term_key(),
-                }
-            }
-
-            fn channel() -> EnrollmentChannel {
-                EnrollmentChannel::open(crate::ConnectionId::new(Uuid::from_u128(0x9100)), 1)
-                    .expect("native pairing channel")
-            }
-
-            fn clock(occurrence_ms: u64) -> EnrollmentClock {
-                EnrollmentClock::new(
-                    occurrence_ms,
-                    ExpiryResult::valid(600_000).expect("bounded ten-minute deadline"),
-                )
-            }
+            use crate::identity::IdentityId;
+            use crate::test_support_channel::RecordingSink;
+            use crate::test_support_transitions::binding;
 
             let identity = IdentityId::new(Uuid::from_u128(0x790));
             // One host budget per drive: a refusal recorded by an earlier drive would
@@ -424,14 +446,14 @@ macro_rules! events_contract_tests {
 
             // A proof that misses no bound but carries no valid signature.
             let mut sink = RecordingSink::default();
-            let mut rejected = bundle(0x790);
-            let mut open = channel();
+            let mut rejected = pairing_bundle(0x790);
+            let mut open = pairing_channel();
             assert_eq!(
                 service.consume_proof(
                     &mut rejected,
                     &unsigned_proof(identity),
                     identity,
-                    &clock(1_000),
+                    &pairing_clock(1_000),
                     &binding(),
                     &capability,
                     &mut open,
@@ -450,24 +472,17 @@ macro_rules! events_contract_tests {
             // returned error is unchanged, so only the fact tells the two apart.
             let mut sink = RecordingSink::default();
             let service = EnrollmentConsumptionService::default();
-            let mut wrong_origin_bundle = bundle(0x791);
-            let wrong_origin = EnrollmentBinding {
-                origin: "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba",
-                endpoint: ENDPOINT,
-                store_metadata: STORE,
-                update_metadata: UPDATE,
-                install_metadata: INSTALL,
-                development_allowance: DevelopmentIdentityAllowance::None,
-            };
+            let mut wrong_origin_bundle = pairing_bundle(0x791);
+            let wrong_origin = wrong_origin_binding();
             let capability_for_origin = ChromeCapability::reported(&wrong_origin, true, true)
                 .expect("a browser reports whatever origin it loaded");
-            let mut open = channel();
+            let mut open = pairing_channel();
             assert_eq!(
                 service.consume_proof(
                     &mut wrong_origin_bundle,
                     &unsigned_proof(identity),
                     identity,
-                    &clock(2_000),
+                    &pairing_clock(2_000),
                     &wrong_origin,
                     &capability_for_origin,
                     &mut open,
@@ -486,14 +501,14 @@ macro_rules! events_contract_tests {
             let mut sink = RecordingSink::default();
             let service = EnrollmentConsumptionService::default();
             for attempt in 0..10 {
-                let mut current = bundle(0x7a0 + attempt);
-                let mut open = channel();
+                let mut current = pairing_bundle(0x7a0 + attempt);
+                let mut open = pairing_channel();
                 assert_eq!(
                     service.consume_proof(
                         &mut current,
                         &unsigned_proof(identity),
                         identity,
-                        &clock(5_000),
+                        &pairing_clock(5_000),
                         &binding(),
                         &capability,
                         &mut open,
@@ -502,14 +517,14 @@ macro_rules! events_contract_tests {
                     Err(EnrollmentConsumeError::InvalidProof)
                 );
             }
-            let mut limited = bundle(0x7b0);
-            let mut open = channel();
+            let mut limited = pairing_bundle(0x7b0);
+            let mut open = pairing_channel();
             assert_eq!(
                 service.consume_proof(
                     &mut limited,
                     &unsigned_proof(identity),
                     identity,
-                    &clock(5_001),
+                    &pairing_clock(5_001),
                     &binding(),
                     &capability,
                     &mut open,
@@ -524,6 +539,83 @@ macro_rules! events_contract_tests {
             observed.extend(sink.events.iter().map(events::SecurityEvent::code));
 
             observed
+        }
+
+        /// The rejected-Origin fact, both halves.
+        ///
+        /// The fact is required before the refusal is recorded against the enrollment, so
+        /// an unavailable sink must leave the proof budget and the pairing channel exactly
+        /// as they were: an Origin nobody could record is not an Origin quietly accepted,
+        /// and it is not a failure silently charged to the extension either.
+        #[test]
+        fn a_rejected_origin_is_recorded_or_the_refusal_fails_closed() {
+            use crate::enrollment::{
+                ChromeCapability, EnrollmentChannelState, EnrollmentConsumeError,
+                EnrollmentConsumptionService,
+            };
+            use crate::identity::IdentityId;
+            use crate::test_support_channel::RecordingSink;
+
+            let identity = IdentityId::new(Uuid::from_u128(0x7c0));
+            let wrong_origin = wrong_origin_binding();
+            let capability = ChromeCapability::reported(&wrong_origin, true, true)
+                .expect("a browser reports whatever origin it loaded");
+
+            // An available sink observes the fact, and only then is the refusal charged.
+            let mut accepting = RecordingSink::default();
+            let mut recorded = pairing_bundle(0x7c0);
+            let mut open = pairing_channel();
+            assert_eq!(
+                EnrollmentConsumptionService::default().consume_proof(
+                    &mut recorded,
+                    &unsigned_proof(identity),
+                    identity,
+                    &pairing_clock(1_000),
+                    &wrong_origin,
+                    &capability,
+                    &mut open,
+                    Some(&mut accepting),
+                ),
+                Err(EnrollmentConsumeError::InvalidProof)
+            );
+            assert_eq!(
+                accepting
+                    .events
+                    .last()
+                    .expect("a rejected Origin emits")
+                    .code(),
+                events::SecurityCode::OriginRejected
+            );
+            assert_eq!(recorded.enrollment().failed_proofs(), 1);
+            assert_eq!(open.state(), EnrollmentChannelState::Closed);
+
+            // An unavailable sink fails closed, and nothing was charged or closed.
+            let mut unavailable = RecordingSink {
+                events: Vec::new(),
+                unavailable: true,
+            };
+            let mut untouched = pairing_bundle(0x7c1);
+            let mut still_open = pairing_channel();
+            assert_eq!(
+                EnrollmentConsumptionService::default().consume_proof(
+                    &mut untouched,
+                    &unsigned_proof(identity),
+                    identity,
+                    &pairing_clock(1_000),
+                    &wrong_origin,
+                    &capability,
+                    &mut still_open,
+                    Some(&mut unavailable),
+                ),
+                Err(EnrollmentConsumeError::EventUnavailable)
+            );
+            assert_eq!(
+                untouched.enrollment().failed_proofs(),
+                0,
+                "an unrecordable refusal charges the extension nothing"
+            );
+            assert_eq!(still_open.state(), EnrollmentChannelState::Open);
+            assert!(unavailable.events.is_empty());
         }
 
         #[test]
