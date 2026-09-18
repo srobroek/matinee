@@ -612,6 +612,8 @@ impl Connection {
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
+    pub(crate) fn client_nonce(&self) -> [u8; 12] { self.client_nonce }
+    pub(crate) fn daemon_nonce(&self) -> [u8; 12] { self.daemon_nonce }
     pub fn lifecycle(&self) -> ConnectionLifecycle {
         self.lifecycle
     }

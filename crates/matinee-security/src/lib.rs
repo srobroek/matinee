@@ -18,6 +18,7 @@ mod events;
 mod failures;
 mod identity;
 mod transition;
+mod channel;
 
 #[cfg(test)]
 #[path = "../tests/support/fakes.rs"]
@@ -244,6 +245,7 @@ pub struct ChannelSession {
     connection: Connection,
     contract: u16,
     endpoint: String,
+    channel: channel::ChannelState,
 }
 
 impl ChannelSession {
@@ -266,10 +268,12 @@ impl ChannelSession {
         if endpoint.is_empty() || endpoint.len() > MAX_ENDPOINT_BYTES {
             return Err(SecurityFailure::new(FailureCode::EndpointRejected));
         }
+        let channel = channel::ChannelState::derive(&connection, contract);
         Ok(Self {
             connection,
             contract,
             endpoint,
+            channel,
         })
     }
 
@@ -328,6 +332,37 @@ impl ChannelSession {
         self.connection
             .next_receive()
             .ok_or(SecurityFailure::new(FailureCode::CounterMismatch))
+    }
+
+    /// Seal one already-filtered output into an authenticated v1 frame.
+    pub(crate) fn send(&mut self, output: &AuthorizedOutput) -> Result<Vec<u8>, SecurityFailure> {
+        if !self.is_open() {
+            return Err(SecurityFailure::new(FailureCode::AuthenticationFailed));
+        }
+        match self.channel.seal(self.connection_id(), self.epoch(), self.contract, output.payload()) {
+            Ok(frame) => Ok(frame),
+            Err(failure) => { self.close(); Err(failure) }
+        }
+    }
+
+    /// Authenticate and decrypt one v1 frame, then bind it to the typed context.
+    pub(crate) fn receive(
+        &mut self,
+        frame: &[u8],
+        context: &SessionInput,
+    ) -> Result<AuthorizedInput, SecurityFailure> {
+        if let Err(failure) = self.binds(context) {
+            self.close();
+            return Err(failure);
+        }
+        let payload = match self.channel.open(frame, self.connection_id(), self.epoch(), self.contract) {
+            Ok(payload) => payload,
+            Err(failure) => { self.close(); return Err(failure); }
+        };
+        match AuthorizedInput::authorized(context, payload) {
+            Ok(input) => Ok(input),
+            Err(failure) => { self.close(); Err(failure) }
+        }
     }
 }
 
@@ -429,6 +464,22 @@ mod enrollment_contract {
 mod malformed_corpus_contract {
     include!("../tests/malformed_corpus.rs");
     malformed_corpus_tests!();
+}
+#[cfg(test)]
+mod secure_channel_handshake_contract {
+    include!("../tests/secure_channel_handshake.rs");
+    secure_channel_handshake_tests!();
+}
+#[cfg(test)]
+mod secure_channel_frames_contract {
+    include!("../tests/secure_channel_frames.rs");
+    secure_channel_frames_tests!();
+}
+#[cfg(test)]
+mod secure_channel_faults_contract {
+    include!("../tests/secure_channel_faults.rs");
+    use crate::malformed_corpus_contract::malformed_corpus_cases;
+    secure_channel_faults_tests!();
 }
 #[cfg(test)]
 mod tests {
