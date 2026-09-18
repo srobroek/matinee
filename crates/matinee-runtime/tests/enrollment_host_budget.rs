@@ -65,11 +65,18 @@ fn completion<'a>(
 }
 
 fn unsigned_proof(identity: IdentityId) -> EnrollmentProof {
+    let rng = SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+        .expect("generate long-term key");
+    let signer = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+        .expect("parse long-term key");
+    let mut bytes = [0u8; UNCOMPRESSED_KEY_BYTES];
+    bytes.copy_from_slice(signer.public_key().as_ref());
     EnrollmentProof {
         identity,
         signature: vec![0; 8],
-        long_term_public_key: PublicKey::from_uncompressed([0x04; UNCOMPRESSED_KEY_BYTES])
-            .expect("uncompressed SEC1 prefix"),
+        long_term_public_key: PublicKey::from_uncompressed(bytes)
+            .expect("uncompressed SEC1 point"),
     }
 }
 
