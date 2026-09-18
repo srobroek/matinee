@@ -393,6 +393,11 @@ mod bootstrap_contract {
     bootstrap_contract_tests!();
 }
 #[cfg(test)]
+mod bootstrap_recovery_contract {
+    include!("../tests/bootstrap_recovery.rs");
+    bootstrap_recovery_tests!();
+}
+#[cfg(test)]
 mod enrollment_contract {
     include!("../tests/enrollment_contract.rs");
     enrollment_contract_tests!();

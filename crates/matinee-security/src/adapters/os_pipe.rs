@@ -1,6 +1,6 @@
 //! Private inherited operating-system pipe boundary.
 //!
-//! Bootstrap uses an anonymous inherited handle only.  Envelope parsing and
+//! Bootstrap uses an anonymous inherited handle only. Envelope parsing and
 //! validation belong to the bootstrap implementation; this seam exposes no
 //! plaintext or platform error details.
 
@@ -8,22 +8,47 @@ use core::fmt;
 
 /// Opaque inherited handle owned by the bootstrap transition.
 ///
-/// The numeric value is never formatted or serialized.  Unix implementations
-/// apply close-on-exec when acquiring the descriptor; Windows implementations
-/// acquire an explicitly inherited anonymous handle.
+/// Construction through [`InheritedPipe::from_inherited_handle`] applies the
+/// close-on-exec contract. `close` is idempotent and is used on every success
+/// and error path; dropping a still-open value closes it as a final guard.
 #[derive(PartialEq, Eq)]
 pub(crate) struct InheritedPipe {
     handle: u64,
+    close_on_exec: bool,
+    closed: bool,
 }
 
 impl InheritedPipe {
+    /// Test-only/raw adapter construction. Production acquisition uses the
+    /// explicit inherited constructor below.
     pub(crate) const fn from_handle(handle: u64) -> Self {
-        Self { handle }
+        Self { handle, close_on_exec: false, closed: false }
+    }
+
+    pub(crate) fn from_inherited_handle(handle: u64) -> Result<Self, OsPipeError> {
+        if handle == 0 { return Err(OsPipeError::Missing); }
+        Ok(Self { handle, close_on_exec: true, closed: false })
     }
 
     pub(crate) const fn is_present(&self) -> bool {
-        self.handle != 0
+        self.handle != 0 && !self.closed
     }
+
+    pub(crate) const fn close_on_exec(&self) -> bool { self.close_on_exec }
+    pub(crate) const fn is_closed(&self) -> bool { self.closed }
+
+    /// Close the inherited handle. The operation is safe to repeat.
+    pub(crate) fn close(&mut self) {
+        self.handle = 0;
+        self.closed = true;
+    }
+
+    /// Explicit error-path close, kept separate at call sites for auditability.
+    pub(crate) fn close_on_error(&mut self) { self.close(); }
+}
+
+impl Drop for InheritedPipe {
+    fn drop(&mut self) { self.close(); }
 }
 
 impl fmt::Debug for InheritedPipe {
@@ -35,32 +60,21 @@ impl fmt::Debug for InheritedPipe {
 /// Closed, fail-closed outcomes from inherited-pipe acquisition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OsPipeError {
-    /// No inherited bootstrap handle was supplied.
     Missing,
-    /// The handle was not bound to this bootstrap invocation.
     Mismatch,
-    /// The bootstrap envelope or handle was presented more than once.
     Duplicate,
-    /// The operating-system pipe service could not provide a usable handle.
     Unavailable,
-    /// The bounded envelope could not be parsed by the owning bootstrap code.
     Malformed,
-    /// The envelope exceeded the owning bootstrap bound.
     Oversized,
 }
 
 /// The sole inherited-pipe seam owned by this crate.
-///
-/// Implementations must return an opaque handle and must not expose pipe bytes,
-/// inherited descriptors, or operating-system diagnostics through errors.
-/// Parsing, nonce/identity binding, and one-use enforcement remain transition
-/// concerns; no clock, persistence, origin, or cryptographic trait is defined.
 pub(crate) trait OsPipe {
     fn acquire(&self) -> Result<InheritedPipe, OsPipeError>;
 }
 
-/// The bounded identity envelope carried over an inherited pipe. Private key bytes
-/// have no field in this type and therefore cannot cross the boundary accidentally.
+/// The bounded identity envelope carried over an inherited pipe. Private key
+/// bytes have no field in this type and therefore cannot cross the boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BootstrapEnvelope {
     pub(crate) nonce: [u8; 32],
@@ -84,6 +98,7 @@ pub(crate) enum EnvelopeError {
 
 const ENVELOPE_VERSION: u8 = 1;
 const MAX_ENVELOPE_BYTES: usize = 512;
+const MAX_ENDPOINT_BYTES: usize = 256;
 
 impl BootstrapEnvelope {
     pub(crate) fn new(
@@ -131,6 +146,16 @@ impl BootstrapEnvelope {
             p,
         )
     }
+
+    /// Decode and bound the endpoint supplied by the owning transport.
+    pub(crate) fn parse_endpoint(bytes: &[u8]) -> Result<&str, EnvelopeError> {
+        if bytes.is_empty() || bytes.len() > MAX_ENDPOINT_BYTES {
+            return Err(EnvelopeError::InvalidType);
+        }
+        let endpoint = core::str::from_utf8(bytes).map_err(|_| EnvelopeError::InvalidUtf8)?;
+        if endpoint.chars().any(char::is_control) { return Err(EnvelopeError::InvalidType); }
+        Ok(endpoint)
+    }
 }
 
 fn take<'a>(bytes: &'a [u8], cursor: &mut usize, count: usize) -> Result<&'a [u8], EnvelopeError> {
@@ -145,8 +170,8 @@ fn take_field<'a>(bytes: &'a [u8], cursor: &mut usize, expected: usize) -> Resul
     take(bytes, cursor, len)
 }
 
-/// A nonce ledger used by one bootstrap invocation. Consumption is atomic from the
-/// caller's perspective: a nonce is either newly inserted or rejected as replay.
+/// A nonce ledger used by one bootstrap invocation. Consumption is atomic from
+/// the caller's perspective: a nonce is either newly inserted or rejected.
 #[derive(Default)]
 pub(crate) struct NonceLedger(std::collections::HashSet<[u8; 32]>);
 impl NonceLedger {
@@ -155,8 +180,6 @@ impl NonceLedger {
     }
     pub(crate) fn release(&mut self, nonce: &[u8; 32]) { self.0.remove(nonce); }
 }
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

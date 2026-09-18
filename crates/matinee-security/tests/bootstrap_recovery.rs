@@ -1,152 +1,198 @@
 macro_rules! bootstrap_recovery_tests {
     () => {
-        use crate::adapters::credential_store::{CredentialBinding, CredentialStore};
-        use crate::adapters::os_pipe::{OsPipe, OsPipeError};
-        use crate::identity::{
-            ExpiryResult, ExpiryStatus, IdempotencyKey, IdentityId, TransitionId, TransitionInput,
-            TransitionOperation, TransitionOutcome,
-        };
-        use crate::test_support_fakes::{FakeCredentialStore, FakeOsPipe};
+        use crate::adapters::credential_store::{CredentialBinding, CredentialStoreError, InMemoryCredentialStore};
+        use crate::adapters::os_pipe::{BootstrapEnvelope, BootstrapEnvelope as Envelope, EnvelopeError};
+        use crate::events::{EndpointClass, EventBoundary, EventOutcome, EventTime, SecurityCode};
+        use crate::test_support_fakes::{FakeEventSink, FakeOsPipe};
+        use crate::transition::{BootstrapError, BootstrapState, CrashPoint};
         use uuid::Uuid;
 
-        fn identity(value: u128) -> IdentityId {
-            IdentityId::new(Uuid::from_u128(value))
+        fn envelope(value: u128, nonce_byte: u8) -> BootstrapEnvelope {
+            let mut key = [value as u8; 65];
+            key[0] = 0x04;
+            BootstrapEnvelope::new(
+                [nonce_byte; 32],
+                Uuid::from_u128(value + 1),
+                Uuid::from_u128(value + 2),
+                Uuid::from_u128(value + 3),
+                key,
+            ).expect("valid native bootstrap envelope")
         }
 
-        fn transition(value: u128, outcome: TransitionOutcome) -> TransitionInput {
-            TransitionInput::new(
-                identity(1),
-                TransitionId::new(Uuid::from_u128(value)),
-                TransitionOperation::Bootstrap,
-                IdempotencyKey::new(Uuid::from_u128(99)),
-                0,
-                outcome,
+        fn registered(envelope: &BootstrapEnvelope) -> InMemoryCredentialStore {
+            let mut store = InMemoryCredentialStore::new();
+            store.register(
+                CredentialBinding::for_identities(envelope.state_directory, envelope.daemon),
+                0xfeed_beef,
+            );
+            store
+        }
+
+        fn apply(
+            state: &mut BootstrapState,
+            envelope: &BootstrapEnvelope,
+            store: &InMemoryCredentialStore,
+            sink: &mut FakeEventSink,
+            crash: Option<CrashPoint>,
+        ) -> Result<crate::identity::TransitionOutcome, BootstrapError> {
+            let pipe = FakeOsPipe::present(9);
+            state.bootstrap_encoded(
+                &pipe,
+                &envelope.encode(),
+                store,
+                Some(sink),
+                crash,
+                EventTime(42),
+                b"native://bootstrap",
             )
         }
 
         #[test]
-        fn before_commit_crash_is_unknown_and_leaves_state_unpersistable() {
-            let interrupted = transition(10, TransitionOutcome::Unknown);
-            assert_eq!(interrupted.outcome(), TransitionOutcome::Unknown);
-            assert!(interrupted.is_fail_closed());
-            assert!(!interrupted.may_persist());
+        fn clean_bootstrap_calls_production_operation_and_emits_bounded_events() {
+            let envelope = envelope(10, 7);
+            let store = registered(&envelope);
+            let mut sink = FakeEventSink::accepted();
+            let mut state = BootstrapState::default();
+            assert_eq!(apply(&mut state, &envelope, &store, &mut sink, None), Ok(crate::identity::TransitionOutcome::Committed));
+            let active = state.active().expect("committed native identity");
+            assert_eq!(active.bootstrap, envelope.bootstrap);
+            assert_eq!(active.endpoint, "native://bootstrap");
+            assert_eq!(active.event_time, EventTime(42));
+            assert!(state.staged().is_none());
+            assert_eq!(sink.received().len(), 2);
+            assert!(sink.received().iter().all(|event| {
+                event.boundary == EventBoundary::Bootstrap
+                    && event.endpoint == EndpointClass::Native
+                    && event.time == EventTime(42)
+                    && event.outcome == EventOutcome::Accepted
+            }));
+            assert_eq!(sink.received()[0].code, SecurityCode::EnrollmentAccepted);
+            assert_eq!(sink.received()[1].code, SecurityCode::AuthorizationAccepted);
         }
 
         #[test]
-        fn after_commit_crash_and_restart_converge_without_duplicate_registration() {
-            let committed = transition(11, TransitionOutcome::Committed);
-            let recovered = transition(11, TransitionOutcome::AlreadyCommitted);
-            assert!(committed.may_persist());
-            assert!(recovered.may_persist());
-            assert_eq!(recovered.outcome(), TransitionOutcome::AlreadyCommitted);
-            assert_ne!(
-                transition(12, TransitionOutcome::Committed).outcome(),
-                recovered.outcome(),
-                "a different transition cannot be treated as the recovered commit"
-            );
-        }
-
-        #[test]
-        fn duplicate_identity_and_credential_bindings_fail_closed() {
-            let binding = CredentialBinding::new([7; 32]);
-            let store = FakeCredentialStore::new().with_error(
-                binding,
-                crate::adapters::credential_store::CredentialStoreError::Duplicate,
-            );
-            assert_eq!(
-                store.lookup(binding),
-                Err(crate::adapters::credential_store::CredentialStoreError::Duplicate)
-            );
-
-            let mismatched = FakeCredentialStore::new().with_error(
-                binding,
-                crate::adapters::credential_store::CredentialStoreError::Mismatch,
-            );
-            assert_eq!(
-                mismatched.lookup(binding),
-                Err(crate::adapters::credential_store::CredentialStoreError::Mismatch)
-            );
-        }
-
-        #[test]
-        fn missing_credential_never_falls_back_to_another_identity() {
-            let requested = CredentialBinding::new([1; 32]);
-            let other = CredentialBinding::new([2; 32]);
-            let store = FakeCredentialStore::new().registered(other, 44);
-            assert_eq!(
-                store.lookup(requested),
-                Err(crate::adapters::credential_store::CredentialStoreError::Missing)
-            );
-        }
-
-        #[test]
-        fn missing_mismatched_and_unsupported_pipe_states_are_closed() {
-            for error in [
-                OsPipeError::Missing,
-                OsPipeError::Mismatch,
-                OsPipeError::Duplicate,
-                OsPipeError::Malformed,
-                OsPipeError::Oversized,
-                OsPipeError::Unavailable,
-            ] {
-                assert!(matches!(
-                    error,
-                    OsPipeError::Missing
-                        | OsPipeError::Mismatch
-                        | OsPipeError::Duplicate
-                        | OsPipeError::Malformed
-                        | OsPipeError::Oversized
-                        | OsPipeError::Unavailable
-                ));
+        fn crash_before_or_after_event_reopens_nonce_without_state_mutation() {
+            for crash in [CrashPoint::BeforeEvent, CrashPoint::AfterEvent] {
+                let envelope = envelope(20 + crash as u128, 8 + crash as u8);
+                let store = registered(&envelope);
+                let mut sink = FakeEventSink::accepted();
+                let mut state = BootstrapState::default();
+                assert_eq!(apply(&mut state, &envelope, &store, &mut sink, Some(crash)), Err(BootstrapError::Crash(crash)));
+                assert!(state.active().is_none());
+                assert!(state.staged().is_none());
+                assert_eq!(apply(&mut state, &envelope, &store, &mut sink, None), Ok(crate::identity::TransitionOutcome::Committed));
             }
-
-            assert_eq!(
-                FakeOsPipe::error(OsPipeError::Missing).acquire(),
-                Err(OsPipeError::Missing)
-            );
-            assert_eq!(
-                FakeOsPipe::error(OsPipeError::Mismatch).acquire(),
-                Err(OsPipeError::Mismatch)
-            );
-            assert_eq!(
-                FakeOsPipe::error(OsPipeError::Unavailable).acquire(),
-                Err(OsPipeError::Unavailable)
-            );
         }
 
         #[test]
-        fn malformed_or_unsupported_transition_outcomes_cannot_report_success() {
-            let unknown = transition(13, TransitionOutcome::Unknown);
-            assert!(unknown.is_fail_closed());
-            assert!(!unknown.may_persist());
-            assert_ne!(unknown.outcome(), TransitionOutcome::Committed);
-            assert_ne!(unknown.outcome(), TransitionOutcome::AlreadyCommitted);
+        fn staged_and_post_commit_crashes_recover_without_duplicate_registration() {
+            for (value, crash) in [(30, CrashPoint::AfterStage), (31, CrashPoint::AfterCommit)] {
+                let envelope = envelope(value, value as u8);
+                let store = registered(&envelope);
+                let mut sink = FakeEventSink::accepted();
+                let mut state = BootstrapState::default();
+                assert_eq!(apply(&mut state, &envelope, &store, &mut sink, Some(crash)), Err(BootstrapError::Crash(crash)));
+                state.recover();
+                assert!(state.active().is_some());
+                assert!(state.staged().is_none());
+                assert_eq!(apply(&mut state, &envelope, &store, &mut sink, None), Ok(crate::identity::TransitionOutcome::AlreadyCommitted));
+                assert_eq!(state.active().unwrap().bootstrap, envelope.bootstrap);
+            }
         }
 
         #[test]
-        fn restart_round_trip_preserves_only_bounded_transition_state() {
-            let before = transition(14, TransitionOutcome::Committed);
-            // The restart record is a typed, bounded value; cloning models the
-            // persistence/reload boundary without adding a production serializer.
-            let after = before.clone();
-            assert_eq!(after, before);
-            assert_eq!(after.outcome(), TransitionOutcome::Committed);
+        fn different_identity_and_all_credential_failures_leave_no_registration() {
+            let first = envelope(40, 1);
+            let mut state = BootstrapState::default();
+            let first_store = registered(&first);
+            let mut sink = FakeEventSink::accepted();
+            apply(&mut state, &first, &first_store, &mut sink, None).expect("first bootstrap");
+            let before = state.active().cloned();
+            let different = envelope(41, 2);
+            let different_store = registered(&different);
+            assert_eq!(apply(&mut state, &different, &different_store, &mut sink, None), Err(BootstrapError::IdentityMismatch));
+            assert_eq!(state.active(), before.as_ref());
+
+            for (value, expected) in [
+                (50, CredentialStoreError::Missing),
+                (51, CredentialStoreError::Mismatch),
+                (52, CredentialStoreError::Duplicate),
+                (53, CredentialStoreError::Unavailable),
+            ] {
+                let candidate = envelope(value, value as u8);
+                let mut store = InMemoryCredentialStore::new();
+                let binding = CredentialBinding::for_identities(candidate.state_directory, candidate.daemon);
+                match expected {
+                    CredentialStoreError::Missing => {}
+                    CredentialStoreError::Mismatch => store.register_mismatched(binding, value as u64),
+                    CredentialStoreError::Duplicate => { store.register(binding, 1); store.register(binding, 2); }
+                    CredentialStoreError::Unavailable => store.set_unavailable(true),
+                }
+                let mut candidate_state = BootstrapState::default();
+                let mut candidate_sink = FakeEventSink::accepted();
+                assert_eq!(apply(&mut candidate_state, &candidate, &store, &mut candidate_sink, None), Err(BootstrapError::Credential(expected)));
+                assert!(candidate_state.active().is_none());
+                assert!(candidate_state.staged().is_none());
+            }
         }
 
         #[test]
-        fn expiry_uncertainty_and_debug_projections_fail_closed_and_redact() {
-            let uncertain = ExpiryResult::uncertain(10_000);
-            assert_eq!(uncertain.status(), ExpiryStatus::Uncertain);
-            assert!(!uncertain.is_security_valid());
-            assert!(!ExpiryResult::expired(10_000).is_security_valid());
+        fn unavailable_required_sink_rolls_back_and_retry_is_idempotent() {
+            let envelope = envelope(60, 6);
+            let store = registered(&envelope);
+            let mut unavailable = FakeEventSink::unavailable();
+            let mut state = BootstrapState::default();
+            assert_eq!(apply(&mut state, &envelope, &store, &mut unavailable, None), Err(BootstrapError::EventUnavailable));
+            assert!(state.active().is_none());
+            assert!(state.staged().is_none());
+            let mut accepted = FakeEventSink::accepted();
+            assert_eq!(apply(&mut state, &envelope, &store, &mut accepted, None), Ok(crate::identity::TransitionOutcome::Committed));
+        }
 
-            let binding = CredentialBinding::new([0xa5; 32]);
-            let store = FakeCredentialStore::new().registered(binding, 0xfeed_beef);
-            let credential = store.lookup(binding).expect("registered credential");
-            let debug = format!("{credential:?}");
-            assert!(!debug.contains("feed"));
-            assert!(!debug.contains("a5"));
-            assert!(!format!("{binding:?}").contains("a5"));
+        #[test]
+        fn endpoint_and_envelope_validation_are_meaningful() {
+            assert_eq!(Envelope::parse_endpoint(&[0xff]), Err(EnvelopeError::InvalidUtf8));
+            assert_eq!(Envelope::parse_endpoint(b""), Err(EnvelopeError::InvalidType));
+            assert_eq!(Envelope::parse_endpoint(&[b'a'; 257]), Err(EnvelopeError::InvalidType));
+            let mut malformed = envelope(70, 7).encode();
+            malformed[2] = 0;
+            assert_eq!(Envelope::parse(&malformed), Err(EnvelopeError::Malformed));
+        }
+
+        #[test]
+        fn sc001_clean_runs_and_sc002_crash_runs_converge() {
+            for value in 0..100u128 {
+                let candidate = envelope(1000 + value, value as u8);
+                let store = registered(&candidate);
+                let mut sink = FakeEventSink::accepted();
+                let mut state = BootstrapState::default();
+                assert_eq!(apply(&mut state, &candidate, &store, &mut sink, None), Ok(crate::identity::TransitionOutcome::Committed));
+                assert!(state.active().is_some());
+                assert!(state.staged().is_none());
+                assert_eq!(state.active().unwrap().bootstrap, candidate.bootstrap);
+                assert_eq!(sink.received().len(), 2);
+            }
+            for value in 0..100u128 {
+                let candidate = envelope(2000 + value, (value as u8).wrapping_add(1));
+                let store = registered(&candidate);
+                let mut sink = FakeEventSink::accepted();
+                let mut state = BootstrapState::default();
+                let crash = match value % 4 {
+                    0 => CrashPoint::BeforeEvent,
+                    1 => CrashPoint::AfterEvent,
+                    2 => CrashPoint::AfterStage,
+                    _ => CrashPoint::AfterCommit,
+                };
+                assert!(apply(&mut state, &candidate, &store, &mut sink, Some(crash)).is_err());
+                state.recover();
+                if state.active().is_none() {
+                    assert_eq!(apply(&mut state, &candidate, &store, &mut sink, None), Ok(crate::identity::TransitionOutcome::Committed));
+                } else {
+                    assert_eq!(apply(&mut state, &candidate, &store, &mut sink, None), Ok(crate::identity::TransitionOutcome::AlreadyCommitted));
+                }
+                assert!(state.active().is_some());
+                assert!(state.staged().is_none());
+            }
         }
     };
 }
