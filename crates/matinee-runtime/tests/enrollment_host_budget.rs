@@ -82,7 +82,7 @@ fn client_proof(
         .deliver_one_time_key(ticket.enrollment())
         .expect("seal the one-time key");
     let one_time_pkcs8 = session
-        .open_sealed(&sealed)
+        .open_sealed(ticket.enrollment(), &sealed)
         .expect("peer opens the sealed key");
     let rng = SystemRandom::new();
     let one_time = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &one_time_pkcs8, &rng)

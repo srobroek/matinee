@@ -49,11 +49,10 @@ impl EnrollmentHost {
 
     /// Open one bounded, one-time enrollment and keep its bundle in host custody.
     ///
-    /// The returned ticket carries only ceremony-safe facts. The 32-byte secret and
-    /// the one-time private key never leave this host except as sealed channel
-    /// output. A second creation under a live enrollment identifier is refused
-    /// rather than replacing it, because replacement would refill that
-    /// enrollment's failed-proof budget.
+    /// The returned ticket carries only ceremony-safe facts. The one-time private
+    /// key leaves this host only as sealed channel output. A second creation under
+    /// a live enrollment identifier is refused rather than replacing it, because
+    /// replacement would refill that enrollment's failed-proof budget.
     pub fn create_pairing(
         &self,
         creation: EnrollmentCreation,
@@ -112,13 +111,20 @@ impl EnrollmentHost {
         })
     }
 
-    /// Whether a registered principal may resume on a presented key fingerprint.
+    /// Whether a registered principal may resume on a presented key fingerprint
+    /// and a currently reported browser custody capability.
     pub fn reconnect(
         &self,
         identity: IdentityId,
         fingerprint: &Fingerprint,
+        binding: &EnrollmentBinding<'_>,
+        storage_local: bool,
+        non_exportable: bool,
     ) -> ChromeReconnectOutcome {
-        self.service.reconnect(identity, fingerprint)
+        let Ok(capability) = ChromeCapability::reported(binding, storage_local, non_exportable) else {
+            return ChromeReconnectOutcome::Mismatch;
+        };
+        self.service.reconnect(identity, fingerprint, &capability)
     }
 
     /// Replace a registered principal's key, quarantining the stale fingerprint.
@@ -126,8 +132,12 @@ impl EnrollmentHost {
         &self,
         identity: IdentityId,
         key: &PublicKey,
+        binding: &EnrollmentBinding<'_>,
+        storage_local: bool,
+        non_exportable: bool,
     ) -> Result<Fingerprint, EnrollmentFailure> {
-        Ok(self.service.update_custody(identity, key)?)
+        let capability = ChromeCapability::reported(binding, storage_local, non_exportable)?;
+        Ok(self.service.update_custody(identity, key, &capability)?)
     }
 
     /// Revoke a registered principal terminally.
@@ -204,7 +214,17 @@ impl PairingTicket {
 pub struct SealedOneTimeKey(EncryptedKeyOutput);
 
 impl SealedOneTimeKey {
-    /// The AEAD ciphertext. A transport capture contains only these bytes.
+    /// The enrollment whose transfer context is authenticated by this output.
+    pub fn enrollment(&self) -> TransitionId {
+        self.0.enrollment()
+    }
+
+    /// The unique nonce carried with this sealed output.
+    pub fn nonce(&self) -> &[u8; 12] {
+        self.0.nonce()
+    }
+
+    /// The AEAD ciphertext.
     pub fn ciphertext(&self) -> &[u8] {
         self.0.ciphertext()
     }
@@ -306,9 +326,14 @@ impl PairingSession<'_> {
         Ok(SealedOneTimeKey(self.channel.seal_one_time_key(bundle)?))
     }
 
-    /// The peer half of this channel: recover a sealed one-time key.
-    pub fn open_sealed(&self, sealed: &SealedOneTimeKey) -> Result<Vec<u8>, EnrollmentFailure> {
-        Ok(self.channel.open_sealed(&sealed.0)?)
+    /// The peer half of this channel: recover a sealed one-time key only for the
+    /// expected enrollment authenticated into the output.
+    pub fn open_sealed(
+        &self,
+        expected_enrollment: TransitionId,
+        sealed: &SealedOneTimeKey,
+    ) -> Result<Vec<u8>, EnrollmentFailure> {
+        Ok(self.channel.open_sealed(expected_enrollment, &sealed.0)?)
     }
 
     /// Consume one pairing proof and register its long-term key.

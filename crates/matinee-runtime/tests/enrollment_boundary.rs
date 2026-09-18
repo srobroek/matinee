@@ -90,7 +90,7 @@ fn client_proof(
         "transport carries ciphertext"
     );
     let one_time_pkcs8 = session
-        .open_sealed(&sealed)
+        .open_sealed(ticket.enrollment(), &sealed)
         .expect("peer opens the sealed key");
     let rng = SystemRandom::new();
     let one_time = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &one_time_pkcs8, &rng)
@@ -200,14 +200,25 @@ fn registration_and_custody_survive_session_replacement() {
     );
     assert!(second.is_open());
     assert_eq!(
-        later.reconnect(identity, &original),
+        later.reconnect(identity, &original, &binding(), false, true),
+        ChromeReconnectOutcome::Mismatch,
+        "reconnect fails closed after durable custody is lost",
+    );
+    assert_eq!(
+        later.reconnect(identity, &original, &binding(), true, true),
         ChromeReconnectOutcome::Reconnected
     );
 
     let rng = SystemRandom::new();
     let (_rotated_key, rotated) = long_term_keypair(&rng);
+    assert_eq!(
+        later.update_custody(identity, &rotated, &binding(), true, false).unwrap_err(),
+        EnrollmentFailure::Consume(EnrollmentConsumeError::CapabilityRejected),
+        "custody rotation fails closed after non-exportable binding is lost",
+    );
+    assert!(!later.is_quarantined(&original));
     let updated = later
-        .update_custody(identity, &rotated)
+        .update_custody(identity, &rotated, &binding(), true, true)
         .expect("update custody");
     assert_ne!(updated, original);
     assert!(
@@ -215,21 +226,21 @@ fn registration_and_custody_survive_session_replacement() {
         "the stale key is quarantined"
     );
     assert_eq!(
-        later.reconnect(identity, &original),
+        later.reconnect(identity, &original, &binding(), true, true),
         ChromeReconnectOutcome::Mismatch
     );
     assert_eq!(
-        later.reconnect(identity, &updated),
+        later.reconnect(identity, &updated, &binding(), true, true),
         ChromeReconnectOutcome::Reconnected
     );
 
     later.revoke(identity).expect("revoke the principal");
     assert_eq!(
-        later.reconnect(identity, &updated),
+        later.reconnect(identity, &updated, &binding(), true, true),
         ChromeReconnectOutcome::Revoked
     );
     assert_eq!(
-        later.update_custody(identity, &rotated).unwrap_err(),
+        later.update_custody(identity, &rotated, &binding(), true, true).unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::CredentialMismatch),
         "a revoked principal accepts no replacement key"
     );
@@ -349,7 +360,7 @@ fn a_closed_channel_seals_and_opens_no_one_time_key() {
         .expect("seal the one-time key");
     session.close();
     assert_eq!(
-        session.open_sealed(&sealed).unwrap_err(),
+        session.open_sealed(ticket.enrollment(), &sealed).unwrap_err(),
         EnrollmentFailure::Custody(EnrollmentCustodyError::ChannelNotAuthenticated),
         "a closed channel recovers nothing already on the wire"
     );

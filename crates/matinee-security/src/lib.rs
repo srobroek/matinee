@@ -4,9 +4,8 @@
 //! policy, origin validation, adapter access, and transition state remain behind
 //! private modules. Consumers interact only through the typed session boundary, the
 //! closed lifecycle command interface, and the enrollment lifecycle re-exported
-//! here: the enrollment secret, the one-time private key, the required-event sink,
-//! the host attempt budgets, and the quarantine set are reachable through none of
-//! them.
+//! here: the one-time private key, required-event sink, host attempt budgets, and
+//! quarantine set are reachable through none of them.
 
 // Foundational modules. Every declaration resolves to real content: a module is
 // declared once it carries its own definitions, so channel framing, authorization
@@ -32,8 +31,8 @@ use crate::identity::{Capability, Connection, ConnectionLifecycle, IdempotencyKe
 /// The enrollment lifecycle a host process drives: create a bounded one-time
 /// enrollment, seal its one-time key to one authenticated channel, consume the
 /// pairing proof once, then reconnect, update custody, or revoke the registered
-/// principal. Everything else about enrollment - secrets, transcript assembly,
-/// budgets, quarantine, and event emission - stays behind this boundary.
+/// principal. Transcript assembly, budgets, quarantine, and event emission stay
+/// behind this boundary.
 pub use crate::enrollment::{
     enrollment_proof_message, ChromeCapability, ChromeReconnectOutcome,
     DevelopmentIdentityAllowance, EncryptedKeyOutput, EnrollmentBinding, EnrollmentBundle,
@@ -302,7 +301,6 @@ impl ChannelSession {
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
-
 
     /// Check that a caller's context belongs to this session at the current epoch.
     ///

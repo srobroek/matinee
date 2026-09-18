@@ -56,7 +56,7 @@ fn client_proof(
         "  sealed one-time key: {} ciphertext bytes, debug projection {sealed:?}",
         sealed.ciphertext().len()
     );
-    let one_time_pkcs8 = session.open_sealed(&sealed)?;
+    let one_time_pkcs8 = session.open_sealed(ticket.enrollment(), &sealed)?;
     let rng = SystemRandom::new();
     let one_time = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &one_time_pkcs8, &rng)
         .map_err(|error| format!("sealed bytes are not the one-time PKCS#8 key: {error}"))?;
@@ -130,26 +130,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         "  replacement connection {}",
         replacement.connection().get()
     );
-    match host.reconnect(extension, &original) {
+    match host.reconnect(extension, &original, &binding(), true, true) {
         ChromeReconnectOutcome::Reconnected => println!("  reconnected on shared registry state"),
         other => return Err(format!("expected a reconnect, observed {other:?}").into()),
     }
 
     println!("5. update custody");
     let rotated = long_term_public_key(&SystemRandom::new())?;
-    let updated = host.update_custody(extension, &rotated)?;
+    let updated = host.update_custody(extension, &rotated, &binding(), true, true)?;
     println!("  rotated to {}", updated.as_str());
     if !host.is_quarantined(&original) {
         return Err("the stale key was not quarantined".into());
     }
-    match host.reconnect(extension, &original) {
+    match host.reconnect(extension, &original, &binding(), true, true) {
         ChromeReconnectOutcome::Mismatch => println!("  the stale fingerprint is refused"),
         other => return Err(format!("expected a mismatch, observed {other:?}").into()),
     }
 
     println!("6. revoke");
     host.revoke(extension)?;
-    match host.reconnect(extension, &updated) {
+    match host.reconnect(extension, &updated, &binding(), true, true) {
         ChromeReconnectOutcome::Revoked => println!("  the principal is terminally revoked"),
         other => return Err(format!("expected a revocation, observed {other:?}").into()),
     }

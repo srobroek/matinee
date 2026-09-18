@@ -92,8 +92,6 @@ pub(crate) enum CredentialStoreError {
     Missing,
     /// A credential exists, but is bound to a different identity.
     Mismatch,
-    /// The selected credential was revoked and cannot authenticate.
-    Revoked,
     /// More than one credential claims the selected binding.
     Duplicate,
     /// The platform service could not be queried. Callers must fail closed.

@@ -2,7 +2,7 @@
 
 use core::fmt;
 use std::collections::HashMap;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, Mutex};
 
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::SecureRandom;
@@ -18,7 +18,7 @@ use crate::identity::{
     Fingerprint, IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
 };
 
-const SECRET_BYTES: usize = 32;
+const SEALED_KEY_AAD_PREFIX: &[u8; 26] = b"matinee.enrollment.key.v1\0";
 const MAX_EXPIRY_MS: u64 = 10 * 60 * 1_000;
 const MAX_ORIGIN_BYTES: usize = 256;
 const MAX_METADATA_BYTES: usize = 512;
@@ -122,7 +122,6 @@ pub struct EnrollmentBundle {
     enrollment: ExtensionEnrollment,
     enrollment_id: TransitionId,
     expiry_deadline_ms: u64,
-    secret: [u8; SECRET_BYTES],
     one_time_public_key: PublicKey,
     one_time_public_key_fingerprint: Fingerprint,
     one_time_private_key_pkcs8: Option<Vec<u8>>,
@@ -146,7 +145,6 @@ impl fmt::Debug for EnrollmentBundle {
             .field("daemon_endpoint", &self.daemon_endpoint)
             .field("one_time_public_key", &self.one_time_public_key)
             .field("one_time_public_key_fingerprint", &self.one_time_public_key_fingerprint)
-            .field("secret", &"<redacted>")
             .field("one_time_private_key_pkcs8", &"<redacted>")
             .finish()
     }
@@ -156,8 +154,6 @@ impl EnrollmentBundle {
     pub fn create(input: EnrollmentCreation) -> Result<Self, EnrollmentCreateError> {
         validate_creation(&input)?;
         let rng = rand::SystemRandom::new();
-        let mut secret = [0u8; SECRET_BYTES];
-        rng.fill(&mut secret).map_err(|_| EnrollmentCreateError::KeyGenerationFailed)?;
         let pkcs8 = signature::EcdsaKeyPair::generate_pkcs8(
             &signature::ECDSA_P256_SHA256_ASN1_SIGNING, &rng,
         ).map_err(|_| EnrollmentCreateError::KeyGenerationFailed)?;
@@ -181,7 +177,6 @@ impl EnrollmentBundle {
             enrollment,
             enrollment_id: input.enrollment,
             expiry_deadline_ms: input.expiry.deadline_ms(),
-            secret,
             one_time_public_key: public_key,
             one_time_public_key_fingerprint: fingerprint,
             one_time_private_key_pkcs8: Some(pkcs8.as_ref().to_vec()),
@@ -197,7 +192,6 @@ impl EnrollmentBundle {
     pub fn enrollment_id(&self) -> TransitionId { self.enrollment_id }
     pub fn expiry_deadline_ms(&self) -> u64 { self.expiry_deadline_ms }
     pub fn lifecycle(&self) -> EnrollmentLifecycle { self.enrollment.lifecycle() }
-    pub(crate) fn secret(&self) -> &[u8; SECRET_BYTES] { &self.secret }
     pub fn one_time_public_key(&self) -> &PublicKey { &self.one_time_public_key }
     pub fn one_time_public_key_fingerprint(&self) -> &Fingerprint { &self.one_time_public_key_fingerprint }
     pub fn origin(&self) -> &str { &self.origin }
@@ -215,14 +209,22 @@ impl EnrollmentBundle {
     ) -> Result<EncryptedKeyOutput, EnrollmentCustodyError> {
         if !capability.active.load(Ordering::Acquire) { return Err(EnrollmentCustodyError::ChannelNotAuthenticated); }
         let key = self.one_time_private_key_pkcs8.as_ref().ok_or(EnrollmentCustodyError::AlreadyTransferred)?;
+        let nonce = capability.next_nonce()?;
+        let aad = sealed_key_aad(self.enrollment_id, capability.connection, capability.epoch);
         let unbound = UnboundKey::new(&AES_256_GCM, &capability.key).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
         let sealing_key = LessSafeKey::new(unbound);
         let mut ciphertext = key.clone();
         sealing_key.seal_in_place_append_tag(
-            Nonce::assume_unique_for_key(capability.nonce), Aad::empty(), &mut ciphertext,
+            Nonce::assume_unique_for_key(nonce), Aad::from(aad.as_slice()), &mut ciphertext,
         ).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
         self.one_time_private_key_pkcs8.take();
-        Ok(EncryptedKeyOutput { connection: capability.connection, epoch: capability.epoch, nonce: capability.nonce, ciphertext })
+        Ok(EncryptedKeyOutput {
+            enrollment: self.enrollment_id,
+            connection: capability.connection,
+            epoch: capability.epoch,
+            nonce,
+            ciphertext,
+        })
     }
 }
 
@@ -233,7 +235,8 @@ pub struct AuthenticatedOutputCapability {
     connection: ConnectionId,
     epoch: u64,
     key: [u8; 32],
-    nonce: [u8; 12],
+    nonce_prefix: [u8; 4],
+    nonce_sequence: AtomicU64,
     active: Arc<AtomicBool>,
 }
 
@@ -241,10 +244,20 @@ impl AuthenticatedOutputCapability {
     pub(crate) fn from_authenticated_channel(connection: ConnectionId, epoch: u64, active: Arc<AtomicBool>) -> Result<Self, EnrollmentCustodyError> {
         let rng = rand::SystemRandom::new();
         let mut key = [0u8; 32];
-        let mut nonce = [0u8; 12];
+        let mut nonce_prefix = [0u8; 4];
         rng.fill(&mut key).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
-        rng.fill(&mut nonce).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
-        Ok(Self { connection, epoch, key, nonce, active })
+        rng.fill(&mut nonce_prefix).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        Ok(Self { connection, epoch, key, nonce_prefix, nonce_sequence: AtomicU64::new(0), active })
+    }
+
+    fn next_nonce(&self) -> Result<[u8; 12], EnrollmentCustodyError> {
+        let sequence = self.nonce_sequence.fetch_update(
+            Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1),
+        ).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        let mut nonce = [0u8; 12];
+        nonce[..4].copy_from_slice(&self.nonce_prefix);
+        nonce[4..].copy_from_slice(&sequence.to_be_bytes());
+        Ok(nonce)
     }
 }
 
@@ -255,12 +268,13 @@ impl fmt::Debug for AuthenticatedOutputCapability {
             .field("connection", &self.connection)
             .field("epoch", &self.epoch)
             .field("key", &"<redacted>")
-            .field("nonce", &"<redacted>")
+            .field("nonce_sequence", &self.nonce_sequence.load(Ordering::Relaxed))
             .finish()
     }
 }
 
 pub struct EncryptedKeyOutput {
+    enrollment: TransitionId,
     connection: ConnectionId,
     epoch: u64,
     nonce: [u8; 12],
@@ -268,18 +282,43 @@ pub struct EncryptedKeyOutput {
 }
 
 impl EncryptedKeyOutput {
+    pub fn enrollment(&self) -> TransitionId { self.enrollment }
+    pub fn nonce(&self) -> &[u8; 12] { &self.nonce }
     pub fn ciphertext(&self) -> &[u8] { &self.ciphertext }
-    pub(crate) fn decrypt_for_channel(&self, capability: &AuthenticatedOutputCapability) -> Result<Vec<u8>, EnrollmentCustodyError> {
-        if !capability.active.load(Ordering::Acquire) || capability.connection != self.connection || capability.epoch != self.epoch || capability.nonce != self.nonce {
+    pub(crate) fn decrypt_for_channel(
+        &self,
+        capability: &AuthenticatedOutputCapability,
+        expected_enrollment: TransitionId,
+    ) -> Result<Vec<u8>, EnrollmentCustodyError> {
+        if !capability.active.load(Ordering::Acquire)
+            || capability.connection != self.connection
+            || capability.epoch != self.epoch
+            || self.enrollment != expected_enrollment
+        {
             return Err(EnrollmentCustodyError::ChannelNotAuthenticated);
         }
+        let aad = sealed_key_aad(self.enrollment, self.connection, self.epoch);
         let unbound = UnboundKey::new(&AES_256_GCM, &capability.key).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
         let opening_key = LessSafeKey::new(unbound);
         let mut plaintext = self.ciphertext.clone();
-        let bytes = opening_key.open_in_place(Nonce::assume_unique_for_key(self.nonce), Aad::empty(), &mut plaintext)
-            .map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
+        let bytes = opening_key.open_in_place(
+            Nonce::assume_unique_for_key(self.nonce), Aad::from(aad.as_slice()), &mut plaintext,
+        ).map_err(|_| EnrollmentCustodyError::EncryptionFailed)?;
         Ok(bytes.to_vec())
     }
+}
+
+fn sealed_key_aad(
+    enrollment: TransitionId,
+    connection: ConnectionId,
+    epoch: u64,
+) -> [u8; 66] {
+    let mut aad = [0u8; 66];
+    aad[..26].copy_from_slice(SEALED_KEY_AAD_PREFIX);
+    aad[26..42].copy_from_slice(enrollment.get().as_bytes());
+    aad[42..58].copy_from_slice(connection.get().as_bytes());
+    aad[58..].copy_from_slice(&epoch.to_be_bytes());
+    aad
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -310,7 +349,6 @@ pub(crate) enum HostAttemptResult { Allowed, RateLimited }
 pub(crate) struct HostAttemptBudget { failures: u8, window_start_ms: Option<u64> }
 
 impl HostAttemptBudget {
-    pub(crate) fn failures(&self) -> u8 { self.failures }
     pub(crate) fn before_attempt(&self, occurrence_ms: u64) -> HostAttemptResult {
         let Some(start) = self.window_start_ms else { return HostAttemptResult::Allowed; };
         if occurrence_ms.saturating_sub(start) >= 60_000 || self.failures < 10 { HostAttemptResult::Allowed } else { HostAttemptResult::RateLimited }
@@ -365,6 +403,16 @@ impl ChromeCapability {
     fn matches(&self, binding: &EnrollmentBinding<'_>) -> bool {
         self.origin == binding.origin && self.store_metadata == binding.store_metadata && self.update_metadata == binding.update_metadata && self.install_metadata == binding.install_metadata
     }
+    fn permits(&self, current: &Self) -> bool {
+        self.storage_local
+            && self.non_exportable
+            && current.storage_local
+            && current.non_exportable
+            && self.origin == current.origin
+            && self.store_metadata == current.store_metadata
+            && self.update_metadata == current.update_metadata
+            && self.install_metadata == current.install_metadata
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,11 +420,9 @@ pub enum ChromeReconnectOutcome { Reconnected, Mismatch, Revoked }
 
 #[derive(Clone, Debug)]
 struct Registration {
-    enrollment: TransitionId,
     key: [u8; UNCOMPRESSED_KEY_BYTES],
     fingerprint: Fingerprint,
     capability: ChromeCapability,
-    generation: u64,
     revoked: bool,
 }
 
@@ -440,10 +486,14 @@ impl EnrollmentChannel {
     }
     /// The peer half of the same channel: recover a sealed one-time key.
     ///
-    /// Only this channel's capability opens its own output, so a closed channel, a
-    /// replaced connection, or a stale epoch recovers nothing.
-    pub fn open_sealed(&self, sealed: &EncryptedKeyOutput) -> Result<Vec<u8>, EnrollmentCustodyError> {
-        sealed.decrypt_for_channel(&self.capability)
+    /// The expected enrollment and this channel's connection and epoch are bound
+    /// into the authenticated data, so a mismatched context recovers nothing.
+    pub fn open_sealed(
+        &self,
+        expected_enrollment: TransitionId,
+        sealed: &EncryptedKeyOutput,
+    ) -> Result<Vec<u8>, EnrollmentCustodyError> {
+        sealed.decrypt_for_channel(&self.capability, expected_enrollment)
     }
 }
 
@@ -459,16 +509,6 @@ impl EnrollmentConsumptionService {
 
     pub fn is_quarantined(&self, fingerprint: &Fingerprint) -> bool {
         self.state.lock().map(|state| state.quarantined.iter().any(|item| item == fingerprint)).unwrap_or(true)
-    }
-    /// The counted failures for one endpoint's host key. The contract tests read
-    /// this to prove the host budget is independent of any enrollment's own count.
-    #[cfg(test)]
-    pub(crate) fn host_failures(&self, endpoint: &str) -> u8 {
-        let Some(host) = host_key(endpoint) else { return 0 };
-        self.state
-            .lock()
-            .map(|state| state.host_budgets.get(&host).map_or(0, HostAttemptBudget::failures))
-            .unwrap_or(0)
     }
 
 
@@ -562,11 +602,9 @@ impl EnrollmentConsumptionService {
         bundle.enrollment.consume().map_err(|_| EnrollmentConsumeError::AlreadyConsumed)?;
         state.consumed.insert(bundle.enrollment_id, expected_identity);
         state.registrations.insert(expected_identity, Registration {
-            enrollment: bundle.enrollment_id,
             key: *proof.long_term_public_key.as_bytes(),
             fingerprint: fingerprint.clone(),
             capability: capability.clone(),
-            generation: 0,
             revoked: false,
         });
         Ok(fingerprint)
@@ -593,24 +631,39 @@ impl EnrollmentConsumptionService {
         )
     }
 
-    pub fn reconnect(&self, identity: IdentityId, fingerprint: &Fingerprint) -> ChromeReconnectOutcome {
+    pub fn reconnect(
+        &self,
+        identity: IdentityId,
+        fingerprint: &Fingerprint,
+        current_capability: &ChromeCapability,
+    ) -> ChromeReconnectOutcome {
         let Ok(state) = self.state.lock() else { return ChromeReconnectOutcome::Mismatch; };
         let Some(registration) = state.registrations.get(&identity) else { return ChromeReconnectOutcome::Mismatch; };
         if registration.revoked {
             ChromeReconnectOutcome::Revoked
-        } else if &registration.fingerprint == fingerprint {
+        } else if &registration.fingerprint == fingerprint
+            && registration.capability.permits(current_capability)
+        {
             ChromeReconnectOutcome::Reconnected
         } else {
             ChromeReconnectOutcome::Mismatch
         }
     }
 
-    pub fn update_custody(&self, identity: IdentityId, key: &PublicKey) -> Result<Fingerprint, EnrollmentConsumeError> {
+    pub fn update_custody(
+        &self,
+        identity: IdentityId,
+        key: &PublicKey,
+        current_capability: &ChromeCapability,
+    ) -> Result<Fingerprint, EnrollmentConsumeError> {
         let mut state = self.state.lock().map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
         let old_fingerprint = {
             let registration = state.registrations.get(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?;
             if registration.revoked {
                 return Err(EnrollmentConsumeError::CredentialMismatch);
+            }
+            if !registration.capability.permits(current_capability) {
+                return Err(EnrollmentConsumeError::CapabilityRejected);
             }
             registration.fingerprint.clone()
         };
@@ -619,7 +672,7 @@ impl EnrollmentConsumptionService {
         let registration = state.registrations.get_mut(&identity).ok_or(EnrollmentConsumeError::CredentialMismatch)?;
         registration.key = *key.as_bytes();
         registration.fingerprint = fingerprint.clone();
-        registration.generation = registration.generation.saturating_add(1);
+        registration.capability = current_capability.clone();
         Ok(fingerprint)
     }
 
@@ -817,12 +870,6 @@ pub(crate) fn validate_enrollment_binding(
 }
 
 
-pub(crate) fn create_enrollment(
-    input: EnrollmentCreation,
-) -> Result<EnrollmentBundle, EnrollmentCreateError> {
-    EnrollmentBundle::create(input)
-}
-
 fn validate_creation(input: &EnrollmentCreation) -> Result<(), EnrollmentCreateError> {
     bounded(
         &input.origin,
@@ -906,8 +953,7 @@ mod tests {
 
     #[test]
     fn creates_bounded_redacted_one_use_bundle() {
-        let bundle = create_enrollment(input()).unwrap();
-        assert_eq!(bundle.secret().len(), SECRET_BYTES);
+        let bundle = EnrollmentBundle::create(input()).unwrap();
         assert_eq!(bundle.one_time_public_key_fingerprint().as_str().len(), 64);
         assert!(format!("{bundle:?}").contains("<redacted>"));
     }
@@ -917,7 +963,7 @@ mod tests {
         let mut spaced = input();
         spaced.store_metadata = "Chrome Web Store".into();
         spaced.install_metadata = "Chrome Web Store".into();
-        assert!(create_enrollment(spaced).is_ok());
+        assert!(EnrollmentBundle::create(spaced).is_ok());
     }
 
     #[test]
@@ -925,13 +971,13 @@ mod tests {
         let mut uncertain = input();
         uncertain.expiry = ExpiryResult::uncertain(MAX_EXPIRY_MS);
         assert!(matches!(
-            create_enrollment(uncertain),
+            EnrollmentBundle::create(uncertain),
             Err(EnrollmentCreateError::InvalidExpiry)
         ));
         let mut oversized = input();
         oversized.expiry = ExpiryResult::valid(MAX_EXPIRY_MS + 1).unwrap();
         assert!(matches!(
-            create_enrollment(oversized),
+            EnrollmentBundle::create(oversized),
             Err(EnrollmentCreateError::InvalidExpiry)
         ));
     }

@@ -263,7 +263,7 @@ macro_rules! foundation_contract_tests {
         #[test]
         fn every_adapter_closed_outcome_remains_distinct_and_opaque() {
             let binding = CredentialBinding::new([1; 32]);
-            for error in [crate::adapters::credential_store::CredentialStoreError::Missing, crate::adapters::credential_store::CredentialStoreError::Mismatch, crate::adapters::credential_store::CredentialStoreError::Revoked, crate::adapters::credential_store::CredentialStoreError::Duplicate, crate::adapters::credential_store::CredentialStoreError::Unavailable] {
+            for error in [crate::adapters::credential_store::CredentialStoreError::Missing, crate::adapters::credential_store::CredentialStoreError::Mismatch, crate::adapters::credential_store::CredentialStoreError::Duplicate, crate::adapters::credential_store::CredentialStoreError::Unavailable] {
                 assert_eq!(FakeCredentialStore::new().with_error(binding, error).lookup(binding), Err(error));
             }
             for error in [crate::adapters::os_pipe::OsPipeError::Missing, crate::adapters::os_pipe::OsPipeError::Mismatch, crate::adapters::os_pipe::OsPipeError::Duplicate, crate::adapters::os_pipe::OsPipeError::Unavailable, crate::adapters::os_pipe::OsPipeError::Malformed, crate::adapters::os_pipe::OsPipeError::Oversized] {

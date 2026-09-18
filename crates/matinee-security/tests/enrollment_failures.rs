@@ -1,10 +1,11 @@
 macro_rules! enrollment_failure_tests {
     () => {
         use crate::enrollment::{
-            create_enrollment, enrollment_proof_message, validate_enrollment_binding,
-            ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBindingError, EnrollmentChannel,
-            EnrollmentChannelState, EnrollmentClock, EnrollmentConsumeError, EnrollmentConsumptionService,
-            EnrollmentCreation, EnrollmentCreateError, EnrollmentProof,
+            enrollment_proof_message, validate_enrollment_binding, ChromeCapability,
+            DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBindingError,
+            EnrollmentBundle, EnrollmentChannel, EnrollmentChannelState, EnrollmentClock,
+            EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreation,
+            EnrollmentCreateError, EnrollmentProof,
         };
         use crate::adapters::credential_store::{CredentialBinding, CredentialHandle, CredentialStore, CredentialStoreError};
         use crate::events::{SecurityEvent, SecurityEventSink, SecurityEventSinkResult};
@@ -46,18 +47,16 @@ macro_rules! enrollment_failure_tests {
             }
         }
         fn bundle(id: u128) -> crate::enrollment::EnrollmentBundle {
-            let mut value = input(); value.enrollment = TransitionId::new(Uuid::from_u128(id)); create_enrollment(value).unwrap()
+            let mut value = input(); value.enrollment = TransitionId::new(Uuid::from_u128(id)); EnrollmentBundle::create(value).unwrap()
         }
         fn bundle_binding(_bundle: &crate::enrollment::EnrollmentBundle) -> EnrollmentBinding<'static> {
             EnrollmentBinding { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", endpoint: "127.0.0.1:7777", store_metadata: "Chrome Web Store", update_metadata: "https://updates.example.test/ext.xml", install_metadata: "normal", development_allowance: DevelopmentIdentityAllowance::None }
         }
-        fn capability(bundle: &crate::enrollment::EnrollmentBundle) -> ChromeCapability {
-            let binding = bundle_binding(bundle); ChromeCapability::reported(&binding, true, true).unwrap()
-        }
         fn signed_proof(bundle: &mut crate::enrollment::EnrollmentBundle, identity: IdentityId) -> EnrollmentProof {
             let channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9000)), 1).unwrap();
+            let enrollment = bundle.enrollment_id();
             let transfer = channel.seal_one_time_key(bundle).unwrap();
-            let private = channel.open_sealed(&transfer).unwrap();
+            let private = channel.open_sealed(enrollment, &transfer).unwrap();
             let rng = SystemRandom::new();
             let signer = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &private, &rng).unwrap();
             let mut bytes = [0u8; crate::identity::UNCOMPRESSED_KEY_BYTES]; bytes.copy_from_slice(signer.public_key().as_ref());
@@ -74,13 +73,13 @@ macro_rules! enrollment_failure_tests {
             let mut malformed = input();
             malformed.origin = "http://not-an-extension".into();
             assert_eq!(
-                create_enrollment(malformed).unwrap_err(),
+                EnrollmentBundle::create(malformed).unwrap_err(),
                 EnrollmentCreateError::InvalidOrigin
             );
             let mut uncertain = input();
             uncertain.expiry = ExpiryResult::uncertain(600_000);
             assert_eq!(
-                create_enrollment(uncertain).unwrap_err(),
+                EnrollmentBundle::create(uncertain).unwrap_err(),
                 EnrollmentCreateError::InvalidExpiry
             );
         }
@@ -206,12 +205,12 @@ macro_rules! enrollment_failure_tests {
             let identity = IdentityId::new(Uuid::from_u128(0x778)); let mut bundle = bundle(0x711);
             let binding = bundle_binding(&bundle); let capability = ChromeCapability::reported(&binding, true, true).unwrap(); let service = EnrollmentConsumptionService::default();
             for attempt in 0..5 { let mut channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9100)), 1).unwrap(); let mut sink = RecordingSink { events: Vec::new(), available: true }; assert_eq!(service.consume_proof(&mut bundle, &invalid_proof(identity), identity, &EnrollmentClock::new(1_000 + attempt, ExpiryResult::valid(600_000).unwrap()), &binding, &capability, &mut channel, Some(&mut sink)), Err(EnrollmentConsumeError::InvalidProof)); assert_eq!(channel.state(), EnrollmentChannelState::Closed); }
-            assert_eq!(bundle.enrollment().failed_proofs(), 5); assert_eq!(service.host_failures("127.0.0.1:7777"), 5); assert_eq!(bundle.lifecycle(), EnrollmentLifecycle::Closed);
+            assert_eq!(bundle.enrollment().failed_proofs(), 5); assert_eq!(bundle.lifecycle(), EnrollmentLifecycle::Closed);
         }
         #[test]
         fn event_outage_leaves_failure_and_registry_state_unchanged() {
             let identity = IdentityId::new(Uuid::from_u128(0x779)); let mut bundle = bundle(0x712); let binding = bundle_binding(&bundle); let capability = ChromeCapability::reported(&binding, true, true).unwrap(); let service = EnrollmentConsumptionService::default(); let mut channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9100)), 1).unwrap(); let mut sink = RecordingSink { events: Vec::new(), available: false };
-            assert_eq!(service.consume_proof(&mut bundle, &invalid_proof(identity), identity, &EnrollmentClock::new(2_000, ExpiryResult::valid(600_000).unwrap()), &binding, &capability, &mut channel, Some(&mut sink)), Err(EnrollmentConsumeError::EventUnavailable)); assert_eq!(bundle.enrollment().failed_proofs(), 0); assert_eq!(service.host_failures("127.0.0.1:7777"), 0); assert_eq!(channel.state(), EnrollmentChannelState::Open);
+            assert_eq!(service.consume_proof(&mut bundle, &invalid_proof(identity), identity, &EnrollmentClock::new(2_000, ExpiryResult::valid(600_000).unwrap()), &binding, &capability, &mut channel, Some(&mut sink)), Err(EnrollmentConsumeError::EventUnavailable)); assert_eq!(bundle.enrollment().failed_proofs(), 0); assert_eq!(channel.state(), EnrollmentChannelState::Open);
         }
         #[test]
         fn host_budget_window_uses_occurrence_time_and_rate_limits() {
@@ -223,8 +222,18 @@ macro_rules! enrollment_failure_tests {
         #[test]
         fn stale_key_quarantine_reconnect_update_and_revocation_are_closed() {
             let identity = IdentityId::new(Uuid::from_u128(0x781)); let service = EnrollmentConsumptionService::default(); let mut bundle = bundle(0x740); let binding = bundle_binding(&bundle); let capability = ChromeCapability::reported(&binding, true, true).unwrap(); let proof = signed_proof(&mut bundle, identity); let mut channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9100)), 1).unwrap(); let mut sink = RecordingSink { events: Vec::new(), available: true };
-            let old_fp = service.consume_proof(&mut bundle, &proof, identity, &EnrollmentClock::new(6_000, ExpiryResult::valid(600_000).unwrap()), &binding, &capability, &mut channel, Some(&mut sink)).unwrap(); assert_eq!(service.reconnect(identity, &old_fp), crate::enrollment::ChromeReconnectOutcome::Reconnected);
-            let new_key = PublicKey::from_uncompressed([0x04; crate::identity::UNCOMPRESSED_KEY_BYTES]).unwrap(); let new_fp = service.update_custody(identity, &new_key).unwrap(); assert!(service.is_quarantined(&old_fp)); assert_eq!(service.reconnect(identity, &old_fp), crate::enrollment::ChromeReconnectOutcome::Mismatch); assert_eq!(service.reconnect(identity, &new_fp), crate::enrollment::ChromeReconnectOutcome::Reconnected); service.revoke(identity).unwrap(); assert_eq!(service.reconnect(identity, &new_fp), crate::enrollment::ChromeReconnectOutcome::Revoked);
+            let old_fp = service.consume_proof(&mut bundle, &proof, identity, &EnrollmentClock::new(6_000, ExpiryResult::valid(600_000).unwrap()), &binding, &capability, &mut channel, Some(&mut sink)).unwrap();
+            assert_eq!(service.reconnect(identity, &old_fp, &capability), crate::enrollment::ChromeReconnectOutcome::Reconnected);
+            let unsupported = ChromeCapability::reported(&binding, false, true).unwrap();
+            assert_eq!(service.reconnect(identity, &old_fp, &unsupported), crate::enrollment::ChromeReconnectOutcome::Mismatch);
+            let new_key = PublicKey::from_uncompressed([0x04; crate::identity::UNCOMPRESSED_KEY_BYTES]).unwrap();
+            assert_eq!(service.update_custody(identity, &new_key, &unsupported), Err(EnrollmentConsumeError::CapabilityRejected));
+            let new_fp = service.update_custody(identity, &new_key, &capability).unwrap();
+            assert!(service.is_quarantined(&old_fp));
+            assert_eq!(service.reconnect(identity, &old_fp, &capability), crate::enrollment::ChromeReconnectOutcome::Mismatch);
+            assert_eq!(service.reconnect(identity, &new_fp, &capability), crate::enrollment::ChromeReconnectOutcome::Reconnected);
+            service.revoke(identity).unwrap();
+            assert_eq!(service.reconnect(identity, &new_fp, &capability), crate::enrollment::ChromeReconnectOutcome::Revoked);
         }
 
         #[test]

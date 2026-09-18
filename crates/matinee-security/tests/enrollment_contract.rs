@@ -1,8 +1,8 @@
 macro_rules! enrollment_contract_tests {
     () => {
         use crate::enrollment::{
-            create_enrollment, validate_enrollment_binding, DevelopmentIdentityAllowance,
-            EnrollmentBinding, EnrollmentBindingError, EnrollmentCreation, EnrollmentCreateError,
+            validate_enrollment_binding, DevelopmentIdentityAllowance, EnrollmentBinding,
+            EnrollmentBindingError, EnrollmentBundle, EnrollmentCreation, EnrollmentCreateError,
         };
         use crate::identity::{
             ConnectionId, EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment,
@@ -37,9 +37,8 @@ macro_rules! enrollment_contract_tests {
         }
 
         #[test]
-        fn creation_generates_256_bit_secret_and_bounds_lifecycle_metadata() {
-            let bundle = create_enrollment(creation()).expect("valid enrollment creation");
-            assert_eq!(bundle.secret().len(), 32);
+        fn creation_bounds_lifecycle_metadata() {
+            let bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
             assert_eq!(bundle.lifecycle(), EnrollmentLifecycle::Pending);
             assert_eq!(bundle.origin(), "chrome-extension://abcdefghijklmnopabcdefghijklmnop");
             assert_eq!(bundle.store_metadata(), "Chrome Web Store");
@@ -59,13 +58,13 @@ macro_rules! enrollment_contract_tests {
             let mut uncertain = creation();
             uncertain.expiry = ExpiryResult::uncertain(10 * 60 * 1_000);
             assert_eq!(
-                create_enrollment(uncertain).expect_err("clock uncertainty fails closed"),
+                EnrollmentBundle::create(uncertain).expect_err("clock uncertainty fails closed"),
                 EnrollmentCreateError::InvalidExpiry
             );
             let mut overlong = creation();
             overlong.expiry = ExpiryResult::valid(10 * 60 * 1_000 + 1).unwrap();
             assert_eq!(
-                create_enrollment(overlong).expect_err("expiry over ten minutes fails closed"),
+                EnrollmentBundle::create(overlong).expect_err("expiry over ten minutes fails closed"),
                 EnrollmentCreateError::InvalidExpiry
             );
         }
@@ -94,7 +93,7 @@ macro_rules! enrollment_contract_tests {
 
         #[test]
         fn one_time_private_key_is_owned_by_authenticated_encrypted_output() {
-            let mut bundle = create_enrollment(creation()).expect("valid enrollment creation");
+            let mut bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
             let mut channel = crate::enrollment::EnrollmentChannel::open(
                 ConnectionId::new(Uuid::from_u128(0x30)), 1,
             )
@@ -102,12 +101,12 @@ macro_rules! enrollment_contract_tests {
             let output = channel.seal_one_time_key(&mut bundle).unwrap();
             assert!(!output.ciphertext().is_empty());
             assert!(channel.seal_one_time_key(&mut bundle).is_err(), "PKCS#8 transfer is one-use");
-            let plain = channel.open_sealed(&output).unwrap();
+            let plain = channel.open_sealed(bundle.enrollment_id(), &output).unwrap();
             assert!(!plain.is_empty());
             assert!(!format!("{bundle:?}").contains("PKCS#8"));
             channel.close();
             assert_eq!(
-                channel.open_sealed(&output),
+                channel.open_sealed(bundle.enrollment_id(), &output),
                 Err(crate::enrollment::EnrollmentCustodyError::ChannelNotAuthenticated),
                 "a closed channel recovers no one-time key",
             );
@@ -115,7 +114,7 @@ macro_rules! enrollment_contract_tests {
 
         #[test]
         fn public_key_boundary_is_exact_uncompressed_sec1_and_has_no_private_bytes() {
-            let bundle = create_enrollment(creation()).expect("valid enrollment creation");
+            let bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
             let key = bundle.one_time_public_key();
             assert_eq!(key.as_bytes().len(), UNCOMPRESSED_KEY_BYTES);
             assert_eq!(key.as_bytes()[0], 0x04);
