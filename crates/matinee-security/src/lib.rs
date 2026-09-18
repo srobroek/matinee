@@ -47,9 +47,9 @@ use crate::identity::{IdempotencyKey, TransitionOperation};
 
 /// The enrollment lifecycle a host process drives: create a bounded one-time
 /// enrollment, seal its one-time key to one authenticated channel, consume the
-/// pairing proof once, then reconnect, update custody, or revoke the registered
-/// principal. Transcript assembly, budgets, quarantine, and event emission stay
-/// behind this boundary.
+/// pairing proof once, then reconnect, update encrypted custody, or revoke the
+/// registered principal. Transcript assembly, budgets, quarantine, and event
+/// emission stay behind this boundary.
 pub use crate::enrollment::{
     ChromeCapability, ChromeReconnectOutcome, DevelopmentIdentityAllowance, EncryptedKeyOutput,
     EnrollmentBinding, EnrollmentBundle, EnrollmentChannel, EnrollmentClock,
@@ -394,9 +394,10 @@ impl fmt::Debug for SessionPeer {
 /// Stateful payload boundary created only by a mutually authenticated handshake.
 /// Raw transcript construction, traffic keys, framing values, and counters remain private.
 ///
-/// Public methods are client-side only. A completed daemon session must be moved into
-/// [`SecurityTransitions`] before it can receive, disclose, or commit protected work;
-/// rotation and revocation therefore invalidate those operations under the same lock.
+/// Public methods are client-side only. A completed daemon session is a
+/// coordinator-owned server operation and must move into [`SecurityTransitions`]
+/// before it can receive, disclose, or commit protected work; rotation and
+/// revocation invalidate those operations under the same lock.
 #[derive(Debug)]
 pub struct ChannelSession {
     connection: ConnectionId,

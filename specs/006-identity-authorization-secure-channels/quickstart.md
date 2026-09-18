@@ -21,8 +21,7 @@ profile. Never use a real profile, a real credential, or a real enrollment key.
   lockfile.
 - Node and pnpm.
 - A browser that provides the WebCrypto primitives used by the vector peer and extension storage through `chrome.storage.local`.
-- A fixture credential-store adapter.
-- A fixture adapter for inherited operating-system pipes.
+- Test-only credential-store and inherited-pipe adapters. Production bootstrap constructs the platform adapters internally.
 - Typed Spec 007 transition-result fixtures.
 - Typed Spec 009 fixtures for expiry results and deadline results.
 
@@ -275,12 +274,10 @@ The downstream Spec 015 fixture must do all of the following:
 - It surfaces a broken predecessor or digest verification as an untrusted-history
   diagnostic.
 
-Retention, quota, and access policy remain downstream. Two further checks apply:
+Retention, quota, and access policy remain downstream.
+The security coordinator owns server-side channel operations and encrypted custody.
+Downstream code cannot authorize or commit a transition.
 
-- For an accepted event and for an aggregated event, verify continuity of the predecessor
-  and of the digest across sink flushes.
-- Tamper with one predecessor or one digest. Confirm that the downstream result is an
-  untrusted-history diagnostic that cannot authorize a transition.
 
 Run 100,000 malformed and oversized cases across each parser boundary. Record these fields
 per case:
