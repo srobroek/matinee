@@ -8,9 +8,9 @@ use std::error::Error;
 
 use matinee_runtime::{
     ChromeReconnectOutcome, ConnectionId, DevelopmentIdentityAllowance, EnrollmentBinding,
-    EnrollmentConsumeError, EnrollmentCreation, EnrollmentExpiry, EnrollmentFailure,
-    EnrollmentProof, ExpiryResult, IdentityId, PairingCompletion, PairingSession, PairingTicket,
-    PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES, enrollment_host,
+    EnrollmentCreation, EnrollmentExpiry, EnrollmentProof, ExpiryResult, IdentityId,
+    PairingCompletion, PairingSession, PairingTicket, PublicKey, TransitionId,
+    UNCOMPRESSED_KEY_BYTES, enrollment_host,
 };
 use matinee_security::SupportedExtensionVersions;
 use ring::rand::SystemRandom;

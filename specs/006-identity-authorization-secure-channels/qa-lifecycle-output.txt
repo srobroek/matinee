@@ -1,0 +1,1004 @@
+   Compiling matinee-security v0.0.2 (/Users/sjors/tmp/worktrees/matinee/omp-agent-fix-sec010-reset/crates/matinee-security)
+warning: methods `operation` and `idempotency` are never used
+   --> crates/matinee-security/src/lib.rs:788:19
+    |
+785 | impl SecurityCommand {
+    | -------------------- methods in this implementation
+...
+788 |     pub(crate) fn operation(&self) -> TransitionOperation {
+    |                   ^^^^^^^^^
+...
+799 |     pub(crate) fn idempotency(&self) -> IdempotencyKey {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `CREDENTIAL_SERVICE` is never used
+  --> crates/matinee-security/src/adapters/credential_store.rs:12:7
+   |
+12 | const CREDENTIAL_SERVICE: &str = "matinee-security-credential-v1";
+   |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `OWNER_BYTES` is never used
+  --> crates/matinee-security/src/adapters/credential_store.rs:13:7
+   |
+13 | const OWNER_BYTES: usize = 32;
+   |       ^^^^^^^^^^^
+
+warning: constant `MIN_PRIVATE_KEY_BYTES` is never used
+  --> crates/matinee-security/src/adapters/credential_store.rs:14:7
+   |
+14 | const MIN_PRIVATE_KEY_BYTES: usize = 32;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `CredentialBinding` is never constructed
+  --> crates/matinee-security/src/adapters/credential_store.rs:22:19
+   |
+22 | pub(crate) struct CredentialBinding {
+   |                   ^^^^^^^^^^^^^^^^^
+
+warning: associated items `for_identities`, `selector`, and `owner` are never used
+  --> crates/matinee-security/src/adapters/credential_store.rs:39:19
+   |
+27 | impl CredentialBinding {
+   | ---------------------- associated items in this implementation
+...
+39 |     pub(crate) fn for_identities(state_directory: uuid::Uuid, daemon: uuid::Uuid) -> Self {
+   |                   ^^^^^^^^^^^^^^
+...
+48 |     fn selector(self) -> [u8; 32] {
+   |        ^^^^^^^^
+...
+51 |     fn owner(self) -> [u8; 32] {
+   |        ^^^^^
+
+warning: function `derive` is never used
+  --> crates/matinee-security/src/adapters/credential_store.rs:56:4
+   |
+56 | fn derive(domain: &[u8], state: &[u8; 16], daemon: &[u8; 16]) -> [u8; 32] {
+   |    ^^^^^^
+
+warning: struct `CredentialHandle` is never constructed
+  --> crates/matinee-security/src/adapters/credential_store.rs:78:19
+   |
+78 | pub(crate) struct CredentialHandle {
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: associated items `from_slot` and `slot` are never used
+  --> crates/matinee-security/src/adapters/credential_store.rs:83:25
+   |
+82 | impl CredentialHandle {
+   | --------------------- associated items in this implementation
+83 |     pub(crate) const fn from_slot(slot: u64) -> Self {
+   |                         ^^^^^^^^^
+...
+86 |     pub(crate) const fn slot(&self) -> u64 {
+   |                         ^^^^
+
+warning: enum `CredentialStoreError` is never used
+  --> crates/matinee-security/src/adapters/credential_store.rs:99:17
+   |
+99 | pub(crate) enum CredentialStoreError {
+   |                 ^^^^^^^^^^^^^^^^^^^^
+
+warning: trait `CredentialStore` is never used
+   --> crates/matinee-security/src/adapters/credential_store.rs:111:18
+    |
+111 | pub(crate) trait CredentialStore {
+    |                  ^^^^^^^^^^^^^^^
+
+warning: struct `PlatformCredentialStore` is never constructed
+   --> crates/matinee-security/src/adapters/credential_store.rs:122:19
+    |
+122 | pub(crate) struct PlatformCredentialStore;
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `new` and `entry` are never used
+   --> crates/matinee-security/src/adapters/credential_store.rs:125:25
+    |
+124 | impl PlatformCredentialStore {
+    | ---------------------------- associated functions in this implementation
+125 |     pub(crate) const fn new() -> Self {
+    |                         ^^^
+...
+129 |     fn entry(binding: CredentialBinding) -> Result<Entry, CredentialStoreError> {
+    |        ^^^^^
+
+warning: function `selector_text` is never used
+   --> crates/matinee-security/src/adapters/credential_store.rs:145:4
+    |
+145 | fn selector_text(binding: CredentialBinding) -> String {
+    |    ^^^^^^^^^^^^^
+
+warning: function `decode_record` is never used
+   --> crates/matinee-security/src/adapters/credential_store.rs:155:4
+    |
+155 | fn decode_record(
+    |    ^^^^^^^^^^^^^
+
+warning: function `map_keyring_error` is never used
+   --> crates/matinee-security/src/adapters/credential_store.rs:170:4
+    |
+170 | fn map_keyring_error(error: keyring::Error) -> CredentialStoreError {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: enum `OwnedPlatformHandle` is never used
+  --> crates/matinee-security/src/adapters/os_pipe.rs:16:6
+   |
+16 | enum OwnedPlatformHandle {
+   |      ^^^^^^^^^^^^^^^^^^^
+
+warning: struct `InheritedPipe` is never constructed
+  --> crates/matinee-security/src/adapters/os_pipe.rs:41:19
+   |
+41 | pub(crate) struct InheritedPipe {
+   |                   ^^^^^^^^^^^^^
+
+warning: associated items `from_inherited_handle`, `is_present`, `close_on_exec`, `is_closed`, `close`, and `close_on_error` are never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:68:19
+    |
+ 56 | impl InheritedPipe {
+    | ------------------ associated items in this implementation
+...
+ 68 |     pub(crate) fn from_inherited_handle(handle: u64) -> Result<Self, OsPipeError> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+130 |     pub(crate) const fn is_present(&self) -> bool {
+    |                         ^^^^^^^^^^
+...
+134 |     pub(crate) const fn close_on_exec(&self) -> bool {
+    |                         ^^^^^^^^^^^^^
+...
+137 |     pub(crate) const fn is_closed(&self) -> bool {
+    |                         ^^^^^^^^^
+...
+142 |     pub(crate) fn close(&mut self) {
+    |                   ^^^^^
+...
+151 |     pub(crate) fn close_on_error(&mut self) {
+    |                   ^^^^^^^^^^^^^^
+
+warning: struct `PlatformOsPipe` is never constructed
+   --> crates/matinee-security/src/adapters/os_pipe.rs:170:19
+    |
+170 | pub(crate) struct PlatformOsPipe {
+    |                   ^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:174:25
+    |
+173 | impl PlatformOsPipe {
+    | ------------------- associated function in this implementation
+174 |     pub(crate) const fn new(handle: u64) -> Self {
+    |                         ^^^
+
+warning: enum `OsPipeError` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:190:17
+    |
+190 | pub(crate) enum OsPipeError {
+    |                 ^^^^^^^^^^^
+
+warning: trait `OsPipe` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:200:18
+    |
+200 | pub(crate) trait OsPipe {
+    |                  ^^^^^^
+
+warning: struct `BootstrapEnvelope` is never constructed
+   --> crates/matinee-security/src/adapters/os_pipe.rs:207:19
+    |
+207 | pub(crate) struct BootstrapEnvelope {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: enum `EnvelopeError` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:216:17
+    |
+216 | pub(crate) enum EnvelopeError {
+    |                 ^^^^^^^^^^^^^
+
+warning: constant `ENVELOPE_VERSION` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:227:7
+    |
+227 | const ENVELOPE_VERSION: u8 = 1;
+    |       ^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_ENVELOPE_BYTES` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:228:7
+    |
+228 | const MAX_ENVELOPE_BYTES: usize = 512;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_ENDPOINT_BYTES` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:229:7
+    |
+229 | const MAX_ENDPOINT_BYTES: usize = 256;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `encode`, `parse`, and `parse_endpoint` are never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:232:19
+    |
+231 | impl BootstrapEnvelope {
+    | ---------------------- associated items in this implementation
+232 |     pub(crate) fn new(
+    |                   ^^^
+...
+253 |     pub(crate) fn encode(&self) -> Vec<u8> {
+    |                   ^^^^^^
+...
+269 |     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, EnvelopeError> {
+    |                   ^^^^^
+...
+300 |     pub(crate) fn parse_endpoint(bytes: &[u8]) -> Result<&str, EnvelopeError> {
+    |                   ^^^^^^^^^^^^^^
+
+warning: function `take` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:315:4
+    |
+315 | fn take<'a>(bytes: &'a [u8], cursor: &mut usize, count: usize) -> Result<&'a [u8], EnvelopeError> {
+    |    ^^^^
+
+warning: function `take_field` is never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:325:4
+    |
+325 | fn take_field<'a>(
+    |    ^^^^^^^^^^
+
+warning: field `0` is never read
+   --> crates/matinee-security/src/adapters/os_pipe.rs:344:31
+    |
+344 | pub(crate) struct NonceLedger(std::collections::HashSet<[u8; 32]>);
+    |                   ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |                   |
+    |                   field in this struct
+    |
+    = help: consider removing this field
+
+warning: methods `consume` and `release` are never used
+   --> crates/matinee-security/src/adapters/os_pipe.rs:346:19
+    |
+345 | impl NonceLedger {
+    | ---------------- methods in this implementation
+346 |     pub(crate) fn consume(&mut self, nonce: [u8; 32]) -> Result<(), EnvelopeError> {
+    |                   ^^^^^^^
+...
+353 |     pub(crate) fn release(&mut self, nonce: &[u8; 32]) {
+    |                   ^^^^^^^
+
+warning: method `revoke` is never used
+   --> crates/matinee-security/src/enrollment.rs:454:19
+    |
+343 | impl EnrollmentBundle {
+    | --------------------- method in this implementation
+...
+454 |     pub(crate) fn revoke(&mut self) {
+    |                   ^^^^^^
+
+warning: method `reset_if_elapsed` is never used
+   --> crates/matinee-security/src/enrollment.rs:678:19
+    |
+654 | impl HostAttemptBudget {
+    | ---------------------- method in this implementation
+...
+678 |     pub(crate) fn reset_if_elapsed(&mut self, occurrence_ms: u64) {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: method `canonical_fields` is never used
+   --> crates/matinee-security/src/enrollment.rs:736:19
+    |
+699 | impl ChromeCapability {
+    | --------------------- method in this implementation
+...
+736 |     pub(crate) fn canonical_fields(&self) -> (&str, &str, &str, &str, bool, bool) {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: methods `prepare_custody_update`, `commit_custody_update`, `prepare_custody_revocation`, and `commit_custody_revocation` are never used
+    --> crates/matinee-security/src/enrollment.rs:1298:19
+     |
+ 905 | impl EnrollmentConsumptionService {
+     | --------------------------------- methods in this implementation
+...
+1298 |     pub(crate) fn prepare_custody_update(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+1315 |     pub(crate) fn commit_custody_update(&mut self, update: CustodyUpdate) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+1323 |     pub(crate) fn prepare_custody_revocation(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1338 |     pub(crate) fn commit_custody_revocation(&mut self, revocation: CustodyRevocation) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: type alias `SinkResult` is never used
+   --> crates/matinee-security/src/events.rs:255:17
+    |
+255 | pub(crate) type SinkResult = SecurityEventSinkResult;
+    |                 ^^^^^^^^^^
+
+warning: struct `CallbackSecurityEventSink` is never constructed
+   --> crates/matinee-security/src/events.rs:286:19
+    |
+286 | pub(crate) struct CallbackSecurityEventSink<F> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> crates/matinee-security/src/events.rs:291:19
+    |
+290 | impl<F> CallbackSecurityEventSink<F> {
+    | ------------------------------------ associated function in this implementation
+291 |     pub(crate) fn new(callback: F) -> Self {
+    |                   ^^^
+
+warning: method `redacted` is never used
+   --> crates/matinee-security/src/failures.rs:245:25
+    |
+205 | impl SecurityFailure {
+    | -------------------- method in this implementation
+...
+245 |     pub(crate) const fn redacted(self) -> (FailureBoundary, FailureCode, SafeNextAction) {
+    |                         ^^^^^^^^
+
+warning: type alias `StableFailureCode` is never used
+   --> crates/matinee-security/src/failures.rs:263:17
+    |
+263 | pub(crate) type StableFailureCode = FailureCode;
+    |                 ^^^^^^^^^^^^^^^^^
+
+warning: type alias `Failure` is never used
+   --> crates/matinee-security/src/failures.rs:264:17
+    |
+264 | pub(crate) type Failure = SecurityFailure;
+    |                 ^^^^^^^
+
+warning: enum `ConnectionLifecycle` is never used
+   --> crates/matinee-security/src/identity.rs:226:10
+    |
+226 | pub enum ConnectionLifecycle {
+    |          ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/matinee-security/src/identity.rs:296:12
+    |
+295 | impl DaemonIdentity {
+    | ------------------- associated items in this implementation
+296 |     pub fn new(
+    |            ^^^
+...
+320 |     pub fn id(&self) -> IdentityId {
+    |            ^^
+...
+323 |     pub fn public_key(&self) -> &PublicKey {
+    |            ^^^^^^^^^^
+...
+326 |     pub fn fingerprint(&self) -> &Fingerprint {
+    |            ^^^^^^^^^^^
+...
+329 |     pub fn endpoint(&self) -> &str {
+    |            ^^^^^^^^
+...
+332 |     pub fn lifecycle(&self) -> DaemonLifecycle {
+    |            ^^^^^^^^^
+...
+335 |     pub fn activate(&mut self) -> Result<(), &'static str> {
+    |            ^^^^^^^^
+...
+342 |     pub fn replace(&mut self) -> Result<(), &'static str> {
+    |            ^^^^^^^
+
+warning: struct `Connection` is never constructed
+   --> crates/matinee-security/src/identity.rs:647:12
+    |
+647 | pub struct Connection {
+    |            ^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/matinee-security/src/identity.rs:663:12
+    |
+662 | impl Connection {
+    | --------------- associated items in this implementation
+663 |     pub fn new(
+    |            ^^^
+...
+689 |     pub fn id(&self) -> ConnectionId {
+    |            ^^
+...
+692 |     pub fn principal(&self) -> IdentityId {
+    |            ^^^^^^^^^
+...
+695 |     pub fn epoch(&self) -> u64 {
+    |            ^^^^^
+...
+698 |     pub(crate) fn client_nonce(&self) -> [u8; 12] {
+    |                   ^^^^^^^^^^^^
+...
+701 |     pub(crate) fn daemon_nonce(&self) -> [u8; 12] {
+    |                   ^^^^^^^^^^^^
+...
+704 |     pub fn lifecycle(&self) -> ConnectionLifecycle {
+    |            ^^^^^^^^^
+...
+707 |     pub fn authenticate(&mut self) -> Result<(), &'static str> {
+    |            ^^^^^^^^^^^^
+...
+714 |     pub fn close(&mut self) {
+    |            ^^^^^
+...
+717 |     pub fn next_send(&mut self) -> Option<u64> {
+    |            ^^^^^^^^^
+...
+729 |     pub fn next_receive(&mut self) -> Option<u64> {
+    |            ^^^^^^^^^^^^
+
+warning: enum `TransitionOperation` is never used
+   --> crates/matinee-security/src/identity.rs:751:10
+    |
+751 | pub enum TransitionOperation {
+    |          ^^^^^^^^^^^^^^^^^^^
+
+warning: struct `TransitionInput` is never constructed
+   --> crates/matinee-security/src/identity.rs:759:12
+    |
+759 | pub struct TransitionInput {
+    |            ^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/matinee-security/src/identity.rs:768:12
+    |
+767 | impl TransitionInput {
+    | -------------------- associated items in this implementation
+768 |     pub fn new(
+    |            ^^^
+...
+787 |     pub fn state_directory(&self) -> IdentityId {
+    |            ^^^^^^^^^^^^^^^
+...
+790 |     pub fn transition(&self) -> TransitionId {
+    |            ^^^^^^^^^^
+...
+793 |     pub fn operation(&self) -> &TransitionOperation {
+    |            ^^^^^^^^^
+...
+796 |     pub fn idempotency(&self) -> IdempotencyKey {
+    |            ^^^^^^^^^^^
+...
+801 |     pub fn prior_epoch(&self) -> u64 {
+    |            ^^^^^^^^^^^
+...
+804 |     pub fn outcome(&self) -> TransitionOutcome {
+    |            ^^^^^^^
+...
+807 |     pub fn is_fail_closed(&self) -> bool {
+    |            ^^^^^^^^^^^^^^
+...
+810 |     pub fn may_persist(&self) -> bool {
+    |            ^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/matinee-security/src/identity.rs:878:12
+    |
+877 | impl RotationTransition {
+    | ----------------------- associated items in this implementation
+878 |     pub fn new(
+    |            ^^^
+...
+906 |     pub fn principal(&self) -> IdentityId {
+    |            ^^^^^^^^^
+...
+909 |     pub fn old_fingerprint(&self) -> &Fingerprint {
+    |            ^^^^^^^^^^^^^^^
+...
+912 |     pub fn new_fingerprint(&self) -> &Fingerprint {
+    |            ^^^^^^^^^^^^^^^
+...
+915 |     pub fn old_epoch(&self) -> u64 {
+    |            ^^^^^^^^^
+...
+918 |     pub fn new_epoch(&self) -> u64 {
+    |            ^^^^^^^^^
+...
+921 |     pub fn effective_boundary(&self) -> u64 {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+924 |     pub fn outcome(&self) -> TransitionOutcome {
+    |            ^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/matinee-security/src/identity.rs:939:12
+    |
+938 | impl RevocationTransition {
+    | ------------------------- associated items in this implementation
+939 |     pub fn new(
+    |            ^^^
+...
+964 |     pub fn principal(&self) -> IdentityId {
+    |            ^^^^^^^^^
+...
+967 |     pub fn reason_class(&self) -> &str {
+    |            ^^^^^^^^^^^^
+...
+970 |     pub fn epoch(&self) -> u64 {
+    |            ^^^^^
+...
+973 |     pub fn invalidated_channels(&self) -> u32 {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+976 |     pub fn invalidated_grants(&self) -> u32 {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+979 |     pub fn outcome(&self) -> TransitionOutcome {
+    |            ^^^^^^^
+
+warning: enum `CrashPoint` is never used
+  --> crates/matinee-security/src/transition.rs:42:17
+   |
+42 | pub(crate) enum CrashPoint {
+   |                 ^^^^^^^^^^
+
+warning: enum `BootstrapError` is never used
+  --> crates/matinee-security/src/transition.rs:50:17
+   |
+50 | pub(crate) enum BootstrapError {
+   |                 ^^^^^^^^^^^^^^
+
+warning: struct `DaemonSelf` is never constructed
+  --> crates/matinee-security/src/transition.rs:85:19
+   |
+85 | pub(crate) struct DaemonSelf<'a> {
+   |                   ^^^^^^^^^^
+
+warning: fields `active`, `staged`, and `ledger` are never read
+   --> crates/matinee-security/src/transition.rs:112:5
+    |
+111 | pub(crate) struct BootstrapState {
+    |                   -------------- fields in this struct
+112 |     active: Option<BootstrapCommit>,
+    |     ^^^^^^
+113 |     staged: Option<BootstrapCommit>,
+    |     ^^^^^^
+114 |     ledger: NonceLedger,
+    |     ^^^^^^
+
+warning: multiple methods are never used
+   --> crates/matinee-security/src/transition.rs:118:19
+    |
+117 | impl BootstrapState {
+    | ------------------- methods in this implementation
+118 |     pub(crate) fn active(&self) -> Option<&BootstrapRecord> {
+    |                   ^^^^^^
+...
+121 |     pub(crate) fn staged(&self) -> Option<&BootstrapRecord> {
+    |                   ^^^^^^
+...
+126 |     pub(crate) fn active_daemon(&self) -> Option<&DaemonIdentity> {
+    |                   ^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn active_admin(&self) -> Option<&Principal> {
+    |                   ^^^^^^^^^^^^
+...
+138 |     pub(crate) fn staged_admin(&self) -> Option<&Principal> {
+    |                   ^^^^^^^^^^^^
+...
+144 |     pub(crate) fn recover(&mut self) {
+    |                   ^^^^^^^
+...
+154 |     pub(crate) fn bootstrap_encoded<P: OsPipe + ?Sized, S: SecurityEventSink + ?Sized>(
+    |                   ^^^^^^^^^^^^^^^^^
+...
+177 |     pub(crate) fn bootstrap_inherited_handle<S: SecurityEventSink + ?Sized>(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+252 |     fn bootstrap_encoded_inner<
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+287 |     fn apply<C: CredentialStore + ?Sized, S: SecurityEventSink + ?Sized>(
+    |        ^^^^^
+
+warning: constant `NATIVE_ADMIN_DOMAIN` is never used
+   --> crates/matinee-security/src/transition.rs:447:7
+    |
+447 | const NATIVE_ADMIN_DOMAIN: &[u8] = b"matinee-security-native-admin-v1";
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `BOOTSTRAP_CREDENTIAL_PROVIDER` is never used
+   --> crates/matinee-security/src/transition.rs:449:7
+    |
+449 | const BOOTSTRAP_CREDENTIAL_PROVIDER: &str = "platform-credential-store";
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `derive_native_admin_id` is never used
+   --> crates/matinee-security/src/transition.rs:458:4
+    |
+458 | fn derive_native_admin_id(envelope: &BootstrapEnvelope, public_key: &PublicKey) -> IdentityId {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_daemon_identity` is never used
+   --> crates/matinee-security/src/transition.rs:476:4
+    |
+476 | fn build_daemon_identity(
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_native_admin` is never used
+   --> crates/matinee-security/src/transition.rs:512:4
+    |
+512 | fn build_native_admin(
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `classify_endpoint` is never used
+   --> crates/matinee-security/src/transition.rs:542:4
+    |
+542 | fn classify_endpoint(endpoint: &str) -> EndpointClass {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: variants `Bootstrap`, `EnrollmentCreated`, `EnrollmentConsumed`, `Rotated`, and `Revoked` are never constructed
+   --> crates/matinee-security/src/transition.rs:597:5
+    |
+596 | pub(crate) enum TransitionRecord {
+    |                 ---------------- variants in this enum
+597 |     Bootstrap,
+    |     ^^^^^^^^^
+598 |     EnrollmentCreated(TransitionId),
+    |     ^^^^^^^^^^^^^^^^^
+599 |     EnrollmentConsumed {
+    |     ^^^^^^^^^^^^^^^^^^
+...
+604 |     Rotated(RotationTransition),
+    |     ^^^^^^^
+605 |     Revoked(RevocationTransition),
+    |     ^^^^^^^
+    |
+    = note: `TransitionRecord` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Pending`, `Completed`, and `Invalidated` are never constructed
+   --> crates/matinee-security/src/transition.rs:611:5
+    |
+610 | pub(crate) enum DecisionState {
+    |                 ------------- variants in this enum
+611 |     Pending,
+    |     ^^^^^^^
+612 |     Completed,
+    |     ^^^^^^^^^
+613 |     Invalidated,
+    |     ^^^^^^^^^^^
+    |
+    = note: `DecisionState` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: struct `BootstrapMaterial` is never constructed
+   --> crates/matinee-security/src/transition.rs:618:19
+    |
+618 | pub(crate) struct BootstrapMaterial<'a> {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: associated function `platform` is never used
+   --> crates/matinee-security/src/transition.rs:630:19
+    |
+627 | impl<'a> BootstrapMaterial<'a> {
+    | ------------------------------ associated function in this implementation
+...
+630 |     pub(crate) fn platform(
+    |                   ^^^^^^^^
+
+warning: struct `ReplacementCredential` is never constructed
+   --> crates/matinee-security/src/transition.rs:669:19
+    |
+669 | pub(crate) struct ReplacementCredential {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `with_extension_custody`, and `fingerprint` are never used
+   --> crates/matinee-security/src/transition.rs:676:19
+    |
+675 | impl ReplacementCredential {
+    | -------------------------- associated items in this implementation
+676 |     pub(crate) fn new(public_key: PublicKey, credential: CredentialReference) -> Self {
+    |                   ^^^
+...
+687 |     pub(crate) fn with_extension_custody(mut self, capability: ChromeCapability) -> Self {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+692 |     fn fingerprint(&self) -> Fingerprint {
+    |        ^^^^^^^^^^^
+
+warning: struct `PairingMaterial` is never constructed
+   --> crates/matinee-security/src/transition.rs:703:19
+    |
+703 | pub(crate) struct PairingMaterial<'a> {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: enum `TransitionMaterial` is never used
+   --> crates/matinee-security/src/transition.rs:718:17
+    |
+718 | pub(crate) enum TransitionMaterial<'a> {
+    |                 ^^^^^^^^^^^^^^^^^^
+
+warning: function `transition_digest` is never used
+   --> crates/matinee-security/src/transition.rs:725:4
+    |
+725 | fn transition_digest(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `add_chrome_capability` is never used
+   --> crates/matinee-security/src/transition.rs:866:4
+    |
+866 | fn add_chrome_capability(digest: &mut CanonicalDigest, capability: &ChromeCapability) {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `add_capability` is never used
+   --> crates/matinee-security/src/transition.rs:877:4
+    |
+877 | fn add_capability(digest: &mut CanonicalDigest, capability: &Capability) {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `add_credential` is never used
+   --> crates/matinee-security/src/transition.rs:891:4
+    |
+891 | fn add_credential(digest: &mut CanonicalDigest, credential: &CredentialReference) {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `operation_code` is never used
+   --> crates/matinee-security/src/transition.rs:901:10
+    |
+901 | const fn operation_code(operation: &TransitionOperation) -> u8 {
+    |          ^^^^^^^^^^^^^^
+
+warning: function `outcome_code` is never used
+   --> crates/matinee-security/src/transition.rs:911:10
+    |
+911 | const fn outcome_code(outcome: TransitionOutcome) -> u8 {
+    |          ^^^^^^^^^^^^
+
+warning: function `expiry_code` is never used
+   --> crates/matinee-security/src/transition.rs:920:10
+    |
+920 | const fn expiry_code(status: ExpiryStatus) -> u8 {
+    |          ^^^^^^^^^^^
+
+warning: struct `CanonicalDigest` is never constructed
+   --> crates/matinee-security/src/transition.rs:928:8
+    |
+928 | struct CanonicalDigest(ring::digest::Context);
+    |        ^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/matinee-security/src/transition.rs:931:8
+    |
+930 | impl CanonicalDigest {
+    | -------------------- associated items in this implementation
+931 |     fn new() -> Self {
+    |        ^^^
+...
+935 |     fn bytes(&mut self, name: &str, value: &[u8]) {
+    |        ^^^^^
+...
+942 |     fn byte(&mut self, name: &str, value: u8) {
+    |        ^^^^
+...
+946 |     fn bool(&mut self, name: &str, value: bool) {
+    |        ^^^^
+...
+950 |     fn u64(&mut self, name: &str, value: u64) {
+    |        ^^^
+...
+954 |     fn uuid(&mut self, name: &str, value: uuid::Uuid) {
+    |        ^^^^
+...
+958 |     fn finish(self) -> [u8; 32] {
+    |        ^^^^^^
+
+warning: fields `bundle`, `owner`, and `epoch` are never read
+   --> crates/matinee-security/src/transition.rs:968:5
+    |
+967 | struct EnrollmentRegistration {
+    |        ---------------------- fields in this struct
+968 |     bundle: EnrollmentBundle,
+    |     ^^^^^^
+969 |     owner: IdentityId,
+    |     ^^^^^
+970 |     epoch: u64,
+    |     ^^^^^
+
+warning: fields `extension`, `epoch`, and `state` are never read
+   --> crates/matinee-security/src/transition.rs:974:5
+    |
+973 | struct PendingDecision {
+    |        --------------- fields in this struct
+974 |     extension: IdentityId,
+    |     ^^^^^^^^^
+975 |     epoch: u64,
+    |     ^^^^^
+976 |     state: DecisionState,
+    |     ^^^^^
+
+warning: fields `digest` and `record` are never read
+   --> crates/matinee-security/src/transition.rs:980:5
+    |
+979 | struct AppliedTransition {
+    |        ----------------- fields in this struct
+980 |     digest: [u8; 32],
+    |     ^^^^^^
+981 |     record: TransitionRecord,
+    |     ^^^^^^
+
+warning: fields `public_key`, `fingerprint`, and `credential` are never read
+   --> crates/matinee-security/src/transition.rs:985:5
+    |
+984 | struct RetiredCredential {
+    |        ----------------- fields in this struct
+985 |     public_key: PublicKey,
+    |     ^^^^^^^^^^
+986 |     fingerprint: Fingerprint,
+    |     ^^^^^^^^^^^
+987 |     credential: CredentialReference,
+    |     ^^^^^^^^^^
+
+warning: fields `bootstrap`, `retired_credentials`, and `host` are never read
+    --> crates/matinee-security/src/transition.rs:992:5
+     |
+ 991 | struct TransitionState {
+     |        --------------- fields in this struct
+ 992 |     bootstrap: BootstrapState,
+     |     ^^^^^^^^^
+...
+ 999 |     retired_credentials: HashMap<IdentityId, Vec<RetiredCredential>>,
+     |     ^^^^^^^^^^^^^^^^^^^
+1000 |     host: EnrollmentConsumptionService,
+     |     ^^^^
+
+warning: multiple methods are never used
+    --> crates/matinee-security/src/transition.rs:1077:19
+     |
+1048 | impl SecurityTransitions {
+     | ------------------------ methods in this implementation
+...
+1077 |     pub(crate) fn apply<S: SecurityEventSink + ?Sized>(
+     |                   ^^^^^
+...
+1211 |     pub(crate) fn registered_principal(&self, principal: IdentityId) -> Option<Principal> {
+     |                   ^^^^^^^^^^^^^^^^^^^^
+...
+1216 |     pub(crate) fn bootstrapped_daemon(&self) -> Option<DaemonIdentity> {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+1222 |     pub(crate) fn bootstrapped_admin(&self) -> Option<Principal> {
+     |                   ^^^^^^^^^^^^^^^^^^
+...
+1228 |     pub(crate) fn registered_principal_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1237 |     pub(crate) fn register_grant(&self, grant: ExtensionGrant) -> Result<(), TransitionRejection> {
+     |                   ^^^^^^^^^^^^^^
+...
+1267 |     pub(crate) fn grant_lifecycles(&self, extension: IdentityId) -> Vec<GrantLifecycle> {
+     |                   ^^^^^^^^^^^^^^^^
+...
+1378 |     pub(crate) fn open_channels(&self) -> usize {
+     |                   ^^^^^^^^^^^^^
+...
+1390 |     pub(crate) fn open_decision(
+     |                   ^^^^^^^^^^^^^
+...
+1423 |     pub(crate) fn decision_state(&self, decision: TransitionId) -> Option<DecisionState> {
+     |                   ^^^^^^^^^^^^^^
+...
+1432 |     pub(crate) fn complete_decision<S: SecurityEventSink + ?Sized>(
+     |                   ^^^^^^^^^^^^^^^^^
+...
+1698 |     pub(crate) fn object_version(&self) -> u64 {
+     |                   ^^^^^^^^^^^^^^
+...
+1706 |     pub(crate) fn recorded(&self, key: IdempotencyKey) -> Option<TransitionRecord> {
+     |                   ^^^^^^^^
+...
+1711 |     pub(crate) fn enrollment_lifecycle(
+     |                   ^^^^^^^^^^^^^^^^^^^^
+...
+1727 |     pub(crate) fn custody_fingerprint(&self, principal: IdentityId) -> Option<Fingerprint> {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+1741 |     pub(crate) fn is_quarantined(&self, fingerprint: &Fingerprint) -> bool {
+     |                   ^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates/matinee-security/src/transition.rs:1793:8
+     |
+1792 | impl TransitionState {
+     | -------------------- methods in this implementation
+1793 |     fn bootstrap<S: SecurityEventSink + ?Sized>(
+     |        ^^^^^^^^^
+...
+1838 |     fn publish_bootstrapped_admin(&mut self) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1847 |     fn run_bootstrap<S: SecurityEventSink + ?Sized>(
+     |        ^^^^^^^^^^^^^
+...
+1891 |     fn create_enrollment<S: SecurityEventSink + ?Sized>(
+     |        ^^^^^^^^^^^^^^^^^
+...
+2057 |     fn consume_enrollment<S: SecurityEventSink + ?Sized>(
+     |        ^^^^^^^^^^^^^^^^^^
+...
+2229 |     fn rotate<S: SecurityEventSink + ?Sized>(
+     |        ^^^^^^
+...
+2377 |     fn revoke<S: SecurityEventSink + ?Sized>(
+     |        ^^^^^^
+...
+2460 |     fn active_principal(&self, principal: IdentityId) -> Result<&Principal, TransitionRejection> {
+     |        ^^^^^^^^^^^^^^^^
+...
+2478 |     fn open_channels_for(&self, principal: IdentityId) -> u32 {
+     |        ^^^^^^^^^^^^^^^^^
+...
+2487 |     fn active_grants_for(&self, principal: IdentityId) -> u32 {
+     |        ^^^^^^^^^^^^^^^^^
+...
+2498 |     fn close_channels_for(&mut self, principal: IdentityId) {
+     |        ^^^^^^^^^^^^^^^^^^
+...
+2508 |     fn invalidate_grants_for(&mut self, principal: IdentityId) {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+...
+2516 |     fn invalidate_decisions_for(&mut self, principal: IdentityId) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2524 |     fn revoke_enrollments_of(&mut self, owner: IdentityId) {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `require_event` is never used
+    --> crates/matinee-security/src/transition.rs:2535:4
+     |
+2535 | fn require_event<S: SecurityEventSink + ?Sized>(
+     |    ^^^^^^^^^^^^^
+
+warning: function `refuse_enrollment` is never used
+    --> crates/matinee-security/src/transition.rs:2623:4
+     |
+2623 | fn refuse_enrollment<S: SecurityEventSink + ?Sized>(
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `bootstrap_rejection` is never used
+    --> crates/matinee-security/src/transition.rs:2655:4
+     |
+2655 | fn bootstrap_rejection(error: BootstrapError) -> TransitionRejection {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `consume_rejection` is never used
+    --> crates/matinee-security/src/transition.rs:2686:4
+     |
+2686 | fn consume_rejection(error: EnrollmentConsumeError, principal: IdentityId) -> TransitionRejection {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: `matinee-security` (lib) generated 91 warnings
+   Compiling matinee-runtime v0.0.2 (/Users/sjors/tmp/worktrees/matinee/omp-agent-fix-sec010-reset/crates/matinee-runtime)
+warning: unused imports: `EnrollmentConsumeError` and `EnrollmentFailure`
+  --> crates/matinee-runtime/examples/enrollment_lifecycle.rs:11:5
+   |
+11 |     EnrollmentConsumeError, EnrollmentCreation, EnrollmentExpiry, EnrollmentFailure,
+   |     ^^^^^^^^^^^^^^^^^^^^^^                                        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `matinee-runtime` (example "enrollment_lifecycle") generated 1 warning (run `cargo fix --example "enrollment_lifecycle" -p matinee-runtime` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.08s
+     Running `.qa-target/debug/examples/enrollment_lifecycle`
+1. create pairing
+  enrollment 01a0b883-dee1-7272-a4d7-d64c15c72490 on 127.0.0.1:7777, one-time key fingerprint 429bd7c0de105dd8ebd4e5d66bbc9f4a53648b8586f7e2abaf06fe8aa1b53350
+2. open the authenticated native channel and deliver the one-time key
+  sealed one-time key: 154 ciphertext bytes, debug projection SealedOneTimeKey { ciphertext_bytes: 154 }
+  signing a 225-byte published challenge
+3. consume the pairing proof
+  registered 01a0b883-dee1-7272-a4d7-d64b782b5cd6 as fee5ac922dc7f88ac66f0ebf7747ec6de8d4d79550abc07b913391950e219987
+4. replace the connection and reconnect
+  replacement connection 01a0b883-dee1-7272-a4d7-d64e2c34e4fb
+  reconnected on shared registry state
+5. update custody
+  rotated to da14b1208779505077c31e56d69e08dd19dd7c4beaa307ea32526ad6e0bd7d2f
+  the stale fingerprint is refused
+6. revoke
+  the principal is terminally revoked
+7. a browser without the required key semantics fails closed
+  sealed one-time key: 154 ciphertext bytes, debug projection SealedOneTimeKey { ciphertext_bytes: 154 }
+  signing a 225-byte published challenge
+  refused: pairing proof refused: CapabilityRejected
+enrollment lifecycle complete
+
+EXIT_STATUS=0
