@@ -1,19 +1,18 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.2.0 -> 1.2.1
-Bump rationale: PATCH -- verified spec 005 after PR #5 merged.
+Version change: 1.2.1 -> 1.2.2
+Bump rationale: PATCH -- advanced spec 006 from planned to in-progress after the accepted pre-implementation brief recommended the transition.
 
 Changes this revision:
-  - Amended spec 005 status from implemented to verified after PR #5 merged.
-  - Recorded merge commit 36997783a5bc93f0ea8bc89d3045fc73e432dd6e as verification evidence.
-  - Updated roadmap metadata and retained all existing scope, outcome, and entry history.
+  - Amended spec 006 status from planned to in-progress.
+  - Added the existing Spec 006 feature directory pointer.
+  - Updated roadmap metadata while retaining all existing scope, outcome, and entry history.
 
-Specs affected: 005
+Specs affected: 006
 Open questions added/resolved: none
 
-Notes: Spec 005 is verified after PR #5 merged as squash commit
-36997783a5bc93f0ea8bc89d3045fc73e432dd6e; all ten checks passed.
+Notes: The brief reports no outcome or scope drift and recommends proceeding. Its non-blocking F1 metadata discrepancy (Spec 005 roadmap status `verified` versus Spec 005 front matter `Implemented`) remains unresolved and is not changed by this roadmap-only amendment.
 -->
 
 # Matinee -- Spec Roadmap
@@ -134,17 +133,15 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Depends on:** 001
 - **Governed by:** C-01, C-02, C-09
 
-### 006 -- Identity, Authorization, and Secure Channels  [status: planned]
+### 006 -- Identity, Authorization, and Secure Channels  [status: in-progress]
 
-- **Description:** Implement local principal identity, authorization, enrollment,
-  revocation, and authenticated communication between Matinee processes.
-- **Outcome:** Approved principals connect through the specified channels. Unknown,
-  revoked, downgraded, or replayed peers fail before mutation.
-- **Scope (in):** Credential-store integration, principal roles, ECDSA identity,
-  key agreement, channel framing, origin checks, rotation, and revocation.
+- **Description:** Implement local principal identity, authorization, enrollment, revocation, and authenticated communication between Matinee processes.
+- **Outcome:** Approved principals connect through the specified channels. Unknown, revoked, downgraded, or replayed peers fail before mutation.
+- **Scope (in):** Credential-store integration, principal roles, ECDSA identity, key agreement, channel framing, origin checks, rotation, and revocation.
 - **Scope (out):** Browser operations and human approval policy.
 - **Depends on:** 005
 - **Governed by:** C-01, C-02, C-03, C-06, C-09
+- **Spec dir:** `specs/006-identity-authorization-secure-channels/`
 
 ### 007 -- Daemon Lifecycle and Durable Store  [status: planned]
 
@@ -287,4 +284,4 @@ None. Deferred entries require a new product decision before their status change
 
 ---
 
-**Version**: 1.2.1 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-16
+**Version**: 1.2.2 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-16

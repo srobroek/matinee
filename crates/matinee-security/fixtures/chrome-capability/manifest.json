@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Matinee secure-channel capability fixture",
+  "version": "1.0.0",
+  "description": "Deterministic capability probe; not a product extension.",
+  "permissions": ["storage"],
+  "background": {
+    "service_worker": "capability.mjs",
+    "type": "module"
+  }
+}

@@ -1,0 +1,24 @@
+[package]
+name = "matinee-security"
+version = "0.0.2"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+[features]
+test-support = []
+
+
+[dependencies]
+# The fixed dependency boundary in
+# specs/006-identity-authorization-secure-channels/plan.md. `ring` is the only
+# cryptographic library: P-256 point validation, ECDH, ECDSA, HKDF-SHA-256, and
+# AES-256-GCM all come from it, and a second cryptographic library needs a versioned
+# protocol decision and an ADR first.
+ring = "0.17"
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+# Not a cryptographic dependency: the FFI declarations for the inherited OS-pipe seam in
+# src/adapters/os_pipe.rs, which reads the bootstrap envelope from an inherited file
+# descriptor. No other module links it.
+libc = "0.2"

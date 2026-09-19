@@ -13,6 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install libdbus-1-dev for keyring linux-native-sync-persistent
+        run: |
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y libdbus-1-dev
       - uses: dtolnay/rust-toolchain@1.85.0
         with:
           components: clippy, rustfmt
@@ -28,6 +32,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install libdbus-1-dev for keyring linux-native-sync-persistent
+        if: runner.os == 'Linux'
+        run: |
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y libdbus-1-dev
       - uses: dtolnay/rust-toolchain@1.85.0
       - run: cargo test --workspace --all-targets
 
@@ -36,6 +45,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install libdbus-1-dev for keyring linux-native-sync-persistent
+        run: |
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y libdbus-1-dev
       - uses: dtolnay/rust-toolchain@1.85.0
       - uses: dtolnay/rust-toolchain@1.88.0
       - name: Install cargo-deny 0.20.2

@@ -1,0 +1,1750 @@
+{
+  "schema": "matinee.secure-channel.v1",
+  "schema_version": 1,
+  "vectors": [
+    {
+      "id": "valid.handshake",
+      "kind": "handshake",
+      "valid": true,
+      "inputs": {
+        "endpoint": "127.0.0.1:7777",
+        "principal_id_hex": "00000000000000000000000000000002",
+        "daemon_id_hex": "00000000000000000000000000000003",
+        "connection_id_hex": "0000abcdefabcdefabcdefabcdefabcd",
+        "epoch": 7,
+        "client_contract_min": 1,
+        "client_contract_max": 3,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "selected_contract": 3,
+        "client_nonce_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_nonce_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "client_identity_public_hex": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "daemon_identity_public_hex": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+        "client_ephemeral_public_hex": "045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d5032",
+        "server_ephemeral_public_hex": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "transcript_hex": "0000000c7365727665722d70726f6f66000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5000000013300000001320000000134000000100000000000000000000000000000000300000041047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d100000020bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000004104e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6000000100000abcdefabcdefabcdefabcdefabcd",
+        "server_proof_input_hex": "0000000c7365727665722d70726f6f66000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5000000013300000001320000000134000000100000000000000000000000000000000300000041047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d100000020bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000004104e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6000000100000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40",
+        "client_proof_input_hex": "0000000c636c69656e742d70726f6f662859e8d41e01a042c2153100e090acc842a7891d6562237694ea7356d306ee3400000040af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40",
+        "client_signature_p1363_hex": "ef13350d9d30aec9e5fa0ff3b02178ce27b75e6d883b85edd5567233cef6e9b11ca0cb4fd869eaa2d3685f232b554b411be937c52f790657d68382fa0d7443b6",
+        "ecdh_shared_secret_hex": "741dd5bda817d95e4626537320e5d55179983028b2f82c99d500c5ee8624e3c4",
+        "hkdf_salt_hex": "b3908348239ea2f686b4591b297ce9393373d87b8181fd951b7f114b4558fee1",
+        "client_to_daemon_key_hex": "f6faa9006bf0d3cf2b03dff5f53eb8a21492934543704b4acaf2f22bc85de2d0",
+        "daemon_to_client_key_hex": "81108369cc51b0e7f0db63f3967017e5d8cd645abc73ec779492bcdba03bc613"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 0,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.handshake",
+        "direction": "client-to-daemon",
+        "counter": "0",
+        "receive_counter": "0",
+        "payload_kind": "command",
+        "plaintext_hex": "0101020304",
+        "application_payload_hex": "01020304",
+        "payload_hex": "01020304",
+        "header_hex": "010000abcdefabcdefabcdefabcdefabcd0000000000000000",
+        "nonce_hex": "000000000000000000000000",
+        "aad_hex": "010000abcdefabcdefabcdefabcdefabcd0000000000000000000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000133000000000000000700000010636c69656e742d746f2d6461656d6f6e",
+        "ciphertext_and_tag_hex": "c3d20662e95d21d03e01935527bda33278048ce0fa",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.context.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "context",
+        "boundary": "substitution",
+        "operation": "replace-context-label"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76320000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.context.malformed-utf8",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "context",
+        "boundary": "malformed-utf8",
+        "operation": "insert-invalid-utf8-byte"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76ff0000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.hello-label.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "hello-label",
+        "boundary": "substitution",
+        "operation": "replace-hello-label"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c300000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.endpoint.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "endpoint",
+        "boundary": "substitution",
+        "operation": "replace-endpoint"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737380000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.endpoint.malformed-utf8",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "endpoint",
+        "boundary": "malformed-utf8",
+        "operation": "replace-endpoint-byte-with-0xff"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737ff0000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.endpoint.empty",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "endpoint",
+        "boundary": "empty",
+        "operation": "drop-endpoint-body"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f000000000000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.endpoint.extension",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "endpoint",
+        "boundary": "extension",
+        "operation": "declare-endpoint-past-its-bound"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f000001013132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.principal-selector.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "principal-selector",
+        "boundary": "substitution",
+        "operation": "replace-selector-identity"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303400000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.principal-selector.invalid-uuid",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "principal-selector",
+        "boundary": "invalid-uuid",
+        "operation": "replace-uuid-text-with-non-uuid"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a7a7a7a7a7a7a7a7a2d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.epoch.one-over",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "epoch",
+        "boundary": "one-over",
+        "operation": "increment-epoch"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000080000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "stale_epoch",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.epoch.one-under",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "epoch",
+        "boundary": "one-under",
+        "operation": "decrement-epoch"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000060000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "stale_epoch",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.epoch.truncation",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "epoch",
+        "boundary": "truncation",
+        "operation": "drop-one-epoch-byte"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d303030303030303030303032000000000000000000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.minimum-contract.disjoint",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "minimum-contract",
+        "boundary": "disjoint",
+        "operation": "raise-minimum-past-maximum"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000134000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "compatibility.downgrade",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.minimum-contract.leading-zero",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "minimum-contract",
+        "boundary": "leading-zero",
+        "operation": "non-canonical-contract-number"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d3030303030303030303030320000000000000007000000023031000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.minimum-contract.empty",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "minimum-contract",
+        "boundary": "empty",
+        "operation": "drop-minimum-body"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d303030303030303030303032000000000000000700000000000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.maximum-contract.disjoint",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "maximum-contract",
+        "boundary": "disjoint",
+        "operation": "lower-maximum-below-server-minimum"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013100000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "compatibility.unsupported",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.maximum-contract.one-over",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "maximum-contract",
+        "boundary": "one-over",
+        "operation": "declare-contract-past-its-bound"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000063300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-nonce.short",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-nonce",
+        "boundary": "short",
+        "operation": "thirty-one-byte-nonce"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d3030303030303030303030320000000000000007000000013100000001330000001faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-nonce.extension",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-nonce",
+        "boundary": "extension",
+        "operation": "thirty-three-byte-nonce"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000021aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-nonce.empty",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-nonce",
+        "boundary": "empty",
+        "operation": "zero-length-nonce"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d3030303030303030303030320000000000000007000000013100000001330000000000000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-ephemeral-key.compressed-key",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-ephemeral-key",
+        "boundary": "compressed-key",
+        "operation": "set-compressed-sec1-tag"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041025ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-ephemeral-key.der-key",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-ephemeral-key",
+        "boundary": "der-key",
+        "operation": "replace-point-with-der-encoding"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000413059301306072a8648ce3d020106082a8648ce3d03010703420000000000000000000000000000000000000000000000000000000000000000000000000000000000000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-ephemeral-key.truncation",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-ephemeral-key",
+        "boundary": "truncation",
+        "operation": "sixty-four-byte-point"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000040045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d5000000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-key.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-key",
+        "boundary": "substitution",
+        "operation": "present-the-daemon-point"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-key.compressed-key",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-key",
+        "boundary": "compressed-key",
+        "operation": "set-compressed-sec1-tag"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041026b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-key.bad-length-prefix",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-key",
+        "boundary": "bad-length-prefix",
+        "operation": "declare-sixty-six-byte-point"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000042046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.client-key.empty",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "client-key",
+        "boundary": "empty",
+        "operation": "drop-the-identity-point"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d5032"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.transcript-length.extension",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "transcript-length",
+        "boundary": "extension",
+        "operation": "append-one-trailing-byte"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f500"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.transcript-length.truncation",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "transcript-length",
+        "boundary": "truncation",
+        "operation": "drop-the-last-byte"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.transcript-length.one-over",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "transcript-length",
+        "boundary": "one-over",
+        "operation": "pad-past-the-handshake-maximum"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.signature.altered-bit",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "signature",
+        "boundary": "altered-bit",
+        "operation": "flip-one-signature-bit"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "transcript_hex": "0000000c7365727665722d70726f6f66000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5000000013300000001320000000134000000100000000000000000000000000000000300000041047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d100000020bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000004104e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6000000100000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "ae054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.signature.truncation",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "signature",
+        "boundary": "truncation",
+        "operation": "sixty-three-byte-signature"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "transcript_hex": "0000000c7365727665722d70726f6f66000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5000000013300000001320000000134000000100000000000000000000000000000000300000041047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d100000020bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000004104e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6000000100000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.signature.extension",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "signature",
+        "boundary": "extension",
+        "operation": "sixty-five-byte-signature"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "transcript_hex": "0000000c7365727665722d70726f6f66000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5000000013300000001320000000134000000100000000000000000000000000000000300000041047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d100000020bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000004104e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6000000100000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f4000"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.selected-contract.downgraded",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "selected-contract",
+        "boundary": "downgraded",
+        "operation": "select-below-the-negotiated-maximum"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "rebuild_transcript": true,
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "selected_contract": 2,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "daemon_id_hex": "00000000000000000000000000000003",
+        "daemon_identity_public_hex": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+        "server_nonce_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "server_ephemeral_public_hex": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+        "connection_id_hex": "0000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.selected-contract.substituted",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "selected-contract",
+        "boundary": "substituted",
+        "operation": "select-outside-the-client-range"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "rebuild_transcript": true,
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "selected_contract": 4,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "daemon_id_hex": "00000000000000000000000000000003",
+        "daemon_identity_public_hex": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+        "server_nonce_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "server_ephemeral_public_hex": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+        "connection_id_hex": "0000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.selected-contract.disjoint",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "selected-contract",
+        "boundary": "disjoint",
+        "operation": "select-a-contract-neither-peer-offered"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "rebuild_transcript": true,
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "selected_contract": 9,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "daemon_id_hex": "00000000000000000000000000000003",
+        "daemon_identity_public_hex": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+        "server_nonce_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "server_ephemeral_public_hex": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+        "connection_id_hex": "0000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.daemon-id.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "daemon-id",
+        "boundary": "substitution",
+        "operation": "replace-the-daemon-identity"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "rebuild_transcript": true,
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "selected_contract": 3,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "daemon_id_hex": "00000000000000000000000000000004",
+        "daemon_identity_public_hex": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+        "server_nonce_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "server_ephemeral_public_hex": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+        "connection_id_hex": "0000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.daemon-key.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "daemon-key",
+        "boundary": "substitution",
+        "operation": "present-the-client-point-as-the-daemon-key"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "rebuild_transcript": true,
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "selected_contract": 3,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "daemon_id_hex": "00000000000000000000000000000003",
+        "daemon_identity_public_hex": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "server_nonce_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "server_ephemeral_public_hex": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+        "connection_id_hex": "0000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.server-nonce.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "server-nonce",
+        "boundary": "substitution",
+        "operation": "replace-the-server-nonce"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "rebuild_transcript": true,
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "selected_contract": 3,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "daemon_id_hex": "00000000000000000000000000000003",
+        "daemon_identity_public_hex": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+        "server_nonce_hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "server_ephemeral_public_hex": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+        "connection_id_hex": "0000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.server-key.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "server-key",
+        "boundary": "substitution",
+        "operation": "replace-the-server-ephemeral-point"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "rebuild_transcript": true,
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "selected_contract": 3,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "daemon_id_hex": "00000000000000000000000000000003",
+        "daemon_identity_public_hex": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+        "server_nonce_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "server_ephemeral_public_hex": "045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d5032",
+        "connection_id_hex": "0000abcdefabcdefabcdefabcdefabcd",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.handshake.connection-id.substitution",
+      "kind": "handshake",
+      "valid": false,
+      "mutation": {
+        "field": "connection-id",
+        "boundary": "substitution",
+        "operation": "replace-the-connection-uuid"
+      },
+      "inputs": {
+        "base": "valid.handshake",
+        "rebuild_transcript": true,
+        "client_hello_hex": "000000196d6174696e65652e7365637572652d6368616e6e656c2e76310000000c636c69656e742d68656c6c6f0000000e3132372e302e302e313a373737370000002769643a30303030303030302d303030302d303030302d303030302d30303030303030303030303200000000000000070000000131000000013300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000041045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d503200000041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "selected_contract": 3,
+        "server_contract_min": 2,
+        "server_contract_max": 4,
+        "daemon_id_hex": "00000000000000000000000000000003",
+        "daemon_identity_public_hex": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+        "server_nonce_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "server_ephemeral_public_hex": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+        "connection_id_hex": "00000000000000000000000000000002",
+        "server_signature_p1363_hex": "af054993fe26b7bb3bdf62b20aef77e18e80e1f4a0bac70674da69f7fe20313a92a955c716c911618b88abff3cc068fb85962f9e730d2a0d6ac61ee34bbb5f40"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.failed",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.version.substitution",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "version",
+        "boundary": "substitution",
+        "operation": "set-frame-version-two"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002e020000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.version.one-over",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "version",
+        "boundary": "one-over",
+        "operation": "set-frame-version-to-0xff"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002eff0000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.connection-id.substitution",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "connection-id",
+        "boundary": "substitution",
+        "operation": "replace-connection-uuid"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002e01000000000000000000000000000000020000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.connection-id.invalid-uuid",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "connection-id",
+        "boundary": "invalid-uuid",
+        "operation": "zero-the-connection-uuid"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002e01000000000000000000000000000000000000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.ciphertext.altered-ciphertext",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "ciphertext",
+        "boundary": "altered-ciphertext",
+        "operation": "flip-one-ciphertext-bit"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000c2d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.cryptographic",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.tag.altered-tag",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "tag",
+        "boundary": "altered-tag",
+        "operation": "flip-one-tag-bit"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fb"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.cryptographic",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.tag.truncation",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "tag",
+        "boundary": "truncation",
+        "operation": "drop-one-tag-byte"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002d010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.cryptographic",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.declared-length.bad-length-prefix",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "declared-length",
+        "boundary": "bad-length-prefix",
+        "operation": "forge-a-four-gigabyte-prefix"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "ffffffff010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.declared-length.one-over",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "declared-length",
+        "boundary": "one-over",
+        "operation": "declare-one-past-the-frame-maximum"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "00100001010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.declared-length.one-under",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "declared-length",
+        "boundary": "one-under",
+        "operation": "declare-below-header-plus-tag"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "00000028010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.declared-length.truncation",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "declared-length",
+        "boundary": "truncation",
+        "operation": "keep-the-prefix-and-drop-a-body-byte"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.declared-length.extension",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "declared-length",
+        "boundary": "extension",
+        "operation": "keep-the-prefix-and-append-a-body-byte"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa00"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.declared-length.empty",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "declared-length",
+        "boundary": "empty",
+        "operation": "three-byte-frame"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "framed_hex": "000000"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame.client-to-daemon.counter-1",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "1",
+        "counter": "1",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd00000000000000018e63eb247b9a7b04783e2d0f155688407c3231f51e"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame.client-to-daemon.counter-maximum",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "18446744073709551615",
+        "counter": "18446744073709551615",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcdffffffffffffffff1724894f5fd36166fc3bf94fafa264872f9524fe09"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame.daemon-to-client.counter-0",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "daemon-to-client",
+        "receive_counter": "0",
+        "counter": "0",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000235c7c2fb4b0cba0c6d2669fe9eaa3f49d0c43a1d2"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame.daemon-to-client.counter-1",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "daemon-to-client",
+        "receive_counter": "1",
+        "counter": "1",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000001b7f8c3174b77561a2b9d9c1915232cd7dd7c601518"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame.daemon-to-client.counter-maximum",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "daemon-to-client",
+        "receive_counter": "18446744073709551615",
+        "counter": "18446744073709551615",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcdffffffffffffffff466fabcf6f49d639ccefbde47f48449eccb5bc9b13"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame.payload.zero",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "counter": "0",
+        "payload_hex": "",
+        "framed_hex": "0000002a010000abcdefabcdefabcdefabcdefabcd0000000000000000c32286d62ad9f89e93a8116b58d65bb908"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame.payload.one",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "counter": "0",
+        "payload_hex": "5a",
+        "framed_hex": "0000002b010000abcdefabcdefabcdefabcdefabcd0000000000000000c389099e40055196ad41164ca2edac6dad95"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "valid.frame.payload.exact-maximum",
+      "kind": "frame",
+      "valid": true,
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "counter": "0",
+        "payload_len": 1048534,
+        "payload_repeat_byte_hex": "5a"
+      },
+      "expect": {
+        "result": "accept",
+        "failure_code": null,
+        "channel_state": "open",
+        "dispatch_count": 1,
+        "allocation": "maximum",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.counter.duplicate",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "counter",
+        "boundary": "duplicate",
+        "operation": "replay-a-consumed-counter"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "1",
+        "counter": "0",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "replay.detected",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.counter.skipped",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "counter",
+        "boundary": "skipped",
+        "operation": "skip-four-counters"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "counter": "5",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000005f10da24da78d94e1e7bda801fd524f302812662ed7"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "replay.counter",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.counter.wrapped",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "counter",
+        "boundary": "wrapped",
+        "operation": "wrap-past-the-maximum-to-zero"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "18446744073709551615",
+        "counter": "0",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000c3d20662e95d21d03e01935527bda33278048ce0fa"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "replay.detected",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.counter.exact-boundary",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "counter",
+        "boundary": "exact-boundary",
+        "operation": "reuse-the-maximum-after-it-closed"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "18446744073709551615",
+        "receive_exhausted": true,
+        "counter": "18446744073709551615",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcdffffffffffffffff1724894f5fd36166fc3bf94fafa264872f9524fe09"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "replay.counter",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.direction.wrong-direction",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "direction",
+        "boundary": "wrong-direction",
+        "operation": "seal-for-the-opposite-direction"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "counter": "0",
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000235c7c2fb4b0cba0c6d2669fe9eaa3f49d0c43a1d2"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "authentication.cryptographic",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.payload-kind.substitution",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "payload-kind",
+        "boundary": "substitution",
+        "operation": "seal-a-response-shape"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "counter": "0",
+        "payload_kind_code": 2,
+        "payload_hex": "01020304",
+        "framed_hex": "0000002e010000abcdefabcdefabcdefabcdefabcd0000000000000000c0d20662e95b8d6e89549b985cfa9e8d6423b8cd78"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "bounded",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.payload.one-over",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "payload",
+        "boundary": "one-over",
+        "operation": "one-byte-past-the-plaintext-maximum"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "counter": "0",
+        "payload_len": 1048535,
+        "payload_repeat_byte_hex": "5a",
+        "sender_rejects": true
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "resource_limit",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    },
+    {
+      "id": "mutate.frame.counter.overflow",
+      "kind": "frame",
+      "valid": false,
+      "mutation": {
+        "field": "counter",
+        "boundary": "overflow",
+        "operation": "declare-two-to-the-sixty-four"
+      },
+      "inputs": {
+        "base": "valid.frame",
+        "direction": "client-to-daemon",
+        "receive_counter": "0",
+        "counter_text": "18446744073709551616"
+      },
+      "expect": {
+        "result": "reject",
+        "failure_code": "malformed.input",
+        "channel_state": "closed",
+        "dispatch_count": 0,
+        "allocation": "none",
+        "secret_scan": "pass"
+      }
+    }
+  ],
+  "evidence_schema": "matinee.security.evidence.v1"
+}

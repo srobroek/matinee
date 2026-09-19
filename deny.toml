@@ -9,6 +9,15 @@ version = 2
 confidence-threshold = 0.8
 allow = [
     "Apache-2.0",
+    # ISC is OSI-approved and permissive. It resolves ring 0.17.14's
+    # Apache-2.0 AND ISC expression: ring is the plan-mandated cryptographic
+    # library used by matinee-security and its runtime/dev graph, and it also
+    # supplies untrusted 0.9.0 under the same ISC allowance.
+    "ISC",
+    # BSD-3-Clause is OSI-approved and permissive; subtle 2.6.1 is pulled by
+    # dbus-secret-service 4.1.0 through digest/hmac/hkdf and digest/sha2 paths,
+    # then keyring 3.6.3 in matinee-security/runtime.
+    "BSD-3-Clause",
     "MIT",
     "MPL-2.0",
     "Unicode-3.0",
@@ -22,6 +31,83 @@ private = { ignore = true }
 [bans]
 multiple-versions = "deny"
 
+# ring 0.17.14 requires getrandom 0.2.17; uuid 1.26.1 requires getrandom 0.4.3.
+[[bans.skip]]
+name = "getrandom"
+version = "0.2.17"
+
+# zeroize_derive 1.5.0 (via keyring 3.6.3) requires syn 2.0.119, while
+# thiserror-impl 2.0.20 requires syn 3.0.6; both proc-macro generations remain.
+[[bans.skip]]
+name = "syn"
+version = "2.0.119"
+
+# windows-sys 0.52.0 is required by ring 0.17.14's Windows target dependency.
+[[bans.skip]]
+name = "windows-sys"
+version = "0.52.0"
+# windows-sys 0.60.2 is required by keyring 3.6.3's windows-native backend.
+[[bans.skip]]
+name = "windows-sys"
+version = "0.60.2"
+
+# windows-targets 0.52.6 is required by ring 0.17.14 through windows-sys 0.52.0.
+[[bans.skip]]
+name = "windows-targets"
+version = "0.52.6"
+
+# The 0.61.2 parents (dbus 0.9.12, dirs-sys 0.5.0, async-io 2.6.0) and
+# keyring's windows-sys 0.60.2 require windows-targets 0.53.5, retained above.
+
+# windows_aarch64_gnullvm 0.52.6 is required by windows-targets 0.52.6 from ring.
+[[bans.skip]]
+name = "windows_aarch64_gnullvm"
+version = "0.52.6"
+# windows_aarch64_msvc 0.52.6 is required by windows-targets 0.52.6 from ring.
+[[bans.skip]]
+name = "windows_aarch64_msvc"
+version = "0.52.6"
+# windows_i686_gnu 0.52.6 is required by windows-targets 0.52.6 from ring.
+[[bans.skip]]
+name = "windows_i686_gnu"
+version = "0.52.6"
+# windows_i686_gnullvm 0.52.6 is required by windows-targets 0.52.6 from ring.
+[[bans.skip]]
+name = "windows_i686_gnullvm"
+version = "0.52.6"
+# windows_i686_msvc 0.52.6 is required by windows-targets 0.52.6 from ring.
+[[bans.skip]]
+name = "windows_i686_msvc"
+version = "0.52.6"
+# windows_x86_64_gnu 0.52.6 is required by windows-targets 0.52.6 from ring.
+[[bans.skip]]
+name = "windows_x86_64_gnu"
+version = "0.52.6"
+# windows_x86_64_gnullvm 0.52.6 is required by windows-targets 0.52.6 from ring.
+[[bans.skip]]
+name = "windows_x86_64_gnullvm"
+version = "0.52.6"
+# windows_x86_64_msvc 0.52.6 is required by windows-targets 0.52.6 from ring.
+[[bans.skip]]
+name = "windows_x86_64_msvc"
+version = "0.52.6"
+
+
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# Skip-entry scope, verified 2026-09-19 against this lockfile.
+# cargo-deny matches a skip by name and version only, so an entry cannot be
+# constrained to a parent. Each version skipped above resolves to exactly one
+# requiring path in this graph, checked with
+# `cargo tree -i <crate>@<version> --target all --edges normal`, so the global
+# exception is equivalent in effect to a parent-scoped one here:
+#   getrandom 0.2.17        <- ring 0.17.14
+#   syn 2.0.119             <- zeroize_derive 1.5.0 <- zeroize <- keyring 3.6.3
+#   windows-sys 0.52.0      <- ring 0.17.14
+#   windows-sys 0.60.2      <- keyring 3.6.3
+#   windows-targets 0.52.6  <- windows-sys 0.52.0 <- ring 0.17.14
+# Re-run that command when the lockfile changes. A second requiring path would
+# widen these exceptions silently.
