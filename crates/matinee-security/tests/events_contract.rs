@@ -39,8 +39,8 @@ macro_rules! events_contract_tests {
                     supported_versions(),
                     crate::identity::IdentityId::new(Uuid::from_u128(0x2f)),
                     ENDPOINT,
-                    0,
                 ),
+                0,
             )
             .expect("the ten-minute default is inside the creation bounds")
         }

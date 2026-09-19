@@ -4,13 +4,15 @@ macro_rules! enrollment_custody_tests {
             enrollment_proof_message, ChromeCapability, DevelopmentIdentityAllowance,
             EnrollmentBinding, EnrollmentBundle, EnrollmentChannel, EnrollmentClock,
             EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreation,
-            EnrollmentProof, SupportedExtensionVersions,
+            EnrollmentExpiry, EnrollmentProof, SupportedExtensionVersions,
         };
         use crate::identity::{ConnectionId, ExpiryResult, Fingerprint, IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES};
         use ring::rand::SystemRandom;
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
         use uuid::Uuid;
 
+        /// The instant these fixtures create their enrollments at.
+        const CREATED_MS: u64 = 0;
         fn input(id: u128) -> EnrollmentCreation {
             EnrollmentCreation::new(
                 TransitionId::new(Uuid::from_u128(id)),
@@ -18,7 +20,7 @@ macro_rules! enrollment_custody_tests {
                 "https://updates.example.test/ext.xml", "normal",
                 SupportedExtensionVersions::parse("1.0", "2.5.1").unwrap(),
                 IdentityId::new(Uuid::from_u128(0x41)), "127.0.0.1:7777",
-                0, ExpiryResult::valid(600_000).unwrap(),
+                EnrollmentExpiry::Deadline(ExpiryResult::valid(600_000).unwrap()),
             )
         }
 
@@ -79,7 +81,7 @@ macro_rules! enrollment_custody_tests {
 
         #[test]
         fn enrollment_custody_surfaces_never_contain_raw_pkcs8_backup_bytes() {
-            let mut bundle = EnrollmentBundle::create(input(0x100)).unwrap();
+            let mut bundle = EnrollmentBundle::create(input(0x100), CREATED_MS).unwrap();
             let channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x101)), 1).unwrap();
             let sealed = channel.seal_one_time_key(&mut bundle).unwrap();
             let private = channel.open_sealed_for_test(bundle.enrollment_id(), &sealed).unwrap();
@@ -94,7 +96,7 @@ macro_rules! enrollment_custody_tests {
         #[test]
         fn enrollment_custody_reconnect_quarantines_stale_key_and_deletes_old_registration() {
             let identity = IdentityId::new(Uuid::from_u128(0x200));
-            let mut bundle = EnrollmentBundle::create(input(0x201)).unwrap();
+            let mut bundle = EnrollmentBundle::create(input(0x201), CREATED_MS).unwrap();
             let (proof, _) = signed_proof(&mut bundle, identity);
             let old = proof.long_term_public_key.clone();
             let old_fingerprint = Fingerprint::from_public_key(&old);
@@ -115,7 +117,7 @@ macro_rules! enrollment_custody_tests {
         #[test]
         fn enrollment_custody_credential_store_mismatch_and_revoked_are_fail_closed() {
             let identity = IdentityId::new(Uuid::from_u128(0x300));
-            let mut bundle = EnrollmentBundle::create(input(0x301)).unwrap();
+            let mut bundle = EnrollmentBundle::create(input(0x301), CREATED_MS).unwrap();
             let (proof, _) = signed_proof(&mut bundle, identity);
             let service = EnrollmentConsumptionService::default();
             let current = capability();

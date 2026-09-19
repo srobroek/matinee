@@ -18,8 +18,8 @@ use matinee_security::{
 pub use matinee_security::{
     ChromeReconnectOutcome, ConnectionId, DevelopmentIdentityAllowance, EnrollmentBinding,
     EnrollmentConsumeError, EnrollmentCreateError, EnrollmentCreation, EnrollmentCustodyError,
-    EnrollmentProof, ExpiryResult, Fingerprint, IdentityId, PublicKey, TransitionId,
-    UNCOMPRESSED_KEY_BYTES,
+    EnrollmentExpiry, EnrollmentProof, ExpiryResult, Fingerprint, IdentityId, PublicKey,
+    TransitionId, UNCOMPRESSED_KEY_BYTES,
 };
 
 static ENROLLMENT_HOST: LazyLock<EnrollmentHost> = LazyLock::new(EnrollmentHost::new);
@@ -47,7 +47,15 @@ impl EnrollmentHost {
         }
     }
 
-    /// Open one bounded, one-time enrollment and keep its bundle in host custody.
+    /// Open one bounded, one-time enrollment at `created_ms` and keep its bundle in
+    /// host custody.
+    ///
+    /// `created_ms` is this host's own clock reading, and it is the instant every bound
+    /// the enrollment carries is measured from. The security boundary defines no clock,
+    /// so the reading has to arrive here from the process that took it; what it must not
+    /// do is arrive twice, because two creation instants let the described enrollment
+    /// place a ten-minute window wherever it likes. `EnrollmentCreation` therefore names
+    /// no instant at all, and this one anchors the window.
     ///
     /// The returned ticket carries only ceremony-safe facts. The one-time private
     /// key leaves this host only as sealed channel output. A second creation under
@@ -56,9 +64,10 @@ impl EnrollmentHost {
     pub fn create_pairing(
         &self,
         creation: EnrollmentCreation,
+        created_ms: u64,
     ) -> Result<PairingTicket, EnrollmentFailure> {
         let enrollment = creation.enrollment;
-        let bundle = EnrollmentBundle::create(creation)?;
+        let bundle = EnrollmentBundle::create(creation, created_ms)?;
         let ticket = PairingTicket {
             enrollment: bundle.enrollment_id(),
             one_time_public_key: bundle.one_time_public_key().clone(),
@@ -580,18 +589,22 @@ mod tests {
     fn a_pending_and_an_absent_identifier_refuse_identically() {
         let host = EnrollmentHost::new();
         let ticket = host
-            .create_pairing(EnrollmentCreation::new(
-                TransitionId::new(Uuid::from_u128(0xbc01)),
-                ORIGIN,
-                STORE,
-                UPDATE,
-                INSTALL,
-                SupportedExtensionVersions::parse("1.0", "2.5.1").expect("bounded versions"),
-                IdentityId::new(Uuid::from_u128(0xbc02)),
-                ENDPOINT,
+            .create_pairing(
+                EnrollmentCreation::new(
+                    TransitionId::new(Uuid::from_u128(0xbc01)),
+                    ORIGIN,
+                    STORE,
+                    UPDATE,
+                    INSTALL,
+                    SupportedExtensionVersions::parse("1.0", "2.5.1").expect("bounded versions"),
+                    IdentityId::new(Uuid::from_u128(0xbc02)),
+                    ENDPOINT,
+                    EnrollmentExpiry::Deadline(
+                        ExpiryResult::valid(600_000).expect("bounded deadline"),
+                    ),
+                ),
                 0,
-                ExpiryResult::valid(600_000).expect("bounded deadline"),
-            ))
+            )
             .expect("create one pending enrollment");
         let pending = attempt_unknown(&host, 0xc200, ticket.enrollment().get().as_u128(), 90_000);
         let absent = attempt_unknown(&host, 0xc201, 0xbcff, 90_001);

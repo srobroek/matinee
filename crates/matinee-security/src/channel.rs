@@ -1264,6 +1264,11 @@ pub(crate) fn event_code(code: FailureCode) -> SecurityCode {
         FailureCode::DowngradeRejected | FailureCode::CompatibilityUnsupported => {
             SecurityCode::Downgrade
         }
+        // `authorization.rs` already states a denied decision as this fact, and this is
+        // the one mapping, so a denial reported through a refused channel, a refused
+        // admission, or a refused enrollment is the same fact rather than the
+        // authentication failure the catch-all would otherwise name it.
+        FailureCode::AuthorizationDenied => SecurityCode::AuthorizationDenied,
         FailureCode::MalformedInput => SecurityCode::MalformedInput,
         FailureCode::ResourceLimit => SecurityCode::ResourceLimit,
         FailureCode::CryptographicFailure => SecurityCode::CryptographicFailure,

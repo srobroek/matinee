@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use crate::enrollment::{
     ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentChannel,
-    EnrollmentClock, EnrollmentCreation, EnrollmentProof, SupportedExtensionVersions,
+    EnrollmentClock, EnrollmentCreation, EnrollmentExpiry, EnrollmentProof,
+    SupportedExtensionVersions,
 };
 use crate::events::EventTime;
 use crate::identity::{
@@ -252,8 +253,10 @@ pub(crate) fn browser_capability() -> ChromeCapability {
     ChromeCapability::reported(&binding(), true, true).expect("reported browser capability")
 }
 
-/// One enrollment creation, opened at instant zero, which is the origin every deadline and
-/// occurrence time in these fixtures is measured from.
+/// One enrollment creation naming a ten-minute deadline measured from instant zero, which
+/// is the origin every deadline and occurrence time in these fixtures is measured from. The
+/// creation instant itself is not part of the description: the applying transition supplies
+/// it, so these fixtures name it through `apply_creation`.
 pub(crate) fn creation(enrollment: TransitionId, daemon: IdentityId) -> EnrollmentCreation {
     EnrollmentCreation::new(
         enrollment,
@@ -264,8 +267,9 @@ pub(crate) fn creation(enrollment: TransitionId, daemon: IdentityId) -> Enrollme
         supported_versions(),
         daemon,
         ENDPOINT,
-        0,
-        ExpiryResult::valid(600_000).expect("bounded ten-minute expiry"),
+        EnrollmentExpiry::Deadline(
+            ExpiryResult::valid(600_000).expect("bounded ten-minute expiry"),
+        ),
     )
 }
 
@@ -280,7 +284,7 @@ pub(crate) fn create_enrollment(
     sink: Option<&mut RecordingSink>,
 ) -> Result<TransitionOutcome, TransitionRejection> {
     let mut creation = creation(enrollment, daemon);
-    creation.expiry = expiry;
+    creation.expiry = EnrollmentExpiry::Deadline(expiry);
     apply_creation(
         transitions,
         creation,
@@ -288,6 +292,7 @@ pub(crate) fn create_enrollment(
         daemon,
         idempotency,
         prior_epoch,
+        0,
         sink,
     )
 }
@@ -314,12 +319,12 @@ pub(crate) fn create_enrollment_with_default_expiry(
             supported_versions(),
             daemon,
             ENDPOINT,
-            created_ms,
         ),
         enrollment,
         daemon,
         idempotency,
         prior_epoch,
+        created_ms,
         sink,
     )
 }
@@ -332,6 +337,9 @@ fn apply_creation(
     daemon: IdentityId,
     idempotency: u128,
     prior_epoch: u64,
+    // The instant the applying transition is stamped with, which is the instant the
+    // enrollment is anchored to.
+    created_ms: u64,
     sink: Option<&mut RecordingSink>,
 ) -> Result<TransitionOutcome, TransitionRejection> {
     let command = SecurityCommand::CreateEnrollment {
@@ -349,7 +357,7 @@ fn apply_creation(
         ),
         TransitionMaterial::Enrollment(creation),
         sink,
-        EventTime(1),
+        EventTime(created_ms),
     )
 }
 

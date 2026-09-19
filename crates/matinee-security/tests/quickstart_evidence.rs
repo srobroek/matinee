@@ -84,7 +84,8 @@ macro_rules! quickstart_evidence_tests {
                 ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBundle,
                 EnrollmentChannel, EnrollmentChannelState, EnrollmentClock, EnrollmentConsumeError,
                 EnrollmentConsumptionService, EnrollmentCreateError, EnrollmentCreation,
-                EnrollmentCustodyError, EnrollmentProof, SupportedExtensionVersions,
+                EnrollmentCustodyError, EnrollmentExpiry, EnrollmentProof,
+                SupportedExtensionVersions,
                 enrollment_proof_message,
             };
             use crate::events::{EventBoundary, EventOutcome, EventTime};
@@ -238,13 +239,18 @@ macro_rules! quickstart_evidence_tests {
                     SupportedExtensionVersions::parse("1.0", "2.5.1").expect("a version range"),
                     id(DAEMON),
                     ENDPOINT,
-                    0,
-                    ExpiryResult::valid(DEADLINE_MS).expect("a nonzero deadline"),
+                    EnrollmentExpiry::Deadline(
+                        ExpiryResult::valid(DEADLINE_MS).expect("a nonzero deadline"),
+                    ),
                 )
             }
 
+            /// The instant these fixtures create their enrollments at, so every deadline and
+            /// occurrence time is a window measured from it.
+            const FIXTURE_CREATED_MS: u64 = 0;
+
             fn bundle(enrollment: u128, install: &str) -> EnrollmentBundle {
-                EnrollmentBundle::create(creation(enrollment, install))
+                EnrollmentBundle::create(creation(enrollment, install), FIXTURE_CREATED_MS)
                     .expect("a bounded one-time enrollment")
             }
 
@@ -433,17 +439,20 @@ macro_rules! quickstart_evidence_tests {
                 // 65-byte one-time key. The creation instant is a realistic wall-clock
                 // reading, so ten minutes from it is nothing like the bare figure 600_000.
                 const CREATED_MS: u64 = 1_763_000_000_000;
-                let default = EnrollmentBundle::create(EnrollmentCreation::with_default_expiry(
-                    TransitionId::new(Uuid::from_u128(0x700)),
-                    ORIGIN,
-                    STORE,
-                    UPDATE,
-                    "normal",
-                    SupportedExtensionVersions::parse("1.0", "2.5.1").expect("a version range"),
-                    id(DAEMON),
-                    ENDPOINT,
+                let default = EnrollmentBundle::create(
+                    EnrollmentCreation::with_default_expiry(
+                        TransitionId::new(Uuid::from_u128(0x700)),
+                        ORIGIN,
+                        STORE,
+                        UPDATE,
+                        "normal",
+                        SupportedExtensionVersions::parse("1.0", "2.5.1")
+                            .expect("a version range"),
+                        id(DAEMON),
+                        ENDPOINT,
+                    ),
                     CREATED_MS,
-                ))
+                )
                 .expect("a bounded one-time enrollment");
                 assert_eq!(
                     default.expiry_deadline_ms(),
@@ -457,9 +466,11 @@ macro_rules! quickstart_evidence_tests {
                 assert_eq!(default.one_time_public_key_fingerprint().as_str().len(), 64);
                 assert_eq!(default.lifecycle(), EnrollmentLifecycle::Pending);
                 let mut oversized = creation(0x701, "normal");
-                oversized.expiry = ExpiryResult::valid(10 * 60 * 1_000 + 1).expect("a deadline");
+                oversized.expiry = EnrollmentExpiry::Deadline(
+                    ExpiryResult::valid(10 * 60 * 1_000 + 1).expect("a deadline"),
+                );
                 assert!(matches!(
-                    EnrollmentBundle::create(oversized),
+                    EnrollmentBundle::create(oversized, FIXTURE_CREATED_MS),
                     Err(EnrollmentCreateError::InvalidExpiry)
                 ));
             }

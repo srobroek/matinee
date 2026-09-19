@@ -8,9 +8,9 @@ use std::error::Error;
 
 use matinee_runtime::{
     ChromeReconnectOutcome, ConnectionId, DevelopmentIdentityAllowance, EnrollmentBinding,
-    EnrollmentConsumeError, EnrollmentCreation, EnrollmentFailure, EnrollmentProof, ExpiryResult,
-    IdentityId, PairingCompletion, PairingSession, PairingTicket, PublicKey, TransitionId,
-    UNCOMPRESSED_KEY_BYTES, enrollment_host,
+    EnrollmentConsumeError, EnrollmentCreation, EnrollmentExpiry, EnrollmentFailure,
+    EnrollmentProof, ExpiryResult, IdentityId, PairingCompletion, PairingSession, PairingTicket,
+    PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES, enrollment_host,
 };
 use matinee_security::SupportedExtensionVersions;
 use ring::rand::SystemRandom;
@@ -76,18 +76,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let extension = IdentityId::new(Uuid::now_v7());
 
     println!("1. create pairing");
-    let ticket = host.create_pairing(EnrollmentCreation::new(
-        TransitionId::new(Uuid::now_v7()),
-        ORIGIN,
-        STORE,
-        UPDATE,
-        INSTALL,
-        SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
-        daemon,
-        ENDPOINT,
+    let ticket = host.create_pairing(
+        EnrollmentCreation::new(
+            TransitionId::new(Uuid::now_v7()),
+            ORIGIN,
+            STORE,
+            UPDATE,
+            INSTALL,
+            SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
+            daemon,
+            ENDPOINT,
+            EnrollmentExpiry::Deadline(ExpiryResult::valid(DEADLINE_MS)?),
+        ),
         CREATED_MS,
-        ExpiryResult::valid(DEADLINE_MS)?,
-    ))?;
+    )?;
     println!(
         "  enrollment {} on {}, one-time key fingerprint {}",
         ticket.enrollment().get(),
@@ -153,18 +155,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("7. a browser without the required key semantics fails closed");
     let unsupported_identity = IdentityId::new(Uuid::now_v7());
-    let unsupported = host.create_pairing(EnrollmentCreation::new(
-        TransitionId::new(Uuid::now_v7()),
-        ORIGIN,
-        STORE,
-        UPDATE,
-        INSTALL,
-        SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
-        daemon,
-        ENDPOINT,
+    let unsupported = host.create_pairing(
+        EnrollmentCreation::new(
+            TransitionId::new(Uuid::now_v7()),
+            ORIGIN,
+            STORE,
+            UPDATE,
+            INSTALL,
+            SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
+            daemon,
+            ENDPOINT,
+            EnrollmentExpiry::Deadline(ExpiryResult::valid(DEADLINE_MS)?),
+        ),
         CREATED_MS,
-        ExpiryResult::valid(DEADLINE_MS)?,
-    ))?;
+    )?;
     let mut unsupported_session = host.session(ConnectionId::new(Uuid::now_v7()), 1)?;
     let unsupported_proof =
         client_proof(&mut unsupported_session, &unsupported, unsupported_identity)?;

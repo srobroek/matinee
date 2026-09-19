@@ -21,7 +21,7 @@ use crate::authorization::endpoint_class;
 use crate::enrollment::{
     ChromeCapability, DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBundle,
     EnrollmentChannel, EnrollmentClock, EnrollmentConsumeError, EnrollmentConsumptionService,
-    EnrollmentCreation, EnrollmentProof,
+    EnrollmentCreation, EnrollmentExpiry, EnrollmentProof,
 };
 use crate::events::{
     EndpointClass, EventBoundary, EventOutcome, EventTime, MetadataEntry, SafeNextAction,
@@ -796,8 +796,16 @@ fn transition_digest(
             digest.bytes("install", value.install_metadata.as_bytes());
             digest.uuid("daemon", value.daemon.get());
             digest.bytes("daemon-endpoint", value.daemon_endpoint.as_bytes());
-            digest.byte("expiry-status", expiry_code(value.expiry.status()));
-            digest.u64("expiry-deadline", value.expiry.deadline_ms());
+            // A default deadline and a named one are distinct requests even when they
+            // resolve to the same instant, so the variant is part of the digest.
+            match &value.expiry {
+                EnrollmentExpiry::Default => digest.byte("expiry-kind", 0),
+                EnrollmentExpiry::Deadline(requested) => {
+                    digest.byte("expiry-kind", 1);
+                    digest.byte("expiry-status", expiry_code(requested.status()));
+                    digest.u64("expiry-deadline", requested.deadline_ms());
+                }
+            }
         }
         TransitionMaterial::Pairing(value) => {
             digest.byte("material", 2);
@@ -1892,29 +1900,61 @@ impl TransitionState {
         time: EventTime,
     ) -> Result<TransitionOutcome, TransitionRejection> {
         let owner = self.active_principal(daemon)?.clone();
+        let state_directory = input.state_directory();
+        let endpoint = endpoint_class(owner.kind());
+        // Every refusal below is a decided outcome at the enrollment boundary, and
+        // `contracts/failures-events.md` lists each of them among the facts this module
+        // states: an authorization denial, an authentication failure, a replay, a
+        // malformed input. None of them has anything to undo, because all of them precede
+        // the one-time key generation, the enrollment insertion, and the applied-transition
+        // record, so the fact is required first and the refusal follows it. An unavailable
+        // sink turns each into `EventSinkUnavailable`, which opens no enrollment either.
+        //
+        // The two `undecided` refusals further down state nothing, and that is the same
+        // rule rather than an exception to it: a fact reports an outcome, and those two
+        // report that this transition has no outcome yet.
+        //
         // FR-007: an enrollment is an administrator's act. The owning principal is the
         // one this command names, so a daemon, an MCP client, or a paired extension
         // that reached the command boundary still opens nothing. The refusal precedes
         // every bound check and the one-time key generation, so a principal that may
         // not enroll cannot learn which of its other fields would have been accepted.
         if owner.kind() != PrincipalKind::NativeAdmin {
-            return Err(TransitionRejection::rejected(
+            return Err(refuse_enrollment(
+                sink,
                 FailureCode::AuthorizationDenied,
-                Some(daemon),
+                daemon,
+                enrollment,
+                state_directory,
+                endpoint,
+                time,
             ));
         }
         if input.prior_epoch() != owner.epoch() {
-            return Err(TransitionRejection::rejected(
+            return Err(refuse_enrollment(
+                sink,
                 FailureCode::StaleEpoch,
-                Some(daemon),
+                daemon,
+                enrollment,
+                state_directory,
+                endpoint,
+                time,
             ));
         }
-        if input.state_directory() != owner.credential().state_directory() {
-            return Err(TransitionRejection::rejected(
+        if state_directory != owner.credential().state_directory() {
+            return Err(refuse_enrollment(
+                sink,
                 FailureCode::CredentialStoreMismatch,
-                Some(daemon),
+                daemon,
+                enrollment,
+                state_directory,
+                endpoint,
+                time,
             ));
         }
+        // A command and a material that name different enrollments or different daemons
+        // decide nothing about either of them, so this is the undecided dispatch failure
+        // `apply` reports for an operation mismatch, reached one layer in.
         if creation.enrollment != enrollment || creation.daemon != daemon {
             return Err(TransitionRejection::undecided(
                 FailureCode::TransitionUnknown,
@@ -1922,24 +1962,46 @@ impl TransitionState {
             ));
         }
         if self.enrollments.contains_key(&enrollment) {
-            return Err(TransitionRejection::rejected(
+            return Err(refuse_enrollment(
+                sink,
                 FailureCode::ReplayDetected,
-                Some(daemon),
+                daemon,
+                enrollment,
+                state_directory,
+                endpoint,
+                time,
             ));
         }
-        // An uncertain or elapsed deadline is never the basis of a new enrollment, and
-        // the check precedes one-time key generation.
-        if !creation.expiry.is_security_valid() {
+        // An uncertain deadline is never the basis of a new enrollment. It is also no
+        // outcome to state: a clock that cannot say whether the deadline has passed has
+        // not decided that this enrollment is refused, exactly as `consume_rejection`
+        // treats an uncertain deadline during consumption.
+        if matches!(&creation.expiry, EnrollmentExpiry::Deadline(requested) if !requested.is_security_valid())
+        {
             return Err(TransitionRejection::undecided(
                 FailureCode::TransitionUnknown,
                 Some(daemon),
             ));
         }
         // Creating the bundle validates every bound and generates the one-time key
-        // without touching registered state.
-        let bundle = EnrollmentBundle::create(creation).map_err(|_| {
-            TransitionRejection::rejected(FailureCode::MalformedInput, Some(daemon))
-        })?;
+        // without touching registered state. `time` is the instant this transition is
+        // stamped with, and the enrollment is anchored to it rather than to any instant
+        // the caller described, so the window FR-007 bounds cannot be placed ahead of
+        // the transition that opened it.
+        let bundle = match EnrollmentBundle::create(creation, time.0) {
+            Ok(bundle) => bundle,
+            Err(_) => {
+                return Err(refuse_enrollment(
+                    sink,
+                    FailureCode::MalformedInput,
+                    daemon,
+                    enrollment,
+                    state_directory,
+                    endpoint,
+                    time,
+                ));
+            }
+        };
         require_event(
             sink,
             enrollment.get(),
@@ -1988,69 +2050,77 @@ impl TransitionState {
         time: EventTime,
     ) -> Result<TransitionOutcome, TransitionRejection> {
         let state_directory = input.state_directory();
-        // Every refusal below precedes the proof consumption, the principal insertion, and
-        // the applied-transition record, so each states its fact and mutates nothing.
+        // Every refusal below is a decided outcome, and each precedes the proof
+        // consumption, the principal insertion, and the applied-transition record, so each
+        // states its fact and mutates nothing. A pairing proof arrives on the extension
+        // endpoint, so every fact from here names that class.
         let Some(registration) = self.enrollments.get(&enrollment) else {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::ReplayDetected,
                 pairing.identity,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         };
         let (owner_id, registered_epoch) = (registration.owner, registration.epoch);
         let owner = self.active_principal(owner_id)?.clone();
         if input.prior_epoch() != registered_epoch || owner.epoch() != registered_epoch {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::StaleEpoch,
                 owner_id,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         }
         if state_directory != owner.credential().state_directory() {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::CredentialStoreMismatch,
                 owner_id,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         }
         if self.principals.contains_key(&pairing.identity) {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::ReplayDetected,
                 pairing.identity,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         }
         if pairing.proof.identity != pairing.identity {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::AuthenticationFailed,
                 pairing.identity,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         }
         if pairing.credential.daemon() != owner_id
             || pairing.credential.state_directory() != owner.credential().state_directory()
         {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::CredentialStoreMismatch,
                 pairing.identity,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         }
@@ -2067,22 +2137,24 @@ impl TransitionState {
             pairing.ceiling,
             pairing.credential,
         ) else {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::CredentialStoreMismatch,
                 pairing.identity,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         };
         if candidate.activate().is_err() {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::AuthenticationFailed,
                 pairing.identity,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         }
@@ -2090,12 +2162,13 @@ impl TransitionState {
             host, enrollments, ..
         } = self;
         let Some(registration) = enrollments.get_mut(&enrollment) else {
-            return Err(refuse_consumption(
+            return Err(refuse_enrollment(
                 sink,
                 FailureCode::ReplayDetected,
                 pairing.identity,
                 enrollment,
                 state_directory,
+                EndpointClass::Extension,
                 time,
             ));
         };
@@ -2513,23 +2586,29 @@ fn refuse_admission(
     }
 }
 
-/// Emit the fact one refused enrollment consumption owes, and return the refusal itself.
+/// Emit the fact one decided enrollment-boundary refusal owes, and return the refusal.
 ///
-/// Every precheck this serves refuses before the host consumes the proof, before the
-/// paired principal is inserted, and before the applied transition is recorded, so the
-/// refusal has nothing to undo. What it does owe is the fact: FR-027 lists a replay and an
-/// authentication failure among the outcomes the module must state, and
-/// `contracts/failures-events.md` requires the fact before the transition it justifies.
-/// The failure class decides the fact through the same mapping the handshake and channel
-/// admission read, so one class is never two facts, and an unavailable sink replaces the
-/// outcome with `EventSinkUnavailable` exactly as a refused admission does: the
-/// consumption is refused either way, and the caller learns the sink is what needs repair.
-fn refuse_consumption<S: SecurityEventSink + ?Sized>(
+/// Both the creation and the consumption prechecks this serves refuse before the one-time
+/// key is generated, before the proof is consumed, before any principal is inserted, and
+/// before the applied transition is recorded, so the refusal has nothing to undo. What it
+/// does owe is the fact: `contracts/failures-events.md` lists an authorization denial, an
+/// authentication failure, a replay, and a malformed input among the outcomes the module
+/// must state, and it requires the fact before the transition it justifies. The failure
+/// class decides the fact through the same mapping the handshake and channel admission
+/// read, so one class is never two facts, and an unavailable sink replaces the outcome
+/// with `EventSinkUnavailable` exactly as a refused admission does: the enrollment is
+/// refused either way, and the caller learns the sink is what needs repair.
+///
+/// Only a decided outcome reaches here. A refusal that leaves the transition undetermined
+/// reports no fact, because there is no outcome yet to report.
+#[allow(clippy::too_many_arguments)]
+fn refuse_enrollment<S: SecurityEventSink + ?Sized>(
     sink: Option<&mut S>,
     code: FailureCode,
     principal: IdentityId,
     enrollment: TransitionId,
     state_directory: IdentityId,
+    endpoint: EndpointClass,
     time: EventTime,
 ) -> TransitionRejection {
     let recorded = SecurityEvent::new(
@@ -2540,7 +2619,7 @@ fn refuse_consumption<S: SecurityEventSink + ?Sized>(
         SafeNextAction::FailClosed,
         Some(principal.get()),
         None,
-        EndpointClass::Extension,
+        endpoint,
         time,
         state_directory.get(),
         Vec::new(),

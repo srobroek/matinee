@@ -2,8 +2,9 @@ macro_rules! enrollment_contract_tests {
     () => {
         use crate::enrollment::{
             DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentBindingError,
-            EnrollmentBundle, EnrollmentCreateError, EnrollmentCreation, ExtensionVersion,
-            ExtensionVersionError, SupportedExtensionVersions, validate_enrollment_binding,
+            EnrollmentBundle, EnrollmentCreateError, EnrollmentCreation, EnrollmentExpiry,
+            ExtensionVersion, ExtensionVersionError, SupportedExtensionVersions,
+            validate_enrollment_binding,
         };
         use crate::identity::{
             ConnectionId, EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment,
@@ -14,6 +15,9 @@ macro_rules! enrollment_contract_tests {
         const VERSION: &str = "1.4.2";
         const MIN_VERSION: &str = "1.0";
         const MAX_VERSION: &str = "2.5.1";
+        /// The instant these fixtures create their enrollments at, so every deadline below
+        /// is a window measured from it rather than from the clock's own epoch.
+        const CREATED_MS: u64 = 0;
 
         fn creation() -> EnrollmentCreation {
             EnrollmentCreation::new(
@@ -26,8 +30,9 @@ macro_rules! enrollment_contract_tests {
                     .expect("a minimum-first supported extension version range"),
                 IdentityId::new(Uuid::from_u128(0x20)),
                 "127.0.0.1:7777",
-                0,
-                ExpiryResult::valid(10 * 60 * 1_000).expect("bounded ten-minute expiry"),
+                EnrollmentExpiry::Deadline(
+                    ExpiryResult::valid(10 * 60 * 1_000).expect("bounded ten-minute expiry"),
+                ),
             )
         }
 
@@ -46,7 +51,8 @@ macro_rules! enrollment_contract_tests {
 
         #[test]
         fn creation_bounds_lifecycle_metadata() {
-            let bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
+            let bundle = EnrollmentBundle::create(creation(), CREATED_MS)
+                .expect("valid enrollment creation");
             assert_eq!(bundle.lifecycle(), EnrollmentLifecycle::Pending);
             assert_eq!(
                 bundle.origin(),
@@ -70,15 +76,17 @@ macro_rules! enrollment_contract_tests {
             assert!(enrollment_fixture(expiry).lifecycle() == EnrollmentLifecycle::Pending);
 
             let mut uncertain = creation();
-            uncertain.expiry = ExpiryResult::uncertain(10 * 60 * 1_000);
+            uncertain.expiry = EnrollmentExpiry::Deadline(ExpiryResult::uncertain(10 * 60 * 1_000));
             assert_eq!(
-                EnrollmentBundle::create(uncertain).expect_err("clock uncertainty fails closed"),
+                EnrollmentBundle::create(uncertain, CREATED_MS)
+                    .expect_err("clock uncertainty fails closed"),
                 EnrollmentCreateError::InvalidExpiry
             );
             let mut overlong = creation();
-            overlong.expiry = ExpiryResult::valid(10 * 60 * 1_000 + 1).unwrap();
+            overlong.expiry =
+                EnrollmentExpiry::Deadline(ExpiryResult::valid(10 * 60 * 1_000 + 1).unwrap());
             assert_eq!(
-                EnrollmentBundle::create(overlong)
+                EnrollmentBundle::create(overlong, CREATED_MS)
                     .expect_err("expiry over ten minutes fails closed"),
                 EnrollmentCreateError::InvalidExpiry
             );
@@ -118,8 +126,8 @@ macro_rules! enrollment_contract_tests {
 
         #[test]
         fn one_time_private_key_is_owned_by_authenticated_encrypted_output() {
-            let mut bundle =
-                EnrollmentBundle::create(creation()).expect("valid enrollment creation");
+            let mut bundle = EnrollmentBundle::create(creation(), CREATED_MS)
+                .expect("valid enrollment creation");
             let mut channel = crate::enrollment::EnrollmentChannel::open(
                 ConnectionId::new(Uuid::from_u128(0x30)),
                 1,
@@ -146,7 +154,8 @@ macro_rules! enrollment_contract_tests {
 
         #[test]
         fn public_key_boundary_is_exact_uncompressed_sec1_and_has_no_private_bytes() {
-            let bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
+            let bundle = EnrollmentBundle::create(creation(), CREATED_MS)
+                .expect("valid enrollment creation");
             let key = bundle.one_time_public_key();
             assert_eq!(key.as_bytes().len(), UNCOMPRESSED_KEY_BYTES);
             assert_eq!(key.as_bytes()[0], 0x04);
@@ -203,7 +212,8 @@ macro_rules! enrollment_contract_tests {
         #[test]
         fn pairing_requires_a_supported_extension_version() {
             let expected = creation();
-            let bundle = EnrollmentBundle::create(creation()).expect("valid enrollment creation");
+            let bundle = EnrollmentBundle::create(creation(), CREATED_MS)
+                .expect("valid enrollment creation");
             assert_eq!(
                 bundle.supported_versions(),
                 SupportedExtensionVersions::parse(MIN_VERSION, MAX_VERSION).unwrap()

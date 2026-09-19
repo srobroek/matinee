@@ -7,9 +7,10 @@
 
 use matinee_runtime::{
     ChromeReconnectOutcome, ConnectionId, DevelopmentIdentityAllowance, EnrollmentBinding,
-    EnrollmentConsumeError, EnrollmentCreation, EnrollmentCustodyError, EnrollmentFailure,
-    EnrollmentProof, ExpiryResult, IdentityId, PairingCompletion, PairingSession, PairingTicket,
-    PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES, enrollment_host,
+    EnrollmentConsumeError, EnrollmentCreation, EnrollmentCustodyError, EnrollmentExpiry,
+    EnrollmentFailure, EnrollmentProof, ExpiryResult, IdentityId, PairingCompletion,
+    PairingSession, PairingTicket, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
+    enrollment_host,
 };
 use matinee_security::SupportedExtensionVersions;
 use ring::rand::SystemRandom;
@@ -34,8 +35,7 @@ fn creation(enrollment: u128, daemon: u128) -> EnrollmentCreation {
         SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
         IdentityId::new(Uuid::from_u128(daemon)),
         ENDPOINT,
-        CREATED_MS,
-        ExpiryResult::valid(DEADLINE_MS).expect("bounded deadline"),
+        EnrollmentExpiry::Deadline(ExpiryResult::valid(DEADLINE_MS).expect("bounded deadline")),
     )
 }
 
@@ -116,7 +116,7 @@ fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x1000));
     let ticket = host
-        .create_pairing(creation(0x1001, 0x1002))
+        .create_pairing(creation(0x1001, 0x1002), CREATED_MS)
         .expect("create pairing");
     assert_eq!(ticket.origin(), ORIGIN);
     assert_eq!(ticket.daemon_endpoint(), ENDPOINT);
@@ -172,7 +172,7 @@ fn registration_and_custody_survive_session_replacement() {
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x2000));
     let ticket = host
-        .create_pairing(creation(0x2001, 0x2002))
+        .create_pairing(creation(0x2001, 0x2002), CREATED_MS)
         .expect("create pairing");
     let mut first = host
         .session(ConnectionId::new(Uuid::from_u128(0x2003)), 1)
@@ -257,7 +257,7 @@ fn browser_without_required_key_semantics_fails_closed() {
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x3000));
     let ticket = host
-        .create_pairing(creation(0x3001, 0x3002))
+        .create_pairing(creation(0x3001, 0x3002), CREATED_MS)
         .expect("create pairing");
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(0x3003)), 1)
@@ -292,7 +292,7 @@ fn invalid_proof_closes_the_channel_and_registers_nothing() {
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x4000));
     let ticket = host
-        .create_pairing(creation(0x4001, 0x4002))
+        .create_pairing(creation(0x4001, 0x4002), CREATED_MS)
         .expect("create pairing");
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(0x4003)), 1)
@@ -322,7 +322,7 @@ fn uncertain_expiry_refuses_pairing_without_consuming_the_enrollment() {
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x5000));
     let ticket = host
-        .create_pairing(creation(0x5001, 0x5002))
+        .create_pairing(creation(0x5001, 0x5002), CREATED_MS)
         .expect("create pairing");
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(0x5003)), 1)
@@ -356,7 +356,7 @@ fn uncertain_expiry_refuses_pairing_without_consuming_the_enrollment() {
 fn a_closed_channel_seals_and_opens_no_one_time_key() {
     let host = enrollment_host();
     let ticket = host
-        .create_pairing(creation(0x6001, 0x6002))
+        .create_pairing(creation(0x6001, 0x6002), CREATED_MS)
         .expect("create pairing");
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(0x6003)), 1)
@@ -377,7 +377,7 @@ fn a_closed_channel_seals_and_opens_no_one_time_key() {
     );
 
     let second = host
-        .create_pairing(creation(0x6004, 0x6002))
+        .create_pairing(creation(0x6004, 0x6002), CREATED_MS)
         .expect("create second pairing");
     assert_eq!(
         session
@@ -391,10 +391,11 @@ fn a_closed_channel_seals_and_opens_no_one_time_key() {
 #[test]
 fn a_live_enrollment_identifier_is_never_silently_replaced() {
     let host = enrollment_host();
-    host.create_pairing(creation(0x7001, 0x7002))
+    host.create_pairing(creation(0x7001, 0x7002), CREATED_MS)
         .expect("create pairing");
     assert_eq!(
-        host.create_pairing(creation(0x7001, 0x7002)).unwrap_err(),
+        host.create_pairing(creation(0x7001, 0x7002), CREATED_MS)
+            .unwrap_err(),
         EnrollmentFailure::DuplicateEnrollment,
         "replacement would refill that enrollment's failed-proof budget"
     );

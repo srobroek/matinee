@@ -1,7 +1,9 @@
 macro_rules! rotation_revocation_tests {
     () => {
         use crate::enrollment::{EnrollmentChannel, EnrollmentClock};
-        use crate::events::{EventBoundary, EventTime, SecurityCode};
+        use crate::events::{
+            EventBoundary, EventOutcome, EventTime, SafeNextAction as EventNextAction, SecurityCode,
+        };
         use crate::failures::{FailureBoundary, FailureCode, SafeNextAction};
         use crate::identity::{
             Capability, CredentialReference, EnrollmentLifecycle, ExpiryResult, Fingerprint,
@@ -1246,10 +1248,22 @@ macro_rules! rotation_revocation_tests {
                 SafeNextAction::RequestAdministratorGrant
             );
             assert_eq!(transitions.enrollment_lifecycle(refused), None);
-            assert!(
-                sink.events.is_empty(),
-                "a transition that did not happen emits nothing"
-            );
+            // SEC-006. This assertion used to read `sink.events.is_empty()`, justified as
+            // "a transition that did not happen emits nothing". That describes the code and
+            // contradicts the contract: `contracts/failures-events.md` lists "An
+            // authorization denial" in the closed set of outcomes this module states, and a
+            // denial is a decided outcome, not an absent one. Nothing happening to the
+            // registry is exactly why the denial has to be recorded — otherwise refusing a
+            // non-administrator leaves no trace at all. What it asserts now is that fact:
+            // one enrollment-boundary denial, rejected, fail-closed, naming the refused
+            // principal and no protected state.
+            let denial = sink.events.last().expect("a denied enrollment states its fact");
+            assert_eq!(denial.boundary(), EventBoundary::Enrollment);
+            assert_eq!(denial.code(), SecurityCode::AuthorizationDenied);
+            assert_eq!(denial.outcome(), EventOutcome::Rejected);
+            assert_eq!(denial.next_action(), EventNextAction::FailClosed);
+            assert_eq!(denial.principal_id(), Some(client.id().get()));
+            assert_eq!(sink.events.len(), 1, "one denial is one fact");
 
             // The positive control: the administrator still opens one.
             let administrator_signer = RingSigner::generate();

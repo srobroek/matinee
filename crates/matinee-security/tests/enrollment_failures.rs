@@ -6,7 +6,7 @@ macro_rules! enrollment_failure_tests {
             EnrollmentBundle, EnrollmentChannel, EnrollmentChannelState, EnrollmentClock,
             EnrollmentConsumeError, EnrollmentConsumptionService, EnrollmentCreation,
             SupportedExtensionVersions,
-            EnrollmentCreateError, EnrollmentProof,
+            EnrollmentCreateError, EnrollmentExpiry, EnrollmentProof,
         };
         use crate::adapters::credential_store::{CredentialBinding, CredentialHandle, CredentialStore, CredentialStoreError};
         use crate::events::{SecurityEvent, SecurityEventSink, SecurityEventSinkResult};
@@ -16,6 +16,13 @@ macro_rules! enrollment_failure_tests {
         use ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING;
         use uuid::Uuid;
 
+        /// The instant these fixtures create their enrollments at, so every deadline and
+        /// occurrence time below is a window measured from it.
+        const CREATED_MS: u64 = 0;
+        /// The ten-minute deadline these fixtures name, as an instant on the same clock.
+        fn deadline() -> ExpiryResult {
+            ExpiryResult::valid(600_000).expect("bounded ten-minute deadline")
+        }
         fn input() -> EnrollmentCreation {
             EnrollmentCreation::new(
                 TransitionId::new(Uuid::from_u128(1)),
@@ -26,8 +33,7 @@ macro_rules! enrollment_failure_tests {
                 SupportedExtensionVersions::parse("1.0", "2.5.1").unwrap(),
                 IdentityId::new(Uuid::from_u128(2)),
                 "127.0.0.1:7777",
-                0,
-                ExpiryResult::valid(600_000).unwrap(),
+                EnrollmentExpiry::Deadline(deadline()),
             )
         }
 
@@ -51,7 +57,7 @@ macro_rules! enrollment_failure_tests {
             }
         }
         fn bundle(id: u128) -> crate::enrollment::EnrollmentBundle {
-            let mut value = input(); value.enrollment = TransitionId::new(Uuid::from_u128(id)); EnrollmentBundle::create(value).unwrap()
+            let mut value = input(); value.enrollment = TransitionId::new(Uuid::from_u128(id)); EnrollmentBundle::create(value, CREATED_MS).unwrap()
         }
         fn bundle_binding(_bundle: &crate::enrollment::EnrollmentBundle) -> EnrollmentBinding<'static> {
             EnrollmentBinding { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", endpoint: "127.0.0.1:7777", store_metadata: "Chrome Web Store", update_metadata: "https://updates.example.test/ext.xml", install_metadata: "normal", version: "1.4.2", development_allowance: DevelopmentIdentityAllowance::None }
@@ -85,13 +91,13 @@ macro_rules! enrollment_failure_tests {
             let mut malformed = input();
             malformed.origin = "http://not-an-extension".into();
             assert_eq!(
-                EnrollmentBundle::create(malformed).unwrap_err(),
+                EnrollmentBundle::create(malformed, CREATED_MS).unwrap_err(),
                 EnrollmentCreateError::InvalidOrigin
             );
             let mut uncertain = input();
-            uncertain.expiry = ExpiryResult::uncertain(600_000);
+            uncertain.expiry = EnrollmentExpiry::Deadline(ExpiryResult::uncertain(600_000));
             assert_eq!(
-                EnrollmentBundle::create(uncertain).unwrap_err(),
+                EnrollmentBundle::create(uncertain, CREATED_MS).unwrap_err(),
                 EnrollmentCreateError::InvalidExpiry
             );
         }
@@ -121,7 +127,7 @@ macro_rules! enrollment_failure_tests {
                     i.daemon,
                     i.daemon_endpoint,
                     crate::identity::Fingerprint::new("a".repeat(64)).unwrap(),
-                    i.expiry,
+                    deadline(),
                 ).unwrap()
             }
             let mut consumed = enrollment();
@@ -189,7 +195,7 @@ macro_rules! enrollment_failure_tests {
                 let i = input();
                 crate::identity::ExtensionEnrollment::new(
                     i.enrollment, i.origin, "metadata", i.daemon, i.daemon_endpoint,
-                    Fingerprint::new("a".repeat(64)).unwrap(), i.expiry,
+                    Fingerprint::new("a".repeat(64)).unwrap(), deadline(),
                 ).unwrap()
             }));
             let handles: Vec<_> = (0..2).map(|_| {
@@ -624,9 +630,10 @@ macro_rules! enrollment_failure_tests {
                         .expect("a supported version range"),
                     identity(2),
                     ENDPOINT,
-                    0,
-                    ExpiryResult::valid(DEADLINE_MS).expect("a nonzero deadline"),
-                ))
+                    crate::enrollment::EnrollmentExpiry::Deadline(
+                        ExpiryResult::valid(DEADLINE_MS).expect("a nonzero deadline"),
+                    ),
+                ), 0)
                 .expect("a bounded one-time enrollment")
             }
 
