@@ -18,7 +18,7 @@ macro_rules! enrollment_custody_tests {
                 "https://updates.example.test/ext.xml", "normal",
                 SupportedExtensionVersions::parse("1.0", "2.5.1").unwrap(),
                 IdentityId::new(Uuid::from_u128(0x41)), "127.0.0.1:7777",
-                ExpiryResult::valid(600_000).unwrap(),
+                0, ExpiryResult::valid(600_000).unwrap(),
             )
         }
 

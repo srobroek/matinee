@@ -1098,12 +1098,21 @@ macro_rules! rotation_revocation_tests {
         }
 
 
-        /// FR-007: "enrollment expiry MUST be ten minutes by default". The default is
-        /// not observable as a number a caller passed in, so it is proved by what a
-        /// pairing peer must present: the extension pairs only when it carries exactly
-        /// the ten-minute deadline the administrator never named.
+        /// FR-007: "enrollment expiry MUST be ten minutes by default". The default is not
+        /// observable as a number a caller passed in, so it is proved by what a pairing peer
+        /// must present: the extension pairs only when it carries exactly the deadline the
+        /// administrator never named, and `EnrollmentClock` refuses any other.
+        ///
+        /// The enrollment is opened at a realistic wall-clock instant rather than at zero,
+        /// because ten minutes is an interval and a deadline is an instant: from a zero
+        /// origin the two are the same number, so a default fixed at the bare figure
+        /// 600_000 would satisfy a test written that way while giving an enrollment created
+        /// at any real instant a deadline in the past. Both boundaries are checked here,
+        /// the last millisecond inside the window and the deadline itself.
         #[test]
         fn an_unnamed_enrollment_deadline_defaults_to_ten_minutes() {
+            const CREATED_MS: u64 = 1_763_000_000_000;
+            const TEN_MINUTES_MS: u64 = 10 * 60 * 1_000;
             let transitions = SecurityTransitions::default();
             let administrator_signer = RingSigner::generate();
             let administrator = registered(
@@ -1121,6 +1130,7 @@ macro_rules! rotation_revocation_tests {
                     administrator.id(),
                     110,
                     0,
+                    CREATED_MS,
                     Some(&mut sink),
                 ),
                 Ok(TransitionOutcome::Committed)
@@ -1130,9 +1140,8 @@ macro_rules! rotation_revocation_tests {
                 Some(EnrollmentLifecycle::Pending)
             );
 
-            // Ten minutes is what the peer must present. `EnrollmentClock` refuses a
-            // deadline that is not the bundle's own, so a default of any other length
-            // would refuse this pairing.
+            // The deadline the peer must present is ten minutes after creation. A peer that
+            // presents the interval itself, as a deadline measured from nothing, is refused.
             let mut channel = EnrollmentChannel::open(connection(110), 1).expect("native channel");
             let proof = paired_proof(&transitions, enrollment, &mut channel, id(EXTENSION));
             assert_eq!(
@@ -1142,11 +1151,63 @@ macro_rules! rotation_revocation_tests {
                     id(EXTENSION),
                     &proof,
                     &EnrollmentClock::new(
-                        0,
-                        ExpiryResult::valid(10 * 60 * 1_000).expect("bounded deadline")
+                        CREATED_MS,
+                        ExpiryResult::valid(TEN_MINUTES_MS).expect("bounded deadline")
                     ),
                     &mut channel,
                     111,
+                    0,
+                    Some(&mut sink),
+                )
+                .expect_err("ten minutes from nothing is not this enrollment's deadline")
+                .code(),
+                FailureCode::ReplayDetected
+            );
+            assert_eq!(
+                transitions.enrollment_lifecycle(enrollment),
+                Some(EnrollmentLifecycle::Pending)
+            );
+
+            // The deadline itself has arrived, so it is outside the window: an enrollment
+            // ten minutes long is unexpired up to its deadline, never at it.
+            assert_eq!(
+                consume_enrollment(
+                    &transitions,
+                    enrollment,
+                    id(EXTENSION),
+                    &proof,
+                    &EnrollmentClock::new(
+                        CREATED_MS + TEN_MINUTES_MS,
+                        ExpiryResult::valid(CREATED_MS + TEN_MINUTES_MS).expect("bounded deadline")
+                    ),
+                    &mut channel,
+                    112,
+                    0,
+                    Some(&mut sink),
+                )
+                .expect_err("an arrived deadline consumes nothing")
+                .code(),
+                FailureCode::ReplayDetected
+            );
+            assert_eq!(
+                transitions.enrollment_lifecycle(enrollment),
+                Some(EnrollmentLifecycle::Pending)
+            );
+
+            // The last millisecond inside the ten minutes pairs, which fixes the window's
+            // width exactly: one millisecond wider or narrower and this is refused.
+            assert_eq!(
+                consume_enrollment(
+                    &transitions,
+                    enrollment,
+                    id(EXTENSION),
+                    &proof,
+                    &EnrollmentClock::new(
+                        CREATED_MS + TEN_MINUTES_MS - 1,
+                        ExpiryResult::valid(CREATED_MS + TEN_MINUTES_MS).expect("bounded deadline")
+                    ),
+                    &mut channel,
+                    113,
                     0,
                     Some(&mut sink),
                 ),
@@ -1174,6 +1235,7 @@ macro_rules! rotation_revocation_tests {
                 client.id(),
                 112,
                 0,
+                1_763_000_000_000,
                 Some(&mut sink),
             )
             .expect_err("a client principal is not an administrator");
@@ -1205,6 +1267,7 @@ macro_rules! rotation_revocation_tests {
                     administrator.id(),
                     113,
                     0,
+                    1_763_000_000_000,
                     Some(&mut sink),
                 ),
                 Ok(TransitionOutcome::Committed)

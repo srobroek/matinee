@@ -22,7 +22,8 @@ macro_rules! events_contract_tests {
             .expect("valid event fixture")
         }
 
-        /// One pending enrollment at the ten-minute default, as an administrator opens it.
+        /// One pending enrollment at the ten-minute default, as an administrator opens it,
+        /// created at instant zero so every `pairing_clock` occurrence below is inside it.
         fn pairing_bundle(value: u128) -> crate::enrollment::EnrollmentBundle {
             use crate::test_support_channel::ENDPOINT;
             use crate::test_support_transitions::{
@@ -38,6 +39,7 @@ macro_rules! events_contract_tests {
                     supported_versions(),
                     crate::identity::IdentityId::new(Uuid::from_u128(0x2f)),
                     ENDPOINT,
+                    0,
                 ),
             )
             .expect("the ten-minute default is inside the creation bounds")
@@ -111,6 +113,48 @@ macro_rules! events_contract_tests {
             events::SecurityCode::RateLimited,
         ];
 
+        /// Every enrollment-pairing refusal that owes a fact, named by the bound it
+        /// refuses on, with the fact it owes.
+        ///
+        /// Membership in `REQUIRED_FACTS` is satisfied by whichever path happens to reach a
+        /// code first, so a second path returning the same listed outcome in silence
+        /// satisfies it too: that is exactly how a rejected pairing with no fact at all
+        /// survived this file. The obligation is per outcome, and an outcome is something a
+        /// path returns, so the paths are enumerated here and each is required to state its
+        /// own fact. `contracts/failures-events.md` decides which fact through the mapping
+        /// every boundary shares, so a replay and an authentication failure are named
+        /// identically wherever the pairing died.
+        const REQUIRED_REJECTION_PATHS: [(&str, events::SecurityCode); 7] = [
+            (
+                "consumption of an enrollment nobody opened",
+                events::SecurityCode::ReplayDetected,
+            ),
+            (
+                "consumption at an epoch the enrollment does not hold",
+                events::SecurityCode::AuthenticationFailed,
+            ),
+            (
+                "consumption for a principal already registered",
+                events::SecurityCode::ReplayDetected,
+            ),
+            (
+                "a proof naming an identity other than the pairing one",
+                events::SecurityCode::AuthenticationFailed,
+            ),
+            (
+                "a credential outside the enrollment owner's binding",
+                events::SecurityCode::AuthenticationFailed,
+            ),
+            (
+                "a proof against an enrollment past its deadline",
+                events::SecurityCode::ReplayDetected,
+            ),
+            (
+                "a proof against an enrollment already consumed",
+                events::SecurityCode::ReplayDetected,
+            ),
+        ];
+
         #[test]
         fn every_required_security_fact_is_emitted_by_the_production_path_that_owes_it() {
             let observed = [
@@ -125,6 +169,21 @@ macro_rules! events_contract_tests {
                     observed.contains(&required),
                     "no production operation emitted {required:?}; \
                      contracts/failures-events.md requires one for it"
+                );
+            }
+
+            // The same obligation, read per refusing path instead of per code.
+            let by_path = pairing_rejection_facts();
+            for (path, required) in REQUIRED_REJECTION_PATHS {
+                let stated = by_path
+                    .iter()
+                    .find(|(name, _)| *name == path)
+                    .map(|(_, code)| *code);
+                assert_eq!(
+                    stated,
+                    Some(required),
+                    "{path} refused without stating {required:?}; \
+                     contracts/failures-events.md requires the fact before the refusal"
                 );
             }
         }
@@ -620,6 +679,607 @@ macro_rules! events_contract_tests {
             );
             assert_eq!(still_open.state(), EnrollmentChannelState::Open);
             assert!(unavailable.events.is_empty());
+        }
+
+        /// One valid pairing proof, signed by the one-time key this channel took custody of.
+        /// A refused pairing needs no valid signature, but a consumption that must first
+        /// succeed does, and a proof that succeeded once is what a replay re-presents.
+        fn signed_pairing_proof(
+            bundle: &mut crate::enrollment::EnrollmentBundle,
+            channel: &crate::enrollment::EnrollmentChannel,
+            who: crate::identity::IdentityId,
+        ) -> crate::enrollment::EnrollmentProof {
+            use ring::rand::SystemRandom;
+            use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair};
+
+            let enrollment = bundle.enrollment_id();
+            let transfer = channel
+                .seal_one_time_key(bundle)
+                .expect("one-time key custody");
+            let private = channel
+                .open_sealed_for_test(enrollment, &transfer)
+                .expect("the pairing peer opens its own sealed key");
+            let rng = SystemRandom::new();
+            let signer = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &private, &rng)
+                .expect("the one-time key");
+            let long_term = crate::test_support_transitions::long_term_key();
+            let signature = signer
+                .sign(
+                    &rng,
+                    &crate::enrollment::enrollment_proof_message(bundle, &long_term),
+                )
+                .expect("a one-time proof signature")
+                .as_ref()
+                .to_vec();
+            crate::enrollment::EnrollmentProof {
+                identity: who,
+                signature,
+                long_term_public_key: long_term,
+            }
+        }
+
+        /// Drive every refusal named in `REQUIRED_REJECTION_PATHS` and report the fact each
+        /// one stated, alongside the typed failure it returned.
+        ///
+        /// Each path gets its own sink, so the fact read back is the one that path emitted
+        /// and not a leftover from an earlier drive, and each asserts its own stable code:
+        /// stating a fact may never change what a caller is told.
+        fn pairing_rejection_facts() -> Vec<(&'static str, events::SecurityCode)> {
+            use crate::enrollment::{
+                ChromeCapability, EnrollmentChannel, EnrollmentClock, EnrollmentConsumeError,
+                EnrollmentConsumptionService,
+            };
+            use crate::identity::{
+                CredentialReference, ExpiryResult, IdentityId, PrincipalKind, TransitionOutcome,
+            };
+            use crate::test_support_channel::{RecordingSink, RingSigner, STATE_DIRECTORY, id};
+            use crate::test_support_transitions::{
+                ADMINISTRATOR, EXTENSION, binding, connection, consume_enrollment,
+                consume_enrollment_with_credential, create_enrollment, paired_proof, registered,
+                transition,
+            };
+            use crate::transition::SecurityTransitions;
+
+            let deadline = || ExpiryResult::valid(600_000).expect("bounded ten-minute deadline");
+            let clock = EnrollmentClock::new(1_000, deadline());
+            let mut observed = Vec::new();
+
+            // One administrator opens one enrollment, and one pairing peer holds one proof
+            // for it. Every refusal below is that peer missing one bound.
+            let open_pairing = |transitions: &SecurityTransitions,
+                                enrollment,
+                                idempotency,
+                                connection_value|
+             -> (EnrollmentChannel, crate::enrollment::EnrollmentProof) {
+                let administrator_signer = RingSigner::generate();
+                let administrator = registered(
+                    transitions,
+                    ADMINISTRATOR,
+                    PrincipalKind::NativeAdmin,
+                    &administrator_signer,
+                );
+                assert_eq!(
+                    create_enrollment(
+                        transitions,
+                        enrollment,
+                        administrator.id(),
+                        idempotency,
+                        0,
+                        deadline(),
+                        Some(&mut RecordingSink::default()),
+                    ),
+                    Ok(TransitionOutcome::Committed)
+                );
+                let mut channel = EnrollmentChannel::open(connection(connection_value), 1)
+                    .expect("native pairing channel");
+                let proof = paired_proof(transitions, enrollment, &mut channel, id(EXTENSION));
+                (channel, proof)
+            };
+
+            // An enrollment nobody opened: a consumption naming one is a replay.
+            let transitions = SecurityTransitions::default();
+            let (mut channel, proof) = open_pairing(&transitions, transition(0xd0), 0xd00, 0xd0);
+            let mut sink = RecordingSink::default();
+            let rejection = consume_enrollment(
+                &transitions,
+                transition(0xdf),
+                id(EXTENSION),
+                &proof,
+                &clock,
+                &mut channel,
+                0xd01,
+                0,
+                Some(&mut sink),
+            )
+            .expect_err("an enrollment nobody opened consumes nothing");
+            assert_eq!(rejection.code(), crate::FailureCode::ReplayDetected);
+            observed.push((
+                "consumption of an enrollment nobody opened",
+                sink.events
+                    .last()
+                    .expect("a refused consumption states one fact")
+                    .code(),
+            ));
+
+            // An epoch the enrollment does not hold.
+            let transitions = SecurityTransitions::default();
+            let enrollment = transition(0xd1);
+            let (mut channel, proof) = open_pairing(&transitions, enrollment, 0xd10, 0xd1);
+            let mut sink = RecordingSink::default();
+            let rejection = consume_enrollment(
+                &transitions,
+                enrollment,
+                id(EXTENSION),
+                &proof,
+                &clock,
+                &mut channel,
+                0xd11,
+                1,
+                Some(&mut sink),
+            )
+            .expect_err("an enrollment is bound to the epoch that opened it");
+            assert_eq!(rejection.code(), crate::FailureCode::StaleEpoch);
+            observed.push((
+                "consumption at an epoch the enrollment does not hold",
+                sink.events
+                    .last()
+                    .expect("a refused consumption states one fact")
+                    .code(),
+            ));
+
+            // A principal already registered: pairing it again is a replay.
+            let transitions = SecurityTransitions::default();
+            let enrollment = transition(0xd2);
+            let (mut channel, proof) = open_pairing(&transitions, enrollment, 0xd20, 0xd2);
+            let extension_signer = RingSigner::generate();
+            registered(
+                &transitions,
+                EXTENSION,
+                PrincipalKind::McpClient,
+                &extension_signer,
+            );
+            let mut sink = RecordingSink::default();
+            let rejection = consume_enrollment(
+                &transitions,
+                enrollment,
+                id(EXTENSION),
+                &proof,
+                &clock,
+                &mut channel,
+                0xd21,
+                0,
+                Some(&mut sink),
+            )
+            .expect_err("a registered principal is not paired a second time");
+            assert_eq!(rejection.code(), crate::FailureCode::ReplayDetected);
+            observed.push((
+                "consumption for a principal already registered",
+                sink.events
+                    .last()
+                    .expect("a refused consumption states one fact")
+                    .code(),
+            ));
+
+            // A proof naming an identity other than the one being paired.
+            let transitions = SecurityTransitions::default();
+            let enrollment = transition(0xd3);
+            let (mut channel, proof) = open_pairing(&transitions, enrollment, 0xd30, 0xd3);
+            let mut sink = RecordingSink::default();
+            let rejection = consume_enrollment(
+                &transitions,
+                enrollment,
+                IdentityId::new(Uuid::from_u128(0xd3f)),
+                &proof,
+                &clock,
+                &mut channel,
+                0xd31,
+                0,
+                Some(&mut sink),
+            )
+            .expect_err("a proof for another identity pairs nobody");
+            assert_eq!(rejection.code(), crate::FailureCode::AuthenticationFailed);
+            observed.push((
+                "a proof naming an identity other than the pairing one",
+                sink.events
+                    .last()
+                    .expect("a refused consumption states one fact")
+                    .code(),
+            ));
+
+            // A credential outside the enrollment owner's own binding.
+            let transitions = SecurityTransitions::default();
+            let enrollment = transition(0xd4);
+            let (mut channel, proof) = open_pairing(&transitions, enrollment, 0xd40, 0xd4);
+            let mut sink = RecordingSink::default();
+            let foreign = CredentialReference::new(
+                "fixture-store",
+                "foreign-key-0",
+                IdentityId::new(Uuid::from_u128(0xd4e)),
+                id(STATE_DIRECTORY),
+            )
+            .expect("bounded credential reference");
+            let rejection = consume_enrollment_with_credential(
+                &transitions,
+                enrollment,
+                id(EXTENSION),
+                &proof,
+                &clock,
+                &mut channel,
+                0xd41,
+                0,
+                foreign,
+                Some(&mut sink),
+            )
+            .expect_err("a credential another daemon holds binds nothing here");
+            assert_eq!(
+                rejection.code(),
+                crate::FailureCode::CredentialStoreMismatch
+            );
+            observed.push((
+                "a credential outside the enrollment owner's binding",
+                sink.events
+                    .last()
+                    .expect("a refused consumption states one fact")
+                    .code(),
+            ));
+
+            // An enrollment past its deadline, at the enrollment host itself.
+            let capability = ChromeCapability::reported(&binding(), true, true)
+                .expect("reported browser capability");
+            let mut sink = RecordingSink::default();
+            let mut expired = pairing_bundle(0xd50);
+            let mut open = pairing_channel();
+            assert_eq!(
+                EnrollmentConsumptionService::default().consume_proof(
+                    &mut expired,
+                    &unsigned_proof(id(EXTENSION)),
+                    id(EXTENSION),
+                    &EnrollmentClock::new(600_000, deadline()),
+                    &binding(),
+                    &capability,
+                    &mut open,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::Expired)
+            );
+            observed.push((
+                "a proof against an enrollment past its deadline",
+                sink.events
+                    .last()
+                    .expect("a refused consumption states one fact")
+                    .code(),
+            ));
+
+            // The same proof presented twice: the second is the replay.
+            let service = EnrollmentConsumptionService::default();
+            let mut sink = RecordingSink::default();
+            let mut spent = pairing_bundle(0xd60);
+            let mut open = pairing_channel();
+            let valid = signed_pairing_proof(&mut spent, &open, id(EXTENSION));
+            assert!(
+                service
+                    .consume_proof(
+                        &mut spent,
+                        &valid,
+                        id(EXTENSION),
+                        &pairing_clock(1_000),
+                        &binding(),
+                        &capability,
+                        &mut open,
+                        Some(&mut sink),
+                    )
+                    .is_ok(),
+                "one valid proof pairs once"
+            );
+            let mut sink = RecordingSink::default();
+            assert_eq!(
+                service.consume_proof(
+                    &mut spent,
+                    &valid,
+                    id(EXTENSION),
+                    &pairing_clock(1_001),
+                    &binding(),
+                    &capability,
+                    &mut open,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::AlreadyConsumed)
+            );
+            observed.push((
+                "a proof against an enrollment already consumed",
+                sink.events
+                    .last()
+                    .expect("a refused consumption states one fact")
+                    .code(),
+            ));
+
+            observed
+        }
+
+        /// The replay facts an elapsed or spent enrollment owes, both halves.
+        ///
+        /// The fact is required before the refusal is returned, so an unavailable sink must
+        /// leave the enrollment, the proof budget, the registry, and the pairing channel
+        /// exactly as they were: a replay nobody could record is not a replay quietly
+        /// accepted, and it is not a pairing either.
+        #[test]
+        fn an_elapsed_or_spent_enrollment_states_its_replay_or_the_refusal_fails_closed() {
+            use crate::enrollment::{
+                ChromeCapability, EnrollmentChannelState, EnrollmentClock, EnrollmentConsumeError,
+                EnrollmentConsumptionService,
+            };
+            use crate::identity::{EnrollmentLifecycle, ExpiryResult};
+            use crate::test_support_channel::{RecordingSink, id};
+            use crate::test_support_transitions::{EXTENSION, binding};
+
+            let identity = id(EXTENSION);
+            let capability = ChromeCapability::reported(&binding(), true, true)
+                .expect("reported browser capability");
+            let elapsed = || {
+                EnrollmentClock::new(
+                    600_000,
+                    ExpiryResult::valid(600_000).expect("bounded ten-minute deadline"),
+                )
+            };
+
+            // An available sink observes the replay, and the refusal states nothing else.
+            let service = EnrollmentConsumptionService::default();
+            let mut accepting = RecordingSink::default();
+            let mut recorded = pairing_bundle(0x7d0);
+            let mut open = pairing_channel();
+            assert_eq!(
+                service.consume_proof(
+                    &mut recorded,
+                    &unsigned_proof(identity),
+                    identity,
+                    &elapsed(),
+                    &binding(),
+                    &capability,
+                    &mut open,
+                    Some(&mut accepting),
+                ),
+                Err(EnrollmentConsumeError::Expired)
+            );
+            let fact = accepting
+                .events
+                .last()
+                .expect("an elapsed deadline states its replay");
+            assert_eq!(fact.code(), events::SecurityCode::ReplayDetected);
+            assert_eq!(fact.outcome(), events::EventOutcome::Rejected);
+            assert_eq!(fact.next_action(), events::SafeNextAction::Discard);
+            assert_eq!(fact.principal_id(), Some(identity.get()));
+            assert!(
+                fact.metadata().is_empty(),
+                "a replay fact carries no metadata to redact"
+            );
+            assert_eq!(recorded.enrollment().failed_proofs(), 0);
+            assert_eq!(recorded.lifecycle(), EnrollmentLifecycle::Pending);
+            assert_eq!(service.registered_fingerprint(identity), None);
+
+            // An unavailable sink fails closed, and the enrollment is untouched.
+            let service = EnrollmentConsumptionService::default();
+            let mut unavailable = RecordingSink {
+                events: Vec::new(),
+                unavailable: true,
+            };
+            let mut untouched = pairing_bundle(0x7d1);
+            let mut still_open = pairing_channel();
+            assert_eq!(
+                service.consume_proof(
+                    &mut untouched,
+                    &unsigned_proof(identity),
+                    identity,
+                    &elapsed(),
+                    &binding(),
+                    &capability,
+                    &mut still_open,
+                    Some(&mut unavailable),
+                ),
+                Err(EnrollmentConsumeError::EventUnavailable)
+            );
+            assert_eq!(untouched.enrollment().failed_proofs(), 0);
+            assert_eq!(untouched.lifecycle(), EnrollmentLifecycle::Pending);
+            assert_eq!(still_open.state(), EnrollmentChannelState::Open);
+            assert_eq!(service.registered_fingerprint(identity), None);
+            assert!(unavailable.events.is_empty());
+
+            // The spent enrollment, both halves. One valid proof pairs once; the second
+            // presentation is the replay, and it is refused whether or not it can be stated.
+            let service = EnrollmentConsumptionService::default();
+            let mut accepting = RecordingSink::default();
+            let mut spent = pairing_bundle(0x7d2);
+            let mut open = pairing_channel();
+            let valid = signed_pairing_proof(&mut spent, &open, identity);
+            let paired = service
+                .consume_proof(
+                    &mut spent,
+                    &valid,
+                    identity,
+                    &pairing_clock(1_000),
+                    &binding(),
+                    &capability,
+                    &mut open,
+                    Some(&mut accepting),
+                )
+                .expect("one valid proof pairs once");
+            assert_eq!(
+                service.registered_fingerprint(identity),
+                Some(paired.clone())
+            );
+            let mut accepting = RecordingSink::default();
+            assert_eq!(
+                service.consume_proof(
+                    &mut spent,
+                    &valid,
+                    identity,
+                    &pairing_clock(1_001),
+                    &binding(),
+                    &capability,
+                    &mut open,
+                    Some(&mut accepting),
+                ),
+                Err(EnrollmentConsumeError::AlreadyConsumed)
+            );
+            assert_eq!(
+                accepting
+                    .events
+                    .last()
+                    .expect("a spent enrollment states its replay")
+                    .code(),
+                events::SecurityCode::ReplayDetected
+            );
+            assert_eq!(spent.enrollment().failed_proofs(), 0);
+            assert_eq!(
+                service.registered_fingerprint(identity),
+                Some(paired.clone())
+            );
+
+            let mut unavailable = RecordingSink {
+                events: Vec::new(),
+                unavailable: true,
+            };
+            assert_eq!(
+                service.consume_proof(
+                    &mut spent,
+                    &valid,
+                    identity,
+                    &pairing_clock(1_002),
+                    &binding(),
+                    &capability,
+                    &mut open,
+                    Some(&mut unavailable),
+                ),
+                Err(EnrollmentConsumeError::EventUnavailable)
+            );
+            assert_eq!(spent.enrollment().failed_proofs(), 0);
+            assert_eq!(service.registered_fingerprint(identity), Some(paired));
+            assert!(unavailable.events.is_empty());
+        }
+
+        /// The facts a refused pairing transition owes, both halves.
+        ///
+        /// Each of these refusals precedes the proof consumption, so an unavailable sink
+        /// costs nothing to honour: the refusal becomes `event_sink.unavailable`, the
+        /// enrollment stays pending, and no principal is registered. The positive control is
+        /// the same boundary pairing successfully with a sink that accepts.
+        #[test]
+        fn an_unrecordable_consumption_refusal_fails_closed_and_pairs_nothing() {
+            use crate::enrollment::{EnrollmentChannel, EnrollmentClock};
+            use crate::identity::{
+                EnrollmentLifecycle, ExpiryResult, IdentityId, PrincipalKind, TransitionOutcome,
+            };
+            use crate::test_support_channel::{RecordingSink, RingSigner, id};
+            use crate::test_support_transitions::{
+                ADMINISTRATOR, EXTENSION, connection, consume_enrollment, create_enrollment,
+                paired_proof, registered, transition,
+            };
+            use crate::transition::SecurityTransitions;
+
+            let deadline = || ExpiryResult::valid(600_000).expect("bounded ten-minute deadline");
+            let clock = EnrollmentClock::new(1_000, deadline());
+            let transitions = SecurityTransitions::default();
+            let administrator_signer = RingSigner::generate();
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &administrator_signer,
+            );
+            let enrollment = transition(0xe0);
+            assert_eq!(
+                create_enrollment(
+                    &transitions,
+                    enrollment,
+                    administrator.id(),
+                    0xe00,
+                    0,
+                    deadline(),
+                    Some(&mut RecordingSink::default()),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            let mut channel =
+                EnrollmentChannel::open(connection(0xe0), 1).expect("native pairing channel");
+            let proof = paired_proof(&transitions, enrollment, &mut channel, id(EXTENSION));
+            let mut unavailable = RecordingSink {
+                events: Vec::new(),
+                unavailable: true,
+            };
+
+            // A replay: an enrollment nobody opened, refused by a sink that cannot record.
+            let rejection = consume_enrollment(
+                &transitions,
+                transition(0xef),
+                id(EXTENSION),
+                &proof,
+                &clock,
+                &mut channel,
+                0xe01,
+                0,
+                Some(&mut unavailable),
+            )
+            .expect_err("a replay nobody can record is still refused");
+            assert_eq!(rejection.code(), crate::FailureCode::EventSinkUnavailable);
+
+            // An authentication failure: a proof for another identity, same sink.
+            let rejection = consume_enrollment(
+                &transitions,
+                enrollment,
+                IdentityId::new(Uuid::from_u128(0xe0f)),
+                &proof,
+                &clock,
+                &mut channel,
+                0xe02,
+                0,
+                Some(&mut unavailable),
+            )
+            .expect_err("an authentication failure nobody can record is still refused");
+            assert_eq!(rejection.code(), crate::FailureCode::EventSinkUnavailable);
+            assert!(
+                unavailable.events.is_empty(),
+                "an unavailable sink records neither refusal"
+            );
+            assert_eq!(
+                transitions.enrollment_lifecycle(enrollment),
+                Some(EnrollmentLifecycle::Pending),
+                "an unrecordable refusal consumes nothing"
+            );
+            assert!(transitions.registered_principal(id(EXTENSION)).is_none());
+            assert!(
+                transitions
+                    .registered_principal(IdentityId::new(Uuid::from_u128(0xe0f)))
+                    .is_none()
+            );
+
+            // The positive control: the same boundary, the same proof, a sink that accepts.
+            let mut accepting = RecordingSink::default();
+            assert_eq!(
+                consume_enrollment(
+                    &transitions,
+                    enrollment,
+                    id(EXTENSION),
+                    &proof,
+                    &clock,
+                    &mut channel,
+                    0xe03,
+                    0,
+                    Some(&mut accepting),
+                ),
+                Ok(TransitionOutcome::Committed)
+            );
+            assert_eq!(
+                transitions.enrollment_lifecycle(enrollment),
+                Some(EnrollmentLifecycle::Consumed)
+            );
+            assert!(transitions.registered_principal(id(EXTENSION)).is_some());
+            assert_eq!(
+                accepting
+                    .events
+                    .last()
+                    .expect("a committed pairing emits")
+                    .code(),
+                events::SecurityCode::EnrollmentAccepted
+            );
         }
 
         #[test]

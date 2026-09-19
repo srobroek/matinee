@@ -26,6 +26,7 @@ macro_rules! enrollment_failure_tests {
                 SupportedExtensionVersions::parse("1.0", "2.5.1").unwrap(),
                 IdentityId::new(Uuid::from_u128(2)),
                 "127.0.0.1:7777",
+                0,
                 ExpiryResult::valid(600_000).unwrap(),
             )
         }
@@ -391,6 +392,7 @@ macro_rules! enrollment_failure_tests {
                         .expect("a supported version range"),
                     identity(2),
                     ENDPOINT,
+                    0,
                     ExpiryResult::valid(DEADLINE_MS).expect("a nonzero deadline"),
                 ))
                 .expect("a bounded one-time enrollment")

@@ -1982,52 +1982,83 @@ impl TransitionState {
         enrollment: TransitionId,
         pairing: PairingMaterial<'_>,
         sink: Option<&mut S>,
-        // The enrollment host times its own required event from the supplied clock, so
-        // this transition contributes no second timestamp.
-        _time: EventTime,
+        // The enrollment host times its own required event from the supplied clock. This
+        // is the time of the facts the transition itself owes for a consumption it refuses
+        // before the host ever sees the proof.
+        time: EventTime,
     ) -> Result<TransitionOutcome, TransitionRejection> {
-        let registration = self.enrollments.get(&enrollment).ok_or_else(|| {
-            TransitionRejection::rejected(FailureCode::ReplayDetected, Some(pairing.identity))
-        })?;
+        let state_directory = input.state_directory();
+        // Every refusal below precedes the proof consumption, the principal insertion, and
+        // the applied-transition record, so each states its fact and mutates nothing.
+        let Some(registration) = self.enrollments.get(&enrollment) else {
+            return Err(refuse_consumption(
+                sink,
+                FailureCode::ReplayDetected,
+                pairing.identity,
+                enrollment,
+                state_directory,
+                time,
+            ));
+        };
         let (owner_id, registered_epoch) = (registration.owner, registration.epoch);
         let owner = self.active_principal(owner_id)?.clone();
         if input.prior_epoch() != registered_epoch || owner.epoch() != registered_epoch {
-            return Err(TransitionRejection::rejected(
+            return Err(refuse_consumption(
+                sink,
                 FailureCode::StaleEpoch,
-                Some(owner_id),
+                owner_id,
+                enrollment,
+                state_directory,
+                time,
             ));
         }
-        if input.state_directory() != owner.credential().state_directory() {
-            return Err(TransitionRejection::rejected(
+        if state_directory != owner.credential().state_directory() {
+            return Err(refuse_consumption(
+                sink,
                 FailureCode::CredentialStoreMismatch,
-                Some(owner_id),
+                owner_id,
+                enrollment,
+                state_directory,
+                time,
             ));
         }
         if self.principals.contains_key(&pairing.identity) {
-            return Err(TransitionRejection::rejected(
+            return Err(refuse_consumption(
+                sink,
                 FailureCode::ReplayDetected,
-                Some(pairing.identity),
+                pairing.identity,
+                enrollment,
+                state_directory,
+                time,
             ));
         }
         if pairing.proof.identity != pairing.identity {
-            return Err(TransitionRejection::rejected(
+            return Err(refuse_consumption(
+                sink,
                 FailureCode::AuthenticationFailed,
-                Some(pairing.identity),
+                pairing.identity,
+                enrollment,
+                state_directory,
+                time,
             ));
         }
         if pairing.credential.daemon() != owner_id
             || pairing.credential.state_directory() != owner.credential().state_directory()
         {
-            return Err(TransitionRejection::rejected(
+            return Err(refuse_consumption(
+                sink,
                 FailureCode::CredentialStoreMismatch,
-                Some(pairing.identity),
+                pairing.identity,
+                enrollment,
+                state_directory,
+                time,
             ));
         }
         // The principal this consumption registers is built before the proof is
         // consumed, so a binding the registry would refuse cannot leave a consumed
         // enrollment behind.
         let fingerprint = Fingerprint::from_public_key(&pairing.proof.long_term_public_key);
-        let mut candidate = Principal::new(
+        let Ok(mut candidate) = Principal::new(
             pairing.identity,
             PrincipalKind::BrowserExtension,
             pairing.proof.long_term_public_key.clone(),
@@ -2035,22 +2066,39 @@ impl TransitionState {
             owner_id,
             pairing.ceiling,
             pairing.credential,
-        )
-        .map_err(|_| {
-            TransitionRejection::rejected(
+        ) else {
+            return Err(refuse_consumption(
+                sink,
                 FailureCode::CredentialStoreMismatch,
-                Some(pairing.identity),
-            )
-        })?;
-        candidate.activate().map_err(|_| {
-            TransitionRejection::rejected(FailureCode::AuthenticationFailed, Some(pairing.identity))
-        })?;
+                pairing.identity,
+                enrollment,
+                state_directory,
+                time,
+            ));
+        };
+        if candidate.activate().is_err() {
+            return Err(refuse_consumption(
+                sink,
+                FailureCode::AuthenticationFailed,
+                pairing.identity,
+                enrollment,
+                state_directory,
+                time,
+            ));
+        }
         let Self {
             host, enrollments, ..
         } = self;
-        let registration = enrollments.get_mut(&enrollment).ok_or_else(|| {
-            TransitionRejection::rejected(FailureCode::ReplayDetected, Some(pairing.identity))
-        })?;
+        let Some(registration) = enrollments.get_mut(&enrollment) else {
+            return Err(refuse_consumption(
+                sink,
+                FailureCode::ReplayDetected,
+                pairing.identity,
+                enrollment,
+                state_directory,
+                time,
+            ));
+        };
         // The enrollment host owns proof verification, the budgets, and the required
         // enrollment event; it commits the one-use consumption or nothing.
         let proven = host
@@ -2457,6 +2505,48 @@ fn refuse_admission(
     )
     .ok()
     .and_then(|event| emit_required(Some(sink), event).ok())
+    .is_some();
+    if recorded {
+        TransitionRejection::rejected(code, Some(principal))
+    } else {
+        TransitionRejection::rejected(FailureCode::EventSinkUnavailable, Some(principal))
+    }
+}
+
+/// Emit the fact one refused enrollment consumption owes, and return the refusal itself.
+///
+/// Every precheck this serves refuses before the host consumes the proof, before the
+/// paired principal is inserted, and before the applied transition is recorded, so the
+/// refusal has nothing to undo. What it does owe is the fact: FR-027 lists a replay and an
+/// authentication failure among the outcomes the module must state, and
+/// `contracts/failures-events.md` requires the fact before the transition it justifies.
+/// The failure class decides the fact through the same mapping the handshake and channel
+/// admission read, so one class is never two facts, and an unavailable sink replaces the
+/// outcome with `EventSinkUnavailable` exactly as a refused admission does: the
+/// consumption is refused either way, and the caller learns the sink is what needs repair.
+fn refuse_consumption<S: SecurityEventSink + ?Sized>(
+    sink: Option<&mut S>,
+    code: FailureCode,
+    principal: IdentityId,
+    enrollment: TransitionId,
+    state_directory: IdentityId,
+    time: EventTime,
+) -> TransitionRejection {
+    let recorded = SecurityEvent::new(
+        enrollment.get(),
+        EventBoundary::Enrollment,
+        crate::channel::event_code(code),
+        EventOutcome::Rejected,
+        SafeNextAction::FailClosed,
+        Some(principal.get()),
+        None,
+        EndpointClass::Extension,
+        time,
+        state_directory.get(),
+        Vec::new(),
+    )
+    .ok()
+    .and_then(|event| emit_required(sink, event).ok())
     .is_some();
     if recorded {
         TransitionRejection::rejected(code, Some(principal))

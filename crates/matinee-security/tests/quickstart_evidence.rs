@@ -238,6 +238,7 @@ macro_rules! quickstart_evidence_tests {
                     SupportedExtensionVersions::parse("1.0", "2.5.1").expect("a version range"),
                     id(DAEMON),
                     ENDPOINT,
+                    0,
                     ExpiryResult::valid(DEADLINE_MS).expect("a nonzero deadline"),
                 )
             }
@@ -427,8 +428,11 @@ macro_rules! quickstart_evidence_tests {
             }
 
             fn fr007() {
-                // A deadline nobody named is ten minutes, and the enrollment pins every
-                // expected value plus a freshly generated 65-byte one-time key.
+                // A deadline nobody named is ten minutes after the enrollment was created,
+                // and the enrollment pins every expected value plus a freshly generated
+                // 65-byte one-time key. The creation instant is a realistic wall-clock
+                // reading, so ten minutes from it is nothing like the bare figure 600_000.
+                const CREATED_MS: u64 = 1_763_000_000_000;
                 let default = EnrollmentBundle::create(EnrollmentCreation::with_default_expiry(
                     TransitionId::new(Uuid::from_u128(0x700)),
                     ORIGIN,
@@ -438,9 +442,14 @@ macro_rules! quickstart_evidence_tests {
                     SupportedExtensionVersions::parse("1.0", "2.5.1").expect("a version range"),
                     id(DAEMON),
                     ENDPOINT,
+                    CREATED_MS,
                 ))
                 .expect("a bounded one-time enrollment");
-                assert_eq!(default.expiry_deadline_ms(), 10 * 60 * 1_000);
+                assert_eq!(
+                    default.expiry_deadline_ms(),
+                    CREATED_MS + 10 * 60 * 1_000,
+                    "FR-007's ten minutes is counted from the creation instant"
+                );
                 assert_eq!(default.origin(), ORIGIN);
                 assert_eq!(default.daemon(), id(DAEMON));
                 assert_eq!(default.daemon_endpoint(), ENDPOINT);

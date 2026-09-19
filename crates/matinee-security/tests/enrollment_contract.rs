@@ -26,6 +26,7 @@ macro_rules! enrollment_contract_tests {
                     .expect("a minimum-first supported extension version range"),
                 IdentityId::new(Uuid::from_u128(0x20)),
                 "127.0.0.1:7777",
+                0,
                 ExpiryResult::valid(10 * 60 * 1_000).expect("bounded ten-minute expiry"),
             )
         }

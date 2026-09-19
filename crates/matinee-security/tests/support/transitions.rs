@@ -252,6 +252,8 @@ pub(crate) fn browser_capability() -> ChromeCapability {
     ChromeCapability::reported(&binding(), true, true).expect("reported browser capability")
 }
 
+/// One enrollment creation, opened at instant zero, which is the origin every deadline and
+/// occurrence time in these fixtures is measured from.
 pub(crate) fn creation(enrollment: TransitionId, daemon: IdentityId) -> EnrollmentCreation {
     EnrollmentCreation::new(
         enrollment,
@@ -262,6 +264,7 @@ pub(crate) fn creation(enrollment: TransitionId, daemon: IdentityId) -> Enrollme
         supported_versions(),
         daemon,
         ENDPOINT,
+        0,
         ExpiryResult::valid(600_000).expect("bounded ten-minute expiry"),
     )
 }
@@ -297,6 +300,7 @@ pub(crate) fn create_enrollment_with_default_expiry(
     daemon: IdentityId,
     idempotency: u128,
     prior_epoch: u64,
+    created_ms: u64,
     sink: Option<&mut RecordingSink>,
 ) -> Result<TransitionOutcome, TransitionRejection> {
     apply_creation(
@@ -310,6 +314,7 @@ pub(crate) fn create_enrollment_with_default_expiry(
             supported_versions(),
             daemon,
             ENDPOINT,
+            created_ms,
         ),
         enrollment,
         daemon,
@@ -362,6 +367,63 @@ pub(crate) fn consume_enrollment(
     prior_epoch: u64,
     sink: Option<&mut RecordingSink>,
 ) -> Result<TransitionOutcome, TransitionRejection> {
+    apply_consumption(
+        transitions,
+        enrollment,
+        identity,
+        proof,
+        clock,
+        channel,
+        idempotency,
+        prior_epoch,
+        credential("extension-key-0"),
+        sink,
+    )
+}
+
+/// The same consumption, naming the credential the paired principal would be bound to.
+/// A locator outside the enrollment owner's daemon or state directory is the binding
+/// mismatch the transition refuses before the enrollment host ever sees the proof.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn consume_enrollment_with_credential(
+    transitions: &SecurityTransitions,
+    enrollment: TransitionId,
+    identity: IdentityId,
+    proof: &EnrollmentProof,
+    clock: &EnrollmentClock,
+    channel: &mut EnrollmentChannel,
+    idempotency: u128,
+    prior_epoch: u64,
+    credential: CredentialReference,
+    sink: Option<&mut RecordingSink>,
+) -> Result<TransitionOutcome, TransitionRejection> {
+    apply_consumption(
+        transitions,
+        enrollment,
+        identity,
+        proof,
+        clock,
+        channel,
+        idempotency,
+        prior_epoch,
+        credential,
+        sink,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_consumption(
+    transitions: &SecurityTransitions,
+    enrollment: TransitionId,
+    identity: IdentityId,
+    proof: &EnrollmentProof,
+    clock: &EnrollmentClock,
+    channel: &mut EnrollmentChannel,
+    idempotency: u128,
+    prior_epoch: u64,
+    credential: CredentialReference,
+    sink: Option<&mut RecordingSink>,
+) -> Result<TransitionOutcome, TransitionRejection> {
     let command = SecurityCommand::ConsumeEnrollment {
         enrollment,
         idempotency: key(idempotency),
@@ -383,7 +445,7 @@ pub(crate) fn consume_enrollment(
             capability: &browser,
             channel,
             ceiling: ceiling(),
-            credential: credential("extension-key-0"),
+            credential,
         }),
         sink,
         EventTime(2),

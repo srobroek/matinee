@@ -22,9 +22,10 @@ use crate::identity::{
 };
 
 const SEALED_KEY_AAD_PREFIX: &[u8; 26] = b"matinee.enrollment.key.v1\0";
-/// FR-007 fixes one ten-minute figure for an enrollment deadline: it is both the
-/// default an administrator gets by naming none and the ceiling a named one may not
-/// exceed, so a caller can neither widen the window nor be handed a wider one.
+/// FR-007 fixes one ten-minute figure for an enrollment deadline: it is both the window
+/// an administrator gets by naming no deadline and the widest window a named deadline may
+/// span from the instant the enrollment is created, so a caller can neither widen the
+/// window nor be handed a wider one. It is a duration; a deadline is an instant.
 const TEN_MINUTE_EXPIRY_MS: u64 = 10 * 60 * 1_000;
 const MAX_EXPIRY_MS: u64 = TEN_MINUTE_EXPIRY_MS;
 const MAX_ORIGIN_BYTES: usize = 256;
@@ -143,6 +144,11 @@ pub struct EnrollmentCreation {
     pub supported_versions: SupportedExtensionVersions,
     pub daemon: IdentityId,
     pub daemon_endpoint: String,
+    /// The instant this enrollment is created, on the same clock a consuming peer
+    /// later reads for `EnrollmentClock::occurrence_ms`. A deadline is an instant on
+    /// that clock, never a duration, so the ten minutes FR-007 fixes are only
+    /// definable against the instant they are counted from: this one.
+    pub created_ms: u64,
     pub expiry: ExpiryResult,
 }
 
@@ -157,6 +163,7 @@ impl EnrollmentCreation {
         supported_versions: SupportedExtensionVersions,
         daemon: IdentityId,
         daemon_endpoint: impl Into<String>,
+        created_ms: u64,
         expiry: ExpiryResult,
     ) -> Self {
         Self {
@@ -168,6 +175,7 @@ impl EnrollmentCreation {
             supported_versions,
             daemon,
             daemon_endpoint: daemon_endpoint.into(),
+            created_ms,
             expiry,
         }
     }
@@ -177,7 +185,9 @@ impl EnrollmentCreation {
     /// FR-007 requires the expiry to be ten minutes by default, so the default is
     /// resolved here rather than left to a caller: there is no way to reach the
     /// creation path with an absent deadline and no way to reach it with a deadline
-    /// nobody chose.
+    /// nobody chose. Ten minutes is counted from `created_ms`, because a deadline is
+    /// an instant: a fixed number would instead name ten minutes after the start of
+    /// the clock's epoch, which is a deadline already long past.
     #[allow(clippy::too_many_arguments)]
     pub fn with_default_expiry(
         enrollment: TransitionId,
@@ -188,6 +198,7 @@ impl EnrollmentCreation {
         supported_versions: SupportedExtensionVersions,
         daemon: IdentityId,
         daemon_endpoint: impl Into<String>,
+        created_ms: u64,
     ) -> Self {
         Self::new(
             enrollment,
@@ -198,7 +209,8 @@ impl EnrollmentCreation {
             supported_versions,
             daemon,
             daemon_endpoint,
-            default_expiry(),
+            created_ms,
+            default_expiry(created_ms),
         )
     }
 }
@@ -270,6 +282,9 @@ impl EnrollmentClock {
 pub struct EnrollmentBundle {
     enrollment: ExtensionEnrollment,
     enrollment_id: TransitionId,
+    /// The instant this enrollment was created, kept so the bounds it was created
+    /// under can be restated exactly when a proof is checked against them.
+    created_ms: u64,
     expiry_deadline_ms: u64,
     one_time_public_key: PublicKey,
     one_time_public_key_fingerprint: Fingerprint,
@@ -346,6 +361,7 @@ impl EnrollmentBundle {
         Ok(Self {
             enrollment,
             enrollment_id: input.enrollment,
+            created_ms: input.created_ms,
             expiry_deadline_ms: input.expiry.deadline_ms(),
             one_time_public_key: public_key,
             one_time_public_key_fingerprint: fingerprint,
@@ -905,7 +921,16 @@ impl EnrollmentConsumptionService {
         if channel.state() == EnrollmentChannelState::Closed {
             return Err(EnrollmentConsumeError::ChannelClosed);
         }
-        clock.valid_for(bundle.expiry_deadline_ms)?;
+        // An elapsed deadline is a proof presented against an enrollment that is no
+        // longer live, which `transition::consume_rejection` reports as a replay, so the
+        // replay fact is owed before the refusal is returned. An uncertain deadline
+        // decides nothing and is therefore no outcome to state.
+        if let Err(error) = clock.valid_for(bundle.expiry_deadline_ms) {
+            if error == EnrollmentConsumeError::Expired {
+                require_replay_fact(sink, bundle, clock, expected_identity)?;
+            }
+            return Err(error);
+        }
         let host =
             host_key(bundle.daemon_endpoint()).ok_or(EnrollmentConsumeError::InvalidProof)?;
         let mut state = self
@@ -935,9 +960,12 @@ impl EnrollmentConsumptionService {
             channel.close();
             return Err(EnrollmentConsumeError::RateLimited);
         }
+        // A second proof against an enrollment already spent, closed, expired, or revoked
+        // is the other replay this boundary owes a fact for.
         if state.consumed.contains_key(&bundle.enrollment_id)
             || bundle.lifecycle() != EnrollmentLifecycle::Pending
         {
+            require_replay_fact(sink, bundle, clock, expected_identity)?;
             return Err(EnrollmentConsumeError::AlreadyConsumed);
         }
         let expected = EnrollmentCreation::new(
@@ -949,6 +977,7 @@ impl EnrollmentConsumptionService {
             bundle.supported_versions,
             bundle.daemon,
             bundle.daemon_endpoint.clone(),
+            bundle.created_ms,
             clock.expiry().clone(),
         );
         let binding_error = validate_enrollment_binding(&expected, binding).err();
@@ -1518,20 +1547,66 @@ fn validate_creation(input: &EnrollmentCreation) -> Result<(), EnrollmentCreateE
     if !validate_endpoint(&input.daemon_endpoint) {
         return Err(EnrollmentCreateError::InvalidEndpoint);
     }
-    if !input.expiry.is_security_valid() || input.expiry.deadline_ms() > MAX_EXPIRY_MS {
+    // FR-007's ten minutes is a window, and a deadline is an instant, so the ceiling is
+    // the width between the two: a deadline at or before the creation instant opens an
+    // enrollment already expired, and one further than ten minutes past it is the window
+    // no caller may widen. Comparing the instant itself against ten minutes would instead
+    // refuse every enrollment created later than ten minutes into the clock's epoch.
+    let window_ms = input
+        .expiry
+        .deadline_ms()
+        .checked_sub(input.created_ms)
+        .unwrap_or(0);
+    if !input.expiry.is_security_valid() || window_ms == 0 || window_ms > MAX_EXPIRY_MS {
         return Err(EnrollmentCreateError::InvalidExpiry);
     }
     Ok(())
 }
 
-/// The ten-minute deadline FR-007 applies when an administrator names none.
+/// The ten-minute deadline FR-007 applies when an administrator names none, counted
+/// from the instant the enrollment is created.
 ///
 /// `ExpiryResult::valid` refuses exactly one value, zero, and the constant is checked
-/// against it at compile time, so the default cannot degrade into an uncertain or
-/// rejected deadline at runtime.
-fn default_expiry() -> ExpiryResult {
+/// against it at compile time, so the sum cannot be zero and the default cannot degrade
+/// into an uncertain or rejected deadline at runtime. A clock close enough to its own
+/// ceiling to saturate yields a shorter window, never a wider one.
+fn default_expiry(created_ms: u64) -> ExpiryResult {
     const { assert!(TEN_MINUTE_EXPIRY_MS != 0) }
-    ExpiryResult::valid(TEN_MINUTE_EXPIRY_MS).expect("a nonzero deadline is a valid expiry")
+    ExpiryResult::valid(created_ms.saturating_add(TEN_MINUTE_EXPIRY_MS))
+        .expect("a nonzero deadline is a valid expiry")
+}
+
+/// Require the replay fact a proof against a spent or elapsed enrollment owes.
+///
+/// FR-027 and `contracts/failures-events.md` list a replay among the outcomes this
+/// module must state, and `transition::consume_rejection` reports both an elapsed
+/// deadline and an already-consumed enrollment as `replay.detected`, so one fact answers
+/// for both. It is required before the refusal is returned, exactly as the rejected-proof
+/// and rate-limit facts are: an unavailable sink fails closed with `EventUnavailable`, and
+/// there is nothing to undo, because both refusals precede the consumption, the
+/// registration, and every charge against the proof budget.
+fn require_replay_fact<S: SecurityEventSink + ?Sized>(
+    sink: Option<&mut S>,
+    bundle: &EnrollmentBundle,
+    clock: &EnrollmentClock,
+    identity: IdentityId,
+) -> Result<(), EnrollmentConsumeError> {
+    let event = SecurityEvent::new(
+        bundle.enrollment_id.get(),
+        EventBoundary::Enrollment,
+        SecurityCode::ReplayDetected,
+        EventOutcome::Rejected,
+        SafeNextAction::Discard,
+        Some(identity.get()),
+        None,
+        EndpointClass::Extension,
+        EventTime(clock.occurrence_ms()),
+        bundle.daemon.get(),
+        Vec::new(),
+    )
+    .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+    emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+    Ok(())
 }
 
 fn bounded(
@@ -1562,6 +1637,11 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
+    /// A realistic wall-clock creation instant in Unix epoch milliseconds, which is the
+    /// clock a daemon actually reads. A fixture created at zero cannot tell a ten-minute
+    /// window from a deadline ten minutes after the epoch began.
+    const CREATED_MS: u64 = 1_763_000_000_000;
+
     fn input() -> EnrollmentCreation {
         EnrollmentCreation::new(
             TransitionId::new(Uuid::from_u128(1)),
@@ -1572,7 +1652,8 @@ mod tests {
             SupportedExtensionVersions::parse("1.0", "2.5.1").unwrap(),
             IdentityId::new(Uuid::from_u128(2)),
             "127.0.0.1:7777",
-            ExpiryResult::valid(MAX_EXPIRY_MS).unwrap(),
+            CREATED_MS,
+            ExpiryResult::valid(CREATED_MS + MAX_EXPIRY_MS).unwrap(),
         )
     }
 
@@ -1594,17 +1675,58 @@ mod tests {
     #[test]
     fn uncertain_and_oversized_expiry_fail_closed() {
         let mut uncertain = input();
-        uncertain.expiry = ExpiryResult::uncertain(MAX_EXPIRY_MS);
+        uncertain.expiry = ExpiryResult::uncertain(CREATED_MS + MAX_EXPIRY_MS);
         assert!(matches!(
             EnrollmentBundle::create(uncertain),
             Err(EnrollmentCreateError::InvalidExpiry)
         ));
         let mut oversized = input();
-        oversized.expiry = ExpiryResult::valid(MAX_EXPIRY_MS + 1).unwrap();
+        oversized.expiry = ExpiryResult::valid(CREATED_MS + MAX_EXPIRY_MS + 1).unwrap();
         assert!(matches!(
             EnrollmentBundle::create(oversized),
             Err(EnrollmentCreateError::InvalidExpiry)
         ));
+    }
+
+    /// FR-007's ten minutes is a window between two instants, so the ceiling is the width
+    /// of that window and not the size of the deadline: an enrollment created ten minutes
+    /// into the epoch and one created years later both get exactly ten minutes, and a
+    /// deadline that has already arrived at creation opens nothing.
+    #[test]
+    fn the_expiry_ceiling_measures_the_window_from_the_creation_instant() {
+        let ten_minutes = input();
+        assert_eq!(
+            ten_minutes.expiry.deadline_ms() - ten_minutes.created_ms,
+            TEN_MINUTE_EXPIRY_MS
+        );
+        assert!(EnrollmentBundle::create(ten_minutes).is_ok());
+
+        let mut already_elapsed = input();
+        already_elapsed.expiry = ExpiryResult::valid(CREATED_MS).unwrap();
+        assert!(matches!(
+            EnrollmentBundle::create(already_elapsed),
+            Err(EnrollmentCreateError::InvalidExpiry)
+        ));
+        let mut before_creation = input();
+        before_creation.expiry = ExpiryResult::valid(CREATED_MS - 1).unwrap();
+        assert!(matches!(
+            EnrollmentBundle::create(before_creation),
+            Err(EnrollmentCreateError::InvalidExpiry)
+        ));
+    }
+
+    /// The default is the ten minutes FR-007 names, counted from the instant the
+    /// enrollment is created, at any instant a real clock reports.
+    #[test]
+    fn the_default_expiry_is_ten_minutes_after_the_creation_instant() {
+        for created_ms in [0, 1, TEN_MINUTE_EXPIRY_MS, CREATED_MS] {
+            let default = default_expiry(created_ms);
+            assert_eq!(default.status(), ExpiryStatus::Valid);
+            assert_eq!(default.deadline_ms(), created_ms + TEN_MINUTE_EXPIRY_MS);
+        }
+        // A clock at its own ceiling shortens the window instead of wrapping it.
+        let saturated = default_expiry(u64::MAX);
+        assert_eq!(saturated.deadline_ms(), u64::MAX);
     }
 
     fn binding() -> EnrollmentBinding<'static> {
