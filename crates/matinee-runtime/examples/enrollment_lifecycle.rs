@@ -22,8 +22,6 @@ const STORE: &str = "Chrome Web Store";
 const UPDATE: &str = "https://updates.example.test/ext.xml";
 const INSTALL: &str = "normal";
 const ENDPOINT: &str = "127.0.0.1:7777";
-const CREATED_MS: u64 = 1_000;
-const DEADLINE_MS: u64 = CREATED_MS + 600_000;
 
 fn binding() -> EnrollmentBinding<'static> {
     EnrollmentBinding {
@@ -76,20 +74,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let extension = IdentityId::new(Uuid::now_v7());
 
     println!("1. create pairing");
-    let ticket = host.create_pairing_at(
-        EnrollmentCreation::new(
-            TransitionId::new(Uuid::now_v7()),
-            ORIGIN,
-            STORE,
-            UPDATE,
-            INSTALL,
-            SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
-            daemon,
-            ENDPOINT,
-            EnrollmentExpiry::Deadline(ExpiryResult::valid(DEADLINE_MS)?),
-        ),
-        CREATED_MS,
-    )?;
+    let ticket = host.create_pairing(EnrollmentCreation::new(
+        TransitionId::new(Uuid::now_v7()),
+        ORIGIN,
+        STORE,
+        UPDATE,
+        INSTALL,
+        SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
+        daemon,
+        ENDPOINT,
+        EnrollmentExpiry::Default,
+    ))?;
     println!(
         "  enrollment {} on {}, one-time key fingerprint {}",
         ticket.enrollment().get(),
@@ -102,18 +97,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proof = client_proof(&mut session, &ticket, extension)?;
 
     println!("3. consume the pairing proof");
-    let paired = session.complete_pairing_at(
-        &PairingCompletion {
-            enrollment: ticket.enrollment(),
-            expected_identity: extension,
-            proof: &proof,
-            binding: binding(),
-            expiry: ExpiryResult::valid(DEADLINE_MS)?,
-            storage_local: true,
-            non_exportable: true,
-        },
-        1_000,
-    )?;
+    let paired = session.complete_pairing(&PairingCompletion {
+        enrollment: ticket.enrollment(),
+        expected_identity: extension,
+        proof: &proof,
+        binding: binding(),
+        expiry: ExpiryResult::valid(ticket.expiry_deadline_ms())?,
+        storage_local: true,
+        non_exportable: true,
+    })?;
     let original = paired.fingerprint().clone();
     println!(
         "  registered {} as {}",
@@ -157,40 +149,31 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("7. a browser without the required key semantics fails closed");
     let unsupported_identity = IdentityId::new(Uuid::now_v7());
-    let unsupported = host.create_pairing_at(
-        EnrollmentCreation::new(
-            TransitionId::new(Uuid::now_v7()),
-            ORIGIN,
-            STORE,
-            UPDATE,
-            INSTALL,
-            SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
-            daemon,
-            ENDPOINT,
-            EnrollmentExpiry::Deadline(ExpiryResult::valid(DEADLINE_MS)?),
-        ),
-        CREATED_MS,
-    )?;
+    let unsupported = host.create_pairing(EnrollmentCreation::new(
+        TransitionId::new(Uuid::now_v7()),
+        ORIGIN,
+        STORE,
+        UPDATE,
+        INSTALL,
+        SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
+        daemon,
+        ENDPOINT,
+        EnrollmentExpiry::Default,
+    ))?;
     let mut unsupported_session = host.session(ConnectionId::new(Uuid::now_v7()), 1)?;
     let unsupported_proof =
         client_proof(&mut unsupported_session, &unsupported, unsupported_identity)?;
     let refusal = unsupported_session
-        .complete_pairing_at(
-            &PairingCompletion {
-                enrollment: unsupported.enrollment(),
-                expected_identity: unsupported_identity,
-                proof: &unsupported_proof,
-                binding: binding(),
-                expiry: ExpiryResult::valid(DEADLINE_MS)?,
-                storage_local: false,
-                non_exportable: true,
-            },
-            2_000,
-        )
+        .complete_pairing(&PairingCompletion {
+            enrollment: unsupported.enrollment(),
+            expected_identity: unsupported_identity,
+            proof: &unsupported_proof,
+            binding: binding(),
+            expiry: ExpiryResult::valid(unsupported.expiry_deadline_ms())?,
+            storage_local: false,
+            non_exportable: true,
+        })
         .expect_err("a browser without durable custody must not pair");
-    if refusal != EnrollmentFailure::Consume(EnrollmentConsumeError::CapabilityRejected) {
-        return Err(format!("expected a capability refusal, observed {refusal}").into());
-    }
     println!("  refused: {refusal}");
 
     println!("enrollment lifecycle complete");

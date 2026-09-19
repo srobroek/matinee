@@ -1899,8 +1899,20 @@ impl TransitionState {
         sink: Option<&mut S>,
         time: EventTime,
     ) -> Result<TransitionOutcome, TransitionRejection> {
-        let owner = self.active_principal(daemon)?.clone();
-        let state_directory = input.state_directory();
+        let owner = match self.active_principal(daemon) {
+            Ok(owner) => owner.clone(),
+            Err(rejection) => {
+                return Err(refuse_enrollment(
+                    sink,
+                    rejection.code(),
+                    daemon,
+                    enrollment,
+                    input.state_directory(),
+                    EndpointClass::Native,
+                    time,
+                ));
+            }
+        };
         let endpoint = endpoint_class(owner.kind());
         // Every refusal below is a decided outcome at the enrollment boundary, and
         // `contracts/failures-events.md` lists each of them among the facts this module
@@ -1913,6 +1925,7 @@ impl TransitionState {
         // The two `undecided` refusals further down state nothing, and that is the same
         // rule rather than an exception to it: a fact reports an outcome, and those two
         // report that this transition has no outcome yet.
+        let state_directory = input.state_directory();
         //
         // FR-007: an enrollment is an administrator's act. The owning principal is the
         // one this command names, so a daemon, an MCP client, or a paired extension

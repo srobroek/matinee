@@ -1294,6 +1294,356 @@ macro_rules! rotation_revocation_tests {
         }
 
         #[test]
+        fn creation_refusals_state_decided_facts_and_fail_closed_sinks() {
+            fn apply_case(
+                case: &str,
+                transitions: &SecurityTransitions,
+                sink: Option<&mut RecordingSink>,
+            ) -> Result<TransitionOutcome, TransitionRejection> {
+                let enrollment = transition(200);
+                let daemon = id(ADMINISTRATOR);
+                match case {
+                    "authorization denial" => {
+                        let signer = RingSigner::generate();
+                        let client = registered(
+                            transitions,
+                            0x9200,
+                            PrincipalKind::McpClient,
+                            &signer,
+                        );
+                        create_enrollment_with_default_expiry(
+                            transitions,
+                            enrollment,
+                            client.id(),
+                            200,
+                            0,
+                            0,
+                            sink,
+                        )
+                    }
+                    "stale epoch" => {
+                        let signer = RingSigner::generate();
+                        registered(
+                            transitions,
+                            ADMINISTRATOR,
+                            PrincipalKind::NativeAdmin,
+                            &signer,
+                        );
+                        create_enrollment_with_default_expiry(
+                            transitions,
+                            enrollment,
+                            daemon,
+                            200,
+                            1,
+                            0,
+                            sink,
+                        )
+                    }
+                    "credential mismatch" => {
+                        let signer = RingSigner::generate();
+                        registered(
+                            transitions,
+                            ADMINISTRATOR,
+                            PrincipalKind::NativeAdmin,
+                            &signer,
+                        );
+                        let command = SecurityCommand::CreateEnrollment {
+                            enrollment,
+                            daemon,
+                            idempotency: key(200),
+                        };
+                        let creation = crate::test_support_transitions::creation(enrollment, daemon);
+                        transitions.apply(
+                            &command,
+                            &crate::identity::TransitionInput::new(
+                                id(STATE_DIRECTORY + 1),
+                                transition(200),
+                                TransitionOperation::EnrollmentCreate,
+                                key(200),
+                                0,
+                                TransitionOutcome::Committed,
+                            ),
+                            TransitionMaterial::Enrollment(creation),
+                            sink,
+                            EventTime(0),
+                        )
+                    }
+                    "command/material mismatch" => {
+                        let signer = RingSigner::generate();
+                        registered(
+                            transitions,
+                            ADMINISTRATOR,
+                            PrincipalKind::NativeAdmin,
+                            &signer,
+                        );
+                        let material_enrollment = transition(201);
+                        let command = SecurityCommand::CreateEnrollment {
+                            enrollment,
+                            daemon,
+                            idempotency: key(200),
+                        };
+                        transitions.apply(
+                            &command,
+                            &input(
+                                TransitionOperation::EnrollmentCreate,
+                                200,
+                                0,
+                                TransitionOutcome::Committed,
+                            ),
+                            TransitionMaterial::Enrollment(
+                                crate::test_support_transitions::creation(
+                                    material_enrollment,
+                                    daemon,
+                                ),
+                            ),
+                            sink,
+                            EventTime(0),
+                        )
+                    }
+                    "duplicate replay" => {
+                        let signer = RingSigner::generate();
+                        registered(
+                            transitions,
+                            ADMINISTRATOR,
+                            PrincipalKind::NativeAdmin,
+                            &signer,
+                        );
+                        create_enrollment_with_default_expiry(
+                            transitions,
+                            enrollment,
+                            daemon,
+                            199,
+                            0,
+                            0,
+                            None,
+                        )
+                        .expect("the first enrollment opens");
+                        create_enrollment_with_default_expiry(
+                            transitions,
+                            enrollment,
+                            daemon,
+                            200,
+                            0,
+                            0,
+                            sink,
+                        )
+                    }
+                    "uncertain expiry" => {
+                        let signer = RingSigner::generate();
+                        registered(
+                            transitions,
+                            ADMINISTRATOR,
+                            PrincipalKind::NativeAdmin,
+                            &signer,
+                        );
+                        create_enrollment(
+                            transitions,
+                            enrollment,
+                            daemon,
+                            200,
+                            0,
+                            ExpiryResult::uncertain(600_000),
+                            sink,
+                        )
+                    }
+                    "malformed bundle" => {
+                        let signer = RingSigner::generate();
+                        registered(
+                            transitions,
+                            ADMINISTRATOR,
+                            PrincipalKind::NativeAdmin,
+                            &signer,
+                        );
+                        let mut creation = crate::test_support_transitions::creation(enrollment, daemon);
+                        creation.origin.clear();
+                        let command = SecurityCommand::CreateEnrollment {
+                            enrollment,
+                            daemon,
+                            idempotency: key(200),
+                        };
+                        transitions.apply(
+                            &command,
+                            &input(
+                                TransitionOperation::EnrollmentCreate,
+                                200,
+                                0,
+                                TransitionOutcome::Committed,
+                            ),
+                            TransitionMaterial::Enrollment(creation),
+                            sink,
+                            EventTime(0),
+                        )
+                    }
+                    _ => panic!("unknown creation matrix case {case}"),
+                }
+            }
+
+            let cases = [
+                (
+                    "authorization denial",
+                    FailureCode::AuthorizationDenied,
+                    Some(SecurityCode::AuthorizationDenied),
+                ),
+                (
+                    "stale epoch",
+                    FailureCode::StaleEpoch,
+                    Some(SecurityCode::AuthenticationFailed),
+                ),
+                (
+                    "credential mismatch",
+                    FailureCode::CredentialStoreMismatch,
+                    Some(SecurityCode::AuthenticationFailed),
+                ),
+                (
+                    "command/material mismatch",
+                    FailureCode::TransitionUnknown,
+                    None,
+                ),
+                (
+                    "duplicate replay",
+                    FailureCode::ReplayDetected,
+                    Some(SecurityCode::ReplayDetected),
+                ),
+                (
+                    "uncertain expiry",
+                    FailureCode::TransitionUnknown,
+                    None,
+                ),
+                (
+                    "malformed bundle",
+                    FailureCode::MalformedInput,
+                    Some(SecurityCode::MalformedInput),
+                ),
+            ];
+
+            for (case, expected, fact) in cases {
+                let transitions = SecurityTransitions::default();
+                let mut sink = RecordingSink::default();
+                let rejection = apply_case(case, &transitions, Some(&mut sink))
+                    .expect_err("each matrix row is a creation refusal");
+                assert_eq!(rejection.code(), expected, "{case} failure code");
+                assert_eq!(
+                    rejection.outcome(),
+                    if fact.is_some() {
+                        TransitionOutcome::Rejected
+                    } else {
+                        TransitionOutcome::Unknown
+                    },
+                    "{case} outcome class"
+                );
+                match fact {
+                    Some(code) => {
+                        assert_eq!(sink.events.len(), 1, "{case} emits exactly one fact");
+                        let event = &sink.events[0];
+                        assert_eq!(event.boundary(), EventBoundary::Enrollment, "{case} boundary");
+                        assert_eq!(event.code(), code, "{case} fact code");
+                        assert_eq!(event.outcome(), EventOutcome::Rejected, "{case} fact outcome");
+                        assert_eq!(event.next_action(), EventNextAction::FailClosed, "{case} next action");
+                    }
+                    None => assert!(
+                        sink.events.is_empty(),
+                        "{case} is undecided and intentionally emits no fact"
+                    ),
+                }
+
+                let transitions = SecurityTransitions::default();
+                let mut unavailable = RecordingSink::default();
+                unavailable.unavailable = true;
+                let rejection = apply_case(case, &transitions, Some(&mut unavailable))
+                    .expect_err("each matrix row refuses with an unavailable sink");
+                if fact.is_some() {
+                    assert_eq!(
+                        rejection.code(),
+                        FailureCode::EventSinkUnavailable,
+                        "{case} fails closed when its required fact cannot be recorded"
+                    );
+                } else {
+                    assert_eq!(
+                        rejection.code(),
+                        FailureCode::TransitionUnknown,
+                        "{case} remains undecided when no fact is owed"
+                    );
+                }
+                assert!(
+                    unavailable.events.is_empty(),
+                    "{case} unavailable sink stores no event"
+                );
+            }
+        }
+
+        #[test]
+        fn active_principal_creation_refusals_emit_authentication_facts() {
+            let missing = SecurityTransitions::default();
+            let mut sink = RecordingSink::default();
+            let rejection = create_enrollment_with_default_expiry(
+                &missing,
+                transition(210),
+                id(0xdead),
+                210,
+                0,
+                0,
+                Some(&mut sink),
+            )
+            .expect_err("an unknown daemon is an authentication failure");
+            assert_eq!(rejection.code(), FailureCode::AuthenticationFailed);
+            assert_eq!(sink.events.len(), 1);
+            assert_eq!(sink.events[0].code(), SecurityCode::AuthenticationFailed);
+            assert_eq!(sink.events[0].boundary(), EventBoundary::Enrollment);
+
+            let transitions = SecurityTransitions::default();
+            let signer = RingSigner::generate();
+            let administrator = registered(
+                &transitions,
+                ADMINISTRATOR,
+                PrincipalKind::NativeAdmin,
+                &signer,
+            );
+            let mut revoke_sink = RecordingSink::default();
+            revoke(
+                &transitions,
+                administrator.id(),
+                "administrator",
+                211,
+                0,
+                Some(&mut revoke_sink),
+            )
+            .expect("revoke the administrator before creation");
+            let mut sink = RecordingSink::default();
+            let rejection = create_enrollment_with_default_expiry(
+                &transitions,
+                transition(212),
+                administrator.id(),
+                212,
+                0,
+                0,
+                Some(&mut sink),
+            )
+            .expect_err("a revoked daemon cannot create an enrollment");
+            assert_eq!(rejection.code(), FailureCode::Revoked);
+            assert_eq!(sink.events.len(), 1);
+            // Revoked has no separate SecurityCode in the closed event vocabulary; the
+            // shared mapping records the authentication failure that refuses the principal.
+            assert_eq!(sink.events[0].code(), SecurityCode::AuthenticationFailed);
+            assert_eq!(sink.events[0].boundary(), EventBoundary::Enrollment);
+
+            let transitions = SecurityTransitions::default();
+            let mut unavailable = RecordingSink::default();
+            unavailable.unavailable = true;
+            let rejection = create_enrollment_with_default_expiry(
+                &transitions,
+                transition(213),
+                id(0xbeef),
+                213,
+                0,
+                0,
+                Some(&mut unavailable),
+            )
+            .expect_err("an unavailable sink fails closed for active-principal lookup");
+            assert_eq!(rejection.code(), FailureCode::EventSinkUnavailable);
+            assert!(unavailable.events.is_empty());
+        }
+
+        #[test]
         fn custody_validation_failure_cannot_follow_an_accepted_event() {
             let transitions = SecurityTransitions::default();
             let administrator_signer = RingSigner::generate();

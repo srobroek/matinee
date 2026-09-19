@@ -279,6 +279,15 @@ impl EnrollmentClock {
     /// the enrollment did not exist for, and it would leave the width of the real window
     /// unstated at the one place a proof is measured against it.
     fn valid_for(&self, created_ms: u64, deadline_ms: u64) -> Result<(), EnrollmentConsumeError> {
+        // The host-held deadline and host-observed occurrence decide conclusive expiry before
+        // the caller's status label is considered. A caller cannot turn an already-expired
+        // attempt into `TransitionUnknown` by reporting `uncertain`.
+        if self.occurrence_ms < created_ms || self.occurrence_ms >= deadline_ms {
+            return Err(EnrollmentConsumeError::Expired);
+        }
+        if self.expiry.deadline_ms() != deadline_ms {
+            return Err(EnrollmentConsumeError::Expired);
+        }
         if !self.expiry.is_security_valid() {
             return Err(if self.expiry.status() == ExpiryStatus::Uncertain {
                 EnrollmentConsumeError::UncertainExpiry
@@ -286,15 +295,10 @@ impl EnrollmentClock {
                 EnrollmentConsumeError::Expired
             });
         }
-        if self.expiry.deadline_ms() != deadline_ms
-            || self.occurrence_ms < created_ms
-            || self.occurrence_ms >= deadline_ms
-        {
-            return Err(EnrollmentConsumeError::Expired);
-        }
         Ok(())
     }
 }
+
 
 pub struct EnrollmentBundle {
     enrollment: ExtensionEnrollment,
@@ -807,6 +811,16 @@ pub struct EnrollmentConsumptionService {
     state: Mutex<ConsumptionState>,
     events: Mutex<AggregationState>,
 }
+
+impl EnrollmentConsumptionService {
+    /// Clear process state for crate-internal deterministic tests.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn reset_for_test(&self) {
+        *self.state.lock().expect("enrollment state lock") = ConsumptionState::default();
+        *self.events.lock().expect("enrollment event lock") = AggregationState::default();
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EnrollmentChannelState {
     Open,
@@ -973,6 +987,20 @@ impl EnrollmentConsumptionService {
         if let Err(error) = clock.valid_for(bundle.created_ms, bundle.expiry_deadline_ms) {
             if error == EnrollmentConsumeError::Expired {
                 require_replay_fact(sink, bundle, clock, expected_identity)?;
+                // A decided replay/expiry refusal is still a failed host attempt. Charge it
+                // only after its required fact is accepted, so an unavailable sink cannot
+                // mutate the budget while refusing to admit the attempt.
+                let host = host_key(bundle.daemon_endpoint())
+                    .ok_or(EnrollmentConsumeError::InvalidProof)?;
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+                state
+                    .host_budgets
+                    .entry(host)
+                    .or_default()
+                    .record_failure(clock.occurrence_ms());
             }
             return Err(error);
         }

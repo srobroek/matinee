@@ -112,6 +112,8 @@ fn client_proof(
 
 #[test]
 fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
+    let _test_guard = crate::lock_enrollment_tests();
+    enrollment_host().reset_for_test();
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x1000));
     let ticket = host
@@ -174,6 +176,8 @@ fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
 
 #[test]
 fn registration_and_custody_survive_session_replacement() {
+    let _test_guard = crate::lock_enrollment_tests();
+    enrollment_host().reset_for_test();
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x2000));
     let ticket = host
@@ -262,6 +266,8 @@ fn registration_and_custody_survive_session_replacement() {
 
 #[test]
 fn browser_without_required_key_semantics_fails_closed() {
+    let _test_guard = crate::lock_enrollment_tests();
+    enrollment_host().reset_for_test();
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x3000));
     let ticket = host
@@ -299,6 +305,8 @@ fn browser_without_required_key_semantics_fails_closed() {
 
 #[test]
 fn invalid_proof_closes_the_channel_and_registers_nothing() {
+    let _test_guard = crate::lock_enrollment_tests();
+    enrollment_host().reset_for_test();
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x4000));
     let ticket = host
@@ -336,6 +344,8 @@ fn invalid_proof_closes_the_channel_and_registers_nothing() {
 #[test]
 fn uncertain_expiry_refuses_pairing_without_consuming_the_enrollment() {
     let host = enrollment_host();
+    let _test_guard = crate::lock_enrollment_tests();
+    enrollment_host().reset_for_test();
     let identity = IdentityId::new(Uuid::from_u128(0x5000));
     let ticket = host
         .create_pairing_at(creation(0x5001, 0x5002), CREATED_MS)
@@ -373,6 +383,8 @@ fn uncertain_expiry_refuses_pairing_without_consuming_the_enrollment() {
 
 #[test]
 fn a_closed_channel_seals_and_opens_no_one_time_key() {
+    let _test_guard = crate::lock_enrollment_tests();
+    enrollment_host().reset_for_test();
     let host = enrollment_host();
     let ticket = host
         .create_pairing_at(creation(0x6001, 0x6002), CREATED_MS)

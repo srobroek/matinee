@@ -48,6 +48,12 @@ impl EnrollmentHost {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn reset_for_test(&self) {
+        *self.pending.lock().expect("pending enrollment lock") = HashMap::new();
+        self.service.reset_for_test();
+    }
+
     /// Open one bounded, one-time enrollment at this host's own clock reading and keep
     /// its bundle in host custody.
     ///
@@ -79,15 +85,16 @@ impl EnrollmentHost {
     /// Expiry assertions have to name the instant they measure from, so the test
     /// surfaces pin it rather than racing the wall clock. Production compiles no such
     /// entry point, which is what keeps the anchor out of a caller's hands.
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn create_pairing_at(
+    #[cfg(test)]
+    pub(crate) fn create_pairing_at(
         &self,
         creation: EnrollmentCreation,
         created_ms: u64,
     ) -> Result<PairingTicket, EnrollmentFailure> {
         self.create_pairing_at_instant(creation, created_ms)
     }
+
+
 
     /// The one creation path. `created_ms` reaches it from this host's own clock or from
     /// a `test-support` fixture, and from nowhere a consumer of this crate can reach.
@@ -439,9 +446,8 @@ impl PairingSession<'_> {
     /// Consume one pairing proof at a fixture's chosen instant.
     ///
     /// Production code cannot reach this deterministic clock injection point.
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn complete_pairing_at(
+    #[cfg(test)]
+    pub(crate) fn complete_pairing_at(
         &mut self,
         completion: &PairingCompletion<'_>,
         occurrence_ms: u64,

@@ -131,6 +131,8 @@ fn client_proof(
 /// same loopback host, and a fresh connection does not refill the budget.
 #[test]
 fn host_budget_accumulates_across_connections_and_enrollments() {
+    let _test_guard = crate::lock_enrollment_tests();
+    enrollment_host().reset_for_test();
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0xfa11));
     let mut connection = 0x8100u128;
