@@ -967,7 +967,7 @@ impl EnrollmentConsumptionService {
         binding: &EnrollmentBinding<'_>,
         capability: &ChromeCapability,
         channel: &mut EnrollmentChannel,
-        sink: Option<&mut S>,
+        mut sink: Option<&mut S>,
     ) -> Result<Fingerprint, EnrollmentConsumeError> {
         Self::precheck_attempt(binding, capability, channel)?;
         // An elapsed deadline is a proof presented against an enrollment that is no
@@ -976,21 +976,38 @@ impl EnrollmentConsumptionService {
         // decides nothing and is therefore no outcome to state.
         if let Err(error) = clock.valid_for(bundle.created_ms, bundle.expiry_deadline_ms) {
             if error == EnrollmentConsumeError::Expired {
-                require_replay_fact(sink, bundle, clock, expected_identity)?;
-                // A decided replay/expiry refusal is still a failed host attempt. Charge it
-                // only after its required fact is accepted, so an unavailable sink cannot
-                // mutate the budget while refusing to admit the attempt.
                 let host = host_key(bundle.daemon_endpoint())
                     .ok_or(EnrollmentConsumeError::InvalidProof)?;
                 let mut state = self
                     .state
                     .lock()
                     .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-                state
+                let rate_limited = state.host_budgets.get_mut(&host).is_some_and(|budget| {
+                    budget.reset_if_elapsed(clock.occurrence_ms());
+                    budget.before_attempt(clock.occurrence_ms()) == HostAttemptResult::RateLimited
+                });
+                if rate_limited {
+                    require_rate_limit_fact(&mut sink, bundle, clock)?;
+                    channel.close();
+                    return Err(EnrollmentConsumeError::RateLimited);
+                }
+                // A decided replay/expiry refusal is still a failed host attempt. Charge it
+                // only after its required fact is accepted, so an unavailable sink cannot
+                // mutate the budget while refusing to admit the attempt.
+                require_replay_fact(&mut sink, bundle, clock, expected_identity)?;
+                match state
                     .host_budgets
                     .entry(host)
                     .or_default()
-                    .record_failure(clock.occurrence_ms());
+                    .record_failure(clock.occurrence_ms())
+                {
+                    HostAttemptResult::Allowed => {}
+                    HostAttemptResult::RateLimited => {
+                        require_rate_limit_fact(&mut sink, bundle, clock)?;
+                        channel.close();
+                        return Err(EnrollmentConsumeError::RateLimited);
+                    }
+                }
             }
             return Err(error);
         }
@@ -1005,21 +1022,7 @@ impl EnrollmentConsumptionService {
             budget.before_attempt(clock.occurrence_ms()) == HostAttemptResult::RateLimited
         });
         if rate_limited {
-            let event = SecurityEvent::new(
-                bundle.enrollment_id.get(),
-                EventBoundary::Enrollment,
-                SecurityCode::RateLimited,
-                EventOutcome::Rejected,
-                SafeNextAction::Wait,
-                None,
-                None,
-                EndpointClass::Loopback,
-                EventTime(clock.occurrence_ms()),
-                bundle.daemon.get(),
-                Vec::new(),
-            )
-            .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-            emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+            require_rate_limit_fact(&mut sink, bundle, clock)?;
             channel.close();
             return Err(EnrollmentConsumeError::RateLimited);
         }
@@ -1028,7 +1031,7 @@ impl EnrollmentConsumptionService {
         if state.consumed.contains_key(&bundle.enrollment_id)
             || bundle.lifecycle() != EnrollmentLifecycle::Pending
         {
-            require_replay_fact(sink, bundle, clock, expected_identity)?;
+            require_replay_fact(&mut sink, bundle, clock, expected_identity)?;
             return Err(EnrollmentConsumeError::AlreadyConsumed);
         }
         let expected = EnrollmentCreation::new(
@@ -1771,7 +1774,7 @@ fn default_expiry(created_ms: u64) -> ExpiryResult {
 /// there is nothing to undo, because both refusals precede the consumption, the
 /// registration, and every charge against the proof budget.
 fn require_replay_fact<S: SecurityEventSink + ?Sized>(
-    sink: Option<&mut S>,
+    sink: &mut Option<&mut S>,
     bundle: &EnrollmentBundle,
     clock: &EnrollmentClock,
     identity: IdentityId,
@@ -1790,7 +1793,32 @@ fn require_replay_fact<S: SecurityEventSink + ?Sized>(
         Vec::new(),
     )
     .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-    emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+    emit_required(sink.as_deref_mut(), event)
+        .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+    Ok(())
+}
+
+fn require_rate_limit_fact<S: SecurityEventSink + ?Sized>(
+    sink: &mut Option<&mut S>,
+    bundle: &EnrollmentBundle,
+    clock: &EnrollmentClock,
+) -> Result<(), EnrollmentConsumeError> {
+    let event = SecurityEvent::new(
+        bundle.enrollment_id.get(),
+        EventBoundary::Enrollment,
+        SecurityCode::RateLimited,
+        EventOutcome::Rejected,
+        SafeNextAction::Wait,
+        None,
+        None,
+        EndpointClass::Loopback,
+        EventTime(clock.occurrence_ms()),
+        bundle.daemon.get(),
+        Vec::new(),
+    )
+    .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+    emit_required(sink.as_deref_mut(), event)
+        .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
     Ok(())
 }
 

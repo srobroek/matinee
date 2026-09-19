@@ -1899,6 +1899,11 @@ impl TransitionState {
         sink: Option<&mut S>,
         time: EventTime,
     ) -> Result<TransitionOutcome, TransitionRejection> {
+        let endpoint_for_refusal = self
+            .principals
+            .get(&daemon)
+            .map(|principal| endpoint_class(principal.kind()))
+            .unwrap_or(EndpointClass::Native);
         let owner = match self.active_principal(daemon) {
             Ok(owner) => owner.clone(),
             Err(rejection) => {
@@ -1908,7 +1913,7 @@ impl TransitionState {
                     daemon,
                     enrollment,
                     input.state_directory(),
-                    EndpointClass::Native,
+                    endpoint_for_refusal,
                     time,
                 ));
             }

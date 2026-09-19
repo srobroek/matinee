@@ -56,8 +56,14 @@ macro_rules! enrollment_failure_tests {
                 else { SecurityEventSinkResult::Unavailable }
             }
         }
+        fn bundle_with_deadline(id: u128, deadline_ms: u64) -> crate::enrollment::EnrollmentBundle {
+            let mut value = input();
+            value.enrollment = TransitionId::new(Uuid::from_u128(id));
+            value.expiry = EnrollmentExpiry::Deadline(ExpiryResult::valid(deadline_ms).unwrap());
+            EnrollmentBundle::create(value, CREATED_MS).unwrap()
+        }
         fn bundle(id: u128) -> crate::enrollment::EnrollmentBundle {
-            let mut value = input(); value.enrollment = TransitionId::new(Uuid::from_u128(id)); EnrollmentBundle::create(value, CREATED_MS).unwrap()
+            bundle_with_deadline(id, 600_000)
         }
         fn bundle_binding(_bundle: &crate::enrollment::EnrollmentBundle) -> EnrollmentBinding<'static> {
             EnrollmentBinding { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", endpoint: "127.0.0.1:7777", store_metadata: "Chrome Web Store", update_metadata: "https://updates.example.test/ext.xml", install_metadata: "normal", version: "1.4.2", development_allowance: DevelopmentIdentityAllowance::None }
@@ -520,6 +526,241 @@ macro_rules! enrollment_failure_tests {
             assert_eq!(uncertain.enrollment().failed_proofs(), 0); assert_eq!(channel.state(), EnrollmentChannelState::Open);
         }
 
+        #[test]
+        fn host_expiry_preempts_uncertain_status_and_charges_one_attempt() {
+            let identity = IdentityId::new(Uuid::from_u128(0x784));
+            let service = EnrollmentConsumptionService::default();
+            let binding = bundle_binding(&bundle(0x770));
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            let mut sink = recording();
+
+            let mut mixed = bundle(0x770);
+            let mut channel = open_channel_at(0x9800);
+            assert_eq!(
+                service.consume_proof(
+                    &mut mixed,
+                    &invalid_proof(identity),
+                    identity,
+                    &EnrollmentClock::new(600_000, ExpiryResult::uncertain(600_000)),
+                    &binding,
+                    &capability,
+                    &mut channel,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::Expired)
+            );
+            assert_eq!(sink.events.len(), 1);
+            assert_eq!(sink.events[0].code, crate::events::SecurityCode::ReplayDetected);
+            assert_eq!(mixed.enrollment().failed_proofs(), 0);
+            assert_eq!(channel.state(), EnrollmentChannelState::Open);
+
+            for attempt in 0..9u64 {
+                let mut current = bundle(0x771 + u128::from(attempt));
+                let mut channel = open_channel_at(0x9810 + u128::from(attempt));
+                assert_eq!(
+                    service.consume_proof(
+                        &mut current,
+                        &invalid_proof(identity),
+                        identity,
+                        &EnrollmentClock::new(600_001 + attempt, ExpiryResult::expired(600_000)),
+                        &binding,
+                        &capability,
+                        &mut channel,
+                        Some(&mut sink),
+                    ),
+                    Err(EnrollmentConsumeError::Expired)
+                );
+            }
+
+            let mut limited = bundle(0x780);
+            let mut channel = open_channel_at(0x9820);
+            assert_eq!(
+                service.consume_proof(
+                    &mut limited,
+                    &invalid_proof(identity),
+                    identity,
+                    &EnrollmentClock::new(600_010, ExpiryResult::uncertain(600_000)),
+                    &binding,
+                    &capability,
+                    &mut channel,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::RateLimited)
+            );
+            assert_eq!(sink.events.len(), 11);
+            assert_eq!(sink.events.last().unwrap().code, crate::events::SecurityCode::RateLimited);
+        }
+
+        #[test]
+        fn expired_attempt_is_refused_by_an_exhausted_host_budget() {
+            let identity = IdentityId::new(Uuid::from_u128(0x785));
+            let service = EnrollmentConsumptionService::default();
+            let binding = bundle_binding(&bundle(0x790));
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            let mut sink = recording();
+
+            for attempt in 0..10u64 {
+                let mut current = bundle(0x791 + u128::from(attempt));
+                let mut channel = open_channel_at(0x9830 + u128::from(attempt));
+                assert_eq!(
+                    service.consume_proof(
+                        &mut current,
+                        &invalid_proof(identity),
+                        identity,
+                        &EnrollmentClock::new(600_000 + attempt, ExpiryResult::expired(600_000)),
+                        &binding,
+                        &capability,
+                        &mut channel,
+                        Some(&mut sink),
+                    ),
+                    Err(EnrollmentConsumeError::Expired)
+                );
+            }
+
+            let mut limited = bundle(0x79b);
+            let mut channel = open_channel_at(0x9840);
+            assert_eq!(
+                service.consume_proof(
+                    &mut limited,
+                    &invalid_proof(identity),
+                    identity,
+                    &EnrollmentClock::new(600_010, ExpiryResult::expired(600_000)),
+                    &binding,
+                    &capability,
+                    &mut channel,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::RateLimited)
+            );
+            assert_eq!(sink.events.len(), 11);
+            assert_eq!(sink.events.last().unwrap().code, crate::events::SecurityCode::RateLimited);
+            assert_eq!(limited.enrollment().failed_proofs(), 0);
+            assert_eq!(channel.state(), EnrollmentChannelState::Closed);
+        }
+
+        #[test]
+        fn host_inconclusive_expiry_emits_no_fact_and_charges_nothing() {
+            let identity = IdentityId::new(Uuid::from_u128(0x786));
+            let service = EnrollmentConsumptionService::default();
+            let binding = bundle_binding(&bundle(0x7a0));
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            let mut sink = recording();
+            let mut uncertain = bundle(0x7a0);
+            let mut channel = open_channel_at(0x9850);
+            assert_eq!(
+                service.consume_proof(
+                    &mut uncertain,
+                    &invalid_proof(identity),
+                    identity,
+                    &EnrollmentClock::new(10, ExpiryResult::uncertain(600_000)),
+                    &binding,
+                    &capability,
+                    &mut channel,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::UncertainExpiry)
+            );
+            assert!(sink.events.is_empty());
+            assert_eq!(uncertain.enrollment().failed_proofs(), 0);
+            assert_eq!(channel.state(), EnrollmentChannelState::Open);
+
+            for attempt in 0..10u64 {
+                let mut current = bundle_with_deadline(0x7a1 + u128::from(attempt), 1);
+                let mut channel = open_channel_at(0x9860 + u128::from(attempt));
+                assert_eq!(
+                    service.consume_proof(
+                        &mut current,
+                        &invalid_proof(identity),
+                        identity,
+                        &EnrollmentClock::new(10 + attempt, ExpiryResult::expired(1)),
+                        &binding,
+                        &capability,
+                        &mut channel,
+                        Some(&mut sink),
+                    ),
+                    Err(EnrollmentConsumeError::Expired)
+                );
+            }
+            let mut limited = bundle_with_deadline(0x7ab, 1);
+            let mut channel = open_channel_at(0x9870);
+            assert_eq!(
+                service.consume_proof(
+                    &mut limited,
+                    &invalid_proof(identity),
+                    identity,
+                    &EnrollmentClock::new(20, ExpiryResult::expired(1)),
+                    &binding,
+                    &capability,
+                    &mut channel,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::RateLimited)
+            );
+            assert_eq!(sink.events.len(), 11);
+        }
+
+        #[test]
+        fn expired_attempt_with_unavailable_sink_charges_nothing() {
+            let identity = IdentityId::new(Uuid::from_u128(0x787));
+            let service = EnrollmentConsumptionService::default();
+            let binding = bundle_binding(&bundle(0x7b0));
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            let mut outage = RecordingSink { events: Vec::new(), available: false };
+            let mut refused = bundle(0x7b0);
+            let mut channel = open_channel_at(0x9880);
+            assert_eq!(
+                service.consume_proof(
+                    &mut refused,
+                    &invalid_proof(identity),
+                    identity,
+                    &EnrollmentClock::new(600_000, ExpiryResult::expired(600_000)),
+                    &binding,
+                    &capability,
+                    &mut channel,
+                    Some(&mut outage),
+                ),
+                Err(EnrollmentConsumeError::EventUnavailable)
+            );
+            assert!(outage.events.is_empty());
+            assert_eq!(refused.enrollment().failed_proofs(), 0);
+            assert_eq!(channel.state(), EnrollmentChannelState::Open);
+
+            let mut sink = recording();
+            for attempt in 0..10u64 {
+                let mut current = bundle(0x7b1 + u128::from(attempt));
+                let mut channel = open_channel_at(0x9890 + u128::from(attempt));
+                assert_eq!(
+                    service.consume_proof(
+                        &mut current,
+                        &invalid_proof(identity),
+                        identity,
+                        &EnrollmentClock::new(600_001 + attempt, ExpiryResult::expired(600_000)),
+                        &binding,
+                        &capability,
+                        &mut channel,
+                        Some(&mut sink),
+                    ),
+                    Err(EnrollmentConsumeError::Expired)
+                );
+            }
+            let mut limited = bundle(0x7bc);
+            let mut channel = open_channel_at(0x98a0);
+            assert_eq!(
+                service.consume_proof(
+                    &mut limited,
+                    &invalid_proof(identity),
+                    identity,
+                    &EnrollmentClock::new(600_011, ExpiryResult::expired(600_000)),
+                    &binding,
+                    &capability,
+                    &mut channel,
+                    Some(&mut sink),
+                ),
+                Err(EnrollmentConsumeError::RateLimited)
+            );
+            assert_eq!(sink.events.len(), 11);
+        }
+
         /// SC-005's campaign: one hundred attempts per enrollment failure class.
         ///
         /// Quoted: "In 100 enrollment attempts per failure class, only valid, unexpired,
@@ -800,9 +1041,13 @@ macro_rules! enrollment_failure_tests {
                         Self::ReplayedProof
                         | Self::ConsumedEnrollment
                         | Self::RevokedEnrollment => Some(EnrollmentConsumeError::AlreadyConsumed),
-                        Self::ExpiredDeadline
-                        | Self::DeadlineMismatch
-                        | Self::OccurrenceAtDeadline => Some(EnrollmentConsumeError::Expired),
+                        Self::ExpiredDeadline | Self::DeadlineMismatch => {
+                            Some(EnrollmentConsumeError::Expired)
+                        }
+                        Self::OccurrenceAtDeadline if attempt < BUDGET_PER_WINDOW => {
+                            Some(EnrollmentConsumeError::Expired)
+                        }
+                        Self::OccurrenceAtDeadline => Some(EnrollmentConsumeError::RateLimited),
                         Self::UncertainExpiry => Some(EnrollmentConsumeError::UncertainExpiry),
                         Self::WrongIdentity => Some(EnrollmentConsumeError::WrongIdentity),
                         Self::CapabilityBindingMismatch

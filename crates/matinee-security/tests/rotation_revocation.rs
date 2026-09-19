@@ -2,7 +2,8 @@ macro_rules! rotation_revocation_tests {
     () => {
         use crate::enrollment::{EnrollmentChannel, EnrollmentClock};
         use crate::events::{
-            EventBoundary, EventOutcome, EventTime, SafeNextAction as EventNextAction, SecurityCode,
+            EndpointClass, EventBoundary, EventOutcome, EventTime,
+            SafeNextAction as EventNextAction, SecurityCode,
         };
         use crate::failures::{FailureBoundary, FailureCode, SafeNextAction};
         use crate::identity::{
@@ -1302,6 +1303,28 @@ macro_rules! rotation_revocation_tests {
             ) -> Result<TransitionOutcome, TransitionRejection> {
                 let enrollment = transition(200);
                 let daemon = id(ADMINISTRATOR);
+                macro_rules! assert_unchanged {
+                    ($operation:expr) => {{
+                        let before = (
+                            transitions.registered_principal_count(),
+                            transitions.enrollment_lifecycle(enrollment),
+                            transitions.object_version(),
+                            transitions.recorded(key(200)).is_some(),
+                        );
+                        let result = $operation;
+                        assert_eq!(
+                            (
+                                transitions.registered_principal_count(),
+                                transitions.enrollment_lifecycle(enrollment),
+                                transitions.object_version(),
+                                transitions.recorded(key(200)).is_some(),
+                            ),
+                            before,
+                            "{case} unavailable-sink operation mutates protected state",
+                        );
+                        result
+                    }};
+                }
                 match case {
                     "authorization denial" => {
                         let signer = RingSigner::generate();
@@ -1311,7 +1334,7 @@ macro_rules! rotation_revocation_tests {
                             PrincipalKind::McpClient,
                             &signer,
                         );
-                        create_enrollment_with_default_expiry(
+                        assert_unchanged!(create_enrollment_with_default_expiry(
                             transitions,
                             enrollment,
                             client.id(),
@@ -1319,7 +1342,7 @@ macro_rules! rotation_revocation_tests {
                             0,
                             0,
                             sink,
-                        )
+                        ))
                     }
                     "stale epoch" => {
                         let signer = RingSigner::generate();
@@ -1329,7 +1352,7 @@ macro_rules! rotation_revocation_tests {
                             PrincipalKind::NativeAdmin,
                             &signer,
                         );
-                        create_enrollment_with_default_expiry(
+                        assert_unchanged!(create_enrollment_with_default_expiry(
                             transitions,
                             enrollment,
                             daemon,
@@ -1337,7 +1360,7 @@ macro_rules! rotation_revocation_tests {
                             1,
                             0,
                             sink,
-                        )
+                        ))
                     }
                     "credential mismatch" => {
                         let signer = RingSigner::generate();
@@ -1353,7 +1376,7 @@ macro_rules! rotation_revocation_tests {
                             idempotency: key(200),
                         };
                         let creation = crate::test_support_transitions::creation(enrollment, daemon);
-                        transitions.apply(
+                        assert_unchanged!(transitions.apply(
                             &command,
                             &crate::identity::TransitionInput::new(
                                 id(STATE_DIRECTORY + 1),
@@ -1366,7 +1389,7 @@ macro_rules! rotation_revocation_tests {
                             TransitionMaterial::Enrollment(creation),
                             sink,
                             EventTime(0),
-                        )
+                        ))
                     }
                     "command/material mismatch" => {
                         let signer = RingSigner::generate();
@@ -1382,7 +1405,7 @@ macro_rules! rotation_revocation_tests {
                             daemon,
                             idempotency: key(200),
                         };
-                        transitions.apply(
+                        assert_unchanged!(transitions.apply(
                             &command,
                             &input(
                                 TransitionOperation::EnrollmentCreate,
@@ -1398,7 +1421,7 @@ macro_rules! rotation_revocation_tests {
                             ),
                             sink,
                             EventTime(0),
-                        )
+                        ))
                     }
                     "duplicate replay" => {
                         let signer = RingSigner::generate();
@@ -1419,7 +1442,7 @@ macro_rules! rotation_revocation_tests {
                             Some(&mut setup_sink),
                         )
                         .expect("the first enrollment opens");
-                        create_enrollment_with_default_expiry(
+                        assert_unchanged!(create_enrollment_with_default_expiry(
                             transitions,
                             enrollment,
                             daemon,
@@ -1427,7 +1450,7 @@ macro_rules! rotation_revocation_tests {
                             0,
                             0,
                             sink,
-                        )
+                        ))
                     }
                     "uncertain expiry" => {
                         let signer = RingSigner::generate();
@@ -1437,7 +1460,7 @@ macro_rules! rotation_revocation_tests {
                             PrincipalKind::NativeAdmin,
                             &signer,
                         );
-                        create_enrollment(
+                        assert_unchanged!(create_enrollment(
                             transitions,
                             enrollment,
                             daemon,
@@ -1445,7 +1468,7 @@ macro_rules! rotation_revocation_tests {
                             0,
                             ExpiryResult::uncertain(600_000),
                             sink,
-                        )
+                        ))
                     }
                     "malformed bundle" => {
                         let signer = RingSigner::generate();
@@ -1462,7 +1485,7 @@ macro_rules! rotation_revocation_tests {
                             daemon,
                             idempotency: key(200),
                         };
-                        transitions.apply(
+                        assert_unchanged!(transitions.apply(
                             &command,
                             &input(
                                 TransitionOperation::EnrollmentCreate,
@@ -1473,7 +1496,7 @@ macro_rules! rotation_revocation_tests {
                             TransitionMaterial::Enrollment(creation),
                             sink,
                             EventTime(0),
-                        )
+                        ))
                     }
                     _ => panic!("unknown creation matrix case {case}"),
                 }
@@ -1626,6 +1649,40 @@ macro_rules! rotation_revocation_tests {
             // shared mapping records the authentication failure that refuses the principal.
             assert_eq!(sink.events[0].code(), SecurityCode::AuthenticationFailed);
             assert_eq!(sink.events[0].boundary(), EventBoundary::Enrollment);
+
+            for (principal_id, kind, expected_endpoint) in [
+                (0x9201, PrincipalKind::BrowserExtension, EndpointClass::Extension),
+                (0x9202, PrincipalKind::McpClient, EndpointClass::Loopback),
+            ] {
+                let transitions = SecurityTransitions::default();
+                let signer = RingSigner::generate();
+                let principal = registered(&transitions, principal_id, kind, &signer);
+                let mut revoke_sink = RecordingSink::default();
+                revoke(
+                    &transitions,
+                    principal.id(),
+                    "principal",
+                    principal_id,
+                    0,
+                    Some(&mut revoke_sink),
+                )
+                .expect("revoke the principal before creation");
+                let mut sink = RecordingSink::default();
+                let rejection = create_enrollment_with_default_expiry(
+                    &transitions,
+                    transition(principal_id + 1),
+                    principal.id(),
+                    principal_id + 1,
+                    0,
+                    0,
+                    Some(&mut sink),
+                )
+                .expect_err("a revoked principal cannot create an enrollment");
+                assert_eq!(rejection.code(), FailureCode::Revoked);
+                assert_eq!(sink.events.len(), 1);
+                assert_eq!(sink.events[0].code(), SecurityCode::AuthenticationFailed);
+                assert_eq!(sink.events[0].endpoint, expected_endpoint);
+            }
 
             let transitions = SecurityTransitions::default();
             let mut unavailable = RecordingSink::default();
