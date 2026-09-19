@@ -301,6 +301,10 @@ fn host_budget_accumulates_across_connections_and_enrollments() {
         "the host budget resets after an injected real minute"
     );
 
+    // These are independent public-clock controls. Keep them on a fresh host because
+    // HostAttemptBudget measures elapsed time with saturating_sub: presenting an earlier
+    // instant to a host makes a stale window look current.
+    let host = EnrollmentHost::new_for_test();
     let public_ticket = host
         .create_pairing(creation_default(0x8006, LOOPBACK_V4))
         .expect("create public-clock enrollment");

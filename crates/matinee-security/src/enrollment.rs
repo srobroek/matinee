@@ -982,8 +982,7 @@ impl EnrollmentConsumptionService {
                     .state
                     .lock()
                     .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-                let rate_limited = state.host_budgets.get_mut(&host).is_some_and(|budget| {
-                    budget.reset_if_elapsed(clock.occurrence_ms());
+                let rate_limited = state.host_budgets.get(&host).is_some_and(|budget| {
                     budget.before_attempt(clock.occurrence_ms()) == HostAttemptResult::RateLimited
                 });
                 if rate_limited {
@@ -1017,8 +1016,7 @@ impl EnrollmentConsumptionService {
             .state
             .lock()
             .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-        let rate_limited = state.host_budgets.get_mut(&host).is_some_and(|budget| {
-            budget.reset_if_elapsed(clock.occurrence_ms());
+        let rate_limited = state.host_budgets.get(&host).is_some_and(|budget| {
             budget.before_attempt(clock.occurrence_ms()) == HostAttemptResult::RateLimited
         });
         if rate_limited {
@@ -1169,8 +1167,7 @@ impl EnrollmentConsumptionService {
             .state
             .lock()
             .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-        let rate_limited = state.host_budgets.get_mut(&host).is_some_and(|budget| {
-            budget.reset_if_elapsed(clock.occurrence_ms());
+        let rate_limited = state.host_budgets.get(&host).is_some_and(|budget| {
             budget.before_attempt(clock.occurrence_ms()) == HostAttemptResult::RateLimited
         });
         // An exhausted host window refuses before proof work on the bound path, and an
