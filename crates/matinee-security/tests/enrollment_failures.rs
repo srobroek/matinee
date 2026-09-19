@@ -231,6 +231,238 @@ macro_rules! enrollment_failure_tests {
             let mut limited = bundle(0x730); let binding = bundle_binding(&limited); let capability = ChromeCapability::reported(&binding, true, true).unwrap(); let mut channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9100)), 1).unwrap(); let mut sink = RecordingSink { events: Vec::new(), available: true }; assert_eq!(service.consume_proof(&mut limited, &invalid_proof(identity), identity, &EnrollmentClock::new(5_001, ExpiryResult::valid(600_000).unwrap()), &binding, &capability, &mut channel, Some(&mut sink)), Err(EnrollmentConsumeError::RateLimited)); assert_eq!(channel.state(), EnrollmentChannelState::Closed);
             let mut after = bundle(0x731); let binding = bundle_binding(&after); let capability = ChromeCapability::reported(&binding, true, true).unwrap(); let mut channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9100)), 1).unwrap(); let mut sink = RecordingSink { events: Vec::new(), available: true }; assert_eq!(service.consume_proof(&mut after, &invalid_proof(identity), identity, &EnrollmentClock::new(65_001, ExpiryResult::valid(600_000).unwrap()), &binding, &capability, &mut channel, Some(&mut sink)), Err(EnrollmentConsumeError::InvalidProof));
         }
+
+        fn open_channel_at(connection: u128) -> EnrollmentChannel {
+            EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(connection)), 1).unwrap()
+        }
+        fn live_clock(occurrence_ms: u64) -> EnrollmentClock {
+            EnrollmentClock::new(occurrence_ms, ExpiryResult::valid(600_000).unwrap())
+        }
+        fn recording() -> RecordingSink {
+            RecordingSink { events: Vec::new(), available: true }
+        }
+        /// A binding whose endpoint no loopback address can be read out of.
+        fn unattributable_binding() -> EnrollmentBinding<'static> {
+            let mut value = bundle_binding(&bundle(0x9f0));
+            value.endpoint = "not-an-endpoint";
+            value
+        }
+
+        /// Every attempt that binds to nothing costs exactly one host attempt.
+        ///
+        /// `contracts/enrollment-bootstrap.md` states that a malformed or unknown
+        /// envelope counts only against the host budget, and FR-009 sets that budget at
+        /// ten failed pairing attempts per loopback address per minute. Ten unbindable
+        /// attempts therefore fit the window and the eleventh is refused before proof
+        /// work: a free attempt would leave the eleventh refusing as the tenth did, and
+        /// a double charge would exhaust the window by the sixth.
+        #[test]
+        fn unbindable_attempts_each_cost_exactly_one_host_attempt_and_state_one_fact() {
+            let service = EnrollmentConsumptionService::default();
+            let binding = bundle_binding(&bundle(0x900));
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            for attempt in 0..10u64 {
+                let mut channel = open_channel_at(0x9200 + u128::from(attempt));
+                let mut sink = recording();
+                assert_eq!(
+                    service.consume_unbound_proof(&live_clock(20_000 + attempt), &binding, &capability, &mut channel, Some(&mut sink)),
+                    Err(EnrollmentConsumeError::InvalidProof),
+                    "attempt {attempt} bound to nothing and owes the normalized refusal"
+                );
+                assert_eq!(channel.state(), EnrollmentChannelState::Closed, "attempt {attempt} closes its channel as a refused proof does");
+                assert_eq!(sink.events.len(), 1, "attempt {attempt} owes exactly one fact");
+                assert_eq!(sink.events[0].code, crate::events::SecurityCode::MalformedInput);
+                assert_eq!(sink.events[0].boundary, crate::events::EventBoundary::Enrollment);
+                assert_eq!(sink.events[0].outcome, crate::events::EventOutcome::Failed);
+                assert_eq!(sink.events[0].next_action, crate::events::SafeNextAction::Discard);
+                assert_eq!(sink.events[0].time, crate::events::EventTime(20_000 + attempt));
+                assert_eq!(sink.events[0].principal_id, None, "no enrollment bound, so the fact names no principal");
+            }
+            let mut channel = open_channel_at(0x9300);
+            let mut sink = recording();
+            assert_eq!(
+                service.consume_unbound_proof(&live_clock(20_010), &binding, &capability, &mut channel, Some(&mut sink)),
+                Err(EnrollmentConsumeError::RateLimited),
+                "the eleventh unbindable attempt inside the window is refused before proof work"
+            );
+            assert_eq!(sink.events[0].code, crate::events::SecurityCode::RateLimited);
+            assert_eq!(sink.events[0].next_action, crate::events::SafeNextAction::Wait);
+        }
+
+        /// Bound and unbound failures spend one shared host budget.
+        ///
+        /// Nine unbindable attempts and one bound-but-refused proof exhaust the same ten
+        /// the contract grants one loopback address, so an unknown identifier is worth
+        /// neither more nor less than a wrong proof. An endpoint no address can be read
+        /// out of is charged too, so it buys no free probes.
+        #[test]
+        fn unbound_and_bound_failures_share_one_host_budget() {
+            let identity = IdentityId::new(Uuid::from_u128(0x901));
+            let service = EnrollmentConsumptionService::default();
+            let binding = bundle_binding(&bundle(0x902));
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            for attempt in 0..9u64 {
+                let mut channel = open_channel_at(0x9400 + u128::from(attempt));
+                assert_eq!(
+                    service.consume_unbound_proof(&live_clock(30_000 + attempt), &binding, &capability, &mut channel, Some(&mut recording())),
+                    Err(EnrollmentConsumeError::InvalidProof)
+                );
+            }
+            let mut tenth = bundle(0x903);
+            let mut channel = open_channel_at(0x9410);
+            assert_eq!(
+                service.consume_proof(&mut tenth, &invalid_proof(identity), identity, &live_clock(30_009), &binding, &capability, &mut channel, Some(&mut recording())),
+                Err(EnrollmentConsumeError::InvalidProof),
+                "the tenth failure in the window is still charged rather than refused"
+            );
+            let mut eleventh = bundle(0x904);
+            let mut channel = open_channel_at(0x9411);
+            assert_eq!(
+                service.consume_proof(&mut eleventh, &invalid_proof(identity), identity, &live_clock(30_010), &binding, &capability, &mut channel, Some(&mut recording())),
+                Err(EnrollmentConsumeError::RateLimited),
+                "nine unbindable attempts and one refused proof exhaust one shared budget"
+            );
+            let mut unattributable = open_channel_at(0x9412);
+            assert_eq!(
+                service.consume_unbound_proof(&live_clock(30_011), &unattributable_binding(), &ChromeCapability::reported(&unattributable_binding(), true, true).unwrap(), &mut unattributable, Some(&mut recording())),
+                Err(EnrollmentConsumeError::InvalidProof),
+                "an unattributable endpoint reaches its own reserved bucket, not a loopback one"
+            );
+            for attempt in 0..9u64 {
+                let mut channel = open_channel_at(0x9420 + u128::from(attempt));
+                assert_eq!(
+                    service.consume_unbound_proof(&live_clock(30_012 + attempt), &unattributable_binding(), &ChromeCapability::reported(&unattributable_binding(), true, true).unwrap(), &mut channel, Some(&mut recording())),
+                    Err(EnrollmentConsumeError::InvalidProof)
+                );
+            }
+            let mut exhausted = open_channel_at(0x9430);
+            assert_eq!(
+                service.consume_unbound_proof(&live_clock(30_021), &unattributable_binding(), &ChromeCapability::reported(&unattributable_binding(), true, true).unwrap(), &mut exhausted, Some(&mut recording())),
+                Err(EnrollmentConsumeError::RateLimited),
+                "the reserved bucket is one bucket and exhausts at ten like any other"
+            );
+        }
+
+        /// An unknown identifier, an unattributable envelope and a refused proof are one
+        /// external shape.
+        ///
+        /// `contracts/failures-events.md` carries no code for an absent object and holds
+        /// that an unknown object may not be told from an unauthorized one. Each case
+        /// below returns the same refusal and leaves the channel in the same state, so
+        /// nothing a caller observes reveals whether the identifier was pending.
+        #[test]
+        fn unknown_unattributable_and_refused_proofs_are_one_external_shape() {
+            let identity = IdentityId::new(Uuid::from_u128(0x905));
+            let binding = bundle_binding(&bundle(0x906));
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            let mut observed = Vec::new();
+
+            let mut unknown_channel = open_channel_at(0x9500);
+            observed.push((
+                EnrollmentConsumptionService::default().consume_unbound_proof(&live_clock(40_000), &binding, &capability, &mut unknown_channel, Some(&mut recording())),
+                unknown_channel.state(),
+            ));
+
+            let unattributable = unattributable_binding();
+            let mut unattributable_channel = open_channel_at(0x9501);
+            observed.push((
+                EnrollmentConsumptionService::default().consume_unbound_proof(&live_clock(40_000), &unattributable, &ChromeCapability::reported(&unattributable, true, true).unwrap(), &mut unattributable_channel, Some(&mut recording())),
+                unattributable_channel.state(),
+            ));
+
+            let mut wrong_origin = bundle(0x907);
+            let mut foreign = bundle_binding(&wrong_origin);
+            foreign.origin = "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba";
+            let mut origin_channel = open_channel_at(0x9502);
+            observed.push((
+                EnrollmentConsumptionService::default().consume_proof(&mut wrong_origin, &invalid_proof(identity), identity, &live_clock(40_000), &foreign, &ChromeCapability::reported(&foreign, true, true).unwrap(), &mut origin_channel, Some(&mut recording())),
+                origin_channel.state(),
+            ));
+
+            let mut bad_signature = bundle(0x908);
+            let mut signature_channel = open_channel_at(0x9503);
+            observed.push((
+                EnrollmentConsumptionService::default().consume_proof(&mut bad_signature, &invalid_proof(identity), identity, &live_clock(40_000), &binding, &capability, &mut signature_channel, Some(&mut recording())),
+                signature_channel.state(),
+            ));
+
+            assert_eq!(
+                observed[0],
+                (Err(EnrollmentConsumeError::InvalidProof), EnrollmentChannelState::Closed),
+                "an unbindable identifier is refused as an invalid proof with its channel closed"
+            );
+            for (index, case) in observed.iter().enumerate().skip(1) {
+                assert_eq!(case, &observed[0], "case {index} is externally distinguishable from an unknown identifier");
+            }
+        }
+
+        /// An unbindable attempt spends no enrollment's proof budget.
+        ///
+        /// The contract charges both budgets only when a proof binds. Five unbindable
+        /// attempts are the whole five-proof budget of an enrollment, so if any of them
+        /// were charged to this pending enrollment it would be closed and its own valid
+        /// first use would be refused.
+        #[test]
+        fn unbindable_attempts_spend_no_enrollment_proof_budget() {
+            let identity = IdentityId::new(Uuid::from_u128(0x909));
+            let service = EnrollmentConsumptionService::default();
+            let mut pending = bundle(0x90a);
+            let binding = bundle_binding(&pending);
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            for attempt in 0..5u64 {
+                let mut channel = open_channel_at(0x9600 + u128::from(attempt));
+                assert_eq!(
+                    service.consume_unbound_proof(&live_clock(50_000 + attempt), &binding, &capability, &mut channel, Some(&mut recording())),
+                    Err(EnrollmentConsumeError::InvalidProof)
+                );
+            }
+            assert_eq!(pending.enrollment().failed_proofs(), 0, "no unbindable attempt reached this enrollment's budget");
+            assert_eq!(pending.lifecycle(), EnrollmentLifecycle::Pending);
+            let proof = signed_proof(&mut pending, identity);
+            let mut channel = open_channel_at(0x9610);
+            service
+                .consume_proof(&mut pending, &proof, identity, &live_clock(50_010), &binding, &capability, &mut channel, Some(&mut recording()))
+                .expect("a first use still commits after unrelated unbindable attempts");
+            assert_eq!(pending.lifecycle(), EnrollmentLifecycle::Consumed);
+        }
+
+        /// An unavailable sink refuses the unbindable attempt and moves nothing.
+        ///
+        /// `contracts/failures-events.md` requires the module to return
+        /// `event_sink.unavailable` and perform no protected mutation when the sink
+        /// cannot carry a fact a transition depends on. The budget is that mutation
+        /// here: ten later attempts still fit the window, which they could not if the
+        /// outage had charged, and the channel is left open rather than closed.
+        #[test]
+        fn an_unavailable_sink_refuses_the_unbindable_attempt_and_charges_nothing() {
+            let service = EnrollmentConsumptionService::default();
+            let binding = bundle_binding(&bundle(0x90b));
+            let capability = ChromeCapability::reported(&binding, true, true).unwrap();
+            for attempt in 0..3u64 {
+                let mut channel = open_channel_at(0x9700 + u128::from(attempt));
+                let mut outage = RecordingSink { events: Vec::new(), available: false };
+                assert_eq!(
+                    service.consume_unbound_proof(&live_clock(60_000 + attempt), &binding, &capability, &mut channel, Some(&mut outage)),
+                    Err(EnrollmentConsumeError::EventUnavailable),
+                    "an outage fails closed instead of admitting or refusing on its own authority"
+                );
+                assert_eq!(channel.state(), EnrollmentChannelState::Open, "an outage mutates nothing, so it does not close the channel either");
+            }
+            for attempt in 0..10u64 {
+                let mut channel = open_channel_at(0x9710 + u128::from(attempt));
+                assert_eq!(
+                    service.consume_unbound_proof(&live_clock(60_010 + attempt), &binding, &capability, &mut channel, Some(&mut recording())),
+                    Err(EnrollmentConsumeError::InvalidProof),
+                    "attempt {attempt} still fits the window, so no outage was charged to it"
+                );
+            }
+            let mut exhausted = open_channel_at(0x9730);
+            assert_eq!(
+                service.consume_unbound_proof(&live_clock(60_020), &binding, &capability, &mut exhausted, Some(&mut recording())),
+                Err(EnrollmentConsumeError::RateLimited),
+                "the window still holds exactly ten, so the outage neither added nor removed one"
+            );
+        }
         #[test]
         fn stale_key_quarantine_reconnect_update_and_revocation_are_closed() {
             let identity = IdentityId::new(Uuid::from_u128(0x781)); let service = EnrollmentConsumptionService::default(); let mut bundle = bundle(0x740); let binding = bundle_binding(&bundle); let capability = ChromeCapability::reported(&binding, true, true).unwrap(); let proof = signed_proof(&mut bundle, identity); let mut channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x9100)), 1).unwrap(); let mut sink = RecordingSink { events: Vec::new(), available: true };

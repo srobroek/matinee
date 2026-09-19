@@ -102,7 +102,7 @@ macro_rules! enrollment_custody_tests {
             let mut channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x202)), 1).unwrap();
             let clock = EnrollmentClock::new(1, ExpiryResult::valid(600_000).unwrap());
             let current = capability();
-            service.consume_pairing_proof(&mut bundle, &proof, identity, &clock, &binding(), &current, &mut channel).unwrap();
+            service.consume_pairing_proof(Some(&mut bundle), &proof, identity, &clock, &binding(), &current, &mut channel).unwrap();
             let replacement = fresh_public_key();
             let new_fingerprint = service.update_custody(identity, &replacement, &current).unwrap();
             assert!(service.is_quarantined(&old_fingerprint));
@@ -121,7 +121,7 @@ macro_rules! enrollment_custody_tests {
             let current = capability();
             let mut channel = EnrollmentChannel::open(ConnectionId::new(Uuid::from_u128(0x302)), 1).unwrap();
             let clock = EnrollmentClock::new(1, ExpiryResult::valid(600_000).unwrap());
-            service.consume_pairing_proof(&mut bundle, &proof, identity, &clock, &binding(), &current, &mut channel).unwrap();
+            service.consume_pairing_proof(Some(&mut bundle), &proof, identity, &clock, &binding(), &current, &mut channel).unwrap();
             let mismatch = service.update_custody(identity, &proof.long_term_public_key, &current);
             assert_eq!(mismatch, Err(EnrollmentConsumeError::CredentialMismatch));
             let fingerprint = service.registered_fingerprint(identity).unwrap();

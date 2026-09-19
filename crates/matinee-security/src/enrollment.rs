@@ -20,6 +20,7 @@ use crate::identity::{
     ConnectionId, EnrollmentLifecycle, ExpiryResult, ExpiryStatus, ExtensionEnrollment,
     Fingerprint, IdentityId, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
 };
+use uuid::Uuid;
 
 const SEALED_KEY_AAD_PREFIX: &[u8; 26] = b"matinee.enrollment.key.v1\0";
 /// FR-007 fixes one ten-minute figure for an enrollment deadline: it is both the window
@@ -901,6 +902,28 @@ impl EnrollmentConsumptionService {
             .unwrap_or(true)
     }
 
+    /// The refusals decided before an identifier is resolved.
+    ///
+    /// Both consumption paths run exactly this, so neither reported custody refusal
+    /// depends on whether the presented identifier named a pending enrollment.
+    fn precheck_attempt(
+        binding: &EnrollmentBinding<'_>,
+        capability: &ChromeCapability,
+        channel: &EnrollmentChannel,
+    ) -> Result<(), EnrollmentConsumeError> {
+        if !capability.matches(binding)
+            || !capability.storage_local()
+            || !capability.non_exportable()
+        {
+            return Err(EnrollmentConsumeError::CapabilityRejected);
+        }
+        if channel.state() == EnrollmentChannelState::Closed {
+            return Err(EnrollmentConsumeError::ChannelClosed);
+        }
+        Ok(())
+    }
+
+    /// Consume one pairing proof against the enrollment it bound to.
     pub(crate) fn consume_proof<S: SecurityEventSink + ?Sized>(
         &self,
         bundle: &mut EnrollmentBundle,
@@ -912,15 +935,7 @@ impl EnrollmentConsumptionService {
         channel: &mut EnrollmentChannel,
         sink: Option<&mut S>,
     ) -> Result<Fingerprint, EnrollmentConsumeError> {
-        if !capability.matches(binding)
-            || !capability.storage_local()
-            || !capability.non_exportable()
-        {
-            return Err(EnrollmentConsumeError::CapabilityRejected);
-        }
-        if channel.state() == EnrollmentChannelState::Closed {
-            return Err(EnrollmentConsumeError::ChannelClosed);
-        }
+        Self::precheck_attempt(binding, capability, channel)?;
         // An elapsed deadline is a proof presented against an enrollment that is no
         // longer live, which `transition::consume_rejection` reports as a replay, so the
         // replay fact is owed before the refusal is returned. An uncertain deadline
@@ -1078,14 +1093,94 @@ impl EnrollmentConsumptionService {
         );
         Ok(fingerprint)
     }
+
+    /// Charge and refuse one pairing attempt that bound to no pending enrollment.
+    ///
+    /// `contracts/enrollment-bootstrap.md` states that a malformed or unknown
+    /// envelope cannot bind to a pending enrollment, so it counts only against the
+    /// host budget: there is no enrollment whose five-proof budget could hold it.
+    /// The refusal is the same `InvalidProof` a bound proof returns when it misses a
+    /// bound, and the channel closes exactly as it does there, so neither the code
+    /// nor the channel tells a caller whether the identifier was pending.
+    ///
+    /// The owed fact is emitted before the budget moves, so an unavailable sink
+    /// leaves the budget untouched and admits nothing.
+    pub(crate) fn consume_unbound_proof<S: SecurityEventSink + ?Sized>(
+        &self,
+        clock: &EnrollmentClock,
+        binding: &EnrollmentBinding<'_>,
+        capability: &ChromeCapability,
+        channel: &mut EnrollmentChannel,
+        sink: Option<&mut S>,
+    ) -> Result<Fingerprint, EnrollmentConsumeError> {
+        Self::precheck_attempt(binding, capability, channel)?;
+        let host = unbound_attempt_host_key(binding.endpoint);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        let rate_limited = state.host_budgets.get_mut(&host).is_some_and(|budget| {
+            budget.reset_if_elapsed(clock.occurrence_ms());
+            budget.before_attempt(clock.occurrence_ms()) == HostAttemptResult::RateLimited
+        });
+        // An exhausted host window refuses before proof work on the bound path, and an
+        // unbound attempt is no different: it owes the rate-limit fact and the bounded
+        // wait action rather than a second charge.
+        let (code, outcome, action, refusal) = if rate_limited {
+            (
+                SecurityCode::RateLimited,
+                EventOutcome::Rejected,
+                SafeNextAction::Wait,
+                EnrollmentConsumeError::RateLimited,
+            )
+        } else {
+            (
+                SecurityCode::MalformedInput,
+                EventOutcome::Failed,
+                SafeNextAction::Discard,
+                EnrollmentConsumeError::InvalidProof,
+            )
+        };
+        // No enrollment bound, so the fact carries no enrollment and no principal: the
+        // presented identifiers name nothing this host holds, and leaving them out also
+        // keeps every unbound attempt in one aggregation bucket.
+        let event = SecurityEvent::new(
+            Uuid::nil(),
+            EventBoundary::Enrollment,
+            code,
+            outcome,
+            action,
+            None,
+            None,
+            EndpointClass::Extension,
+            EventTime(clock.occurrence_ms()),
+            Uuid::nil(),
+            Vec::new(),
+        )
+        .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        emit_required(sink, event).map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
+        if !rate_limited {
+            state
+                .host_budgets
+                .entry(host)
+                .or_default()
+                .record_failure(clock.occurrence_ms());
+        }
+        channel.close();
+        Err(refusal)
+    }
     /// Consume one pairing proof against this service's own required-event sink.
     ///
     /// This is the boundary a host process calls. The sink lives as long as the
     /// service, so rate-limit and rejection facts aggregate across connections
     /// instead of restarting with every channel.
+    ///
+    /// A host passes `None` for an identifier it holds no pending enrollment for,
+    /// rather than refusing it itself, so that attempt is budgeted and stated here
+    /// and cannot become an existence oracle at the route.
     pub fn consume_pairing_proof(
         &self,
-        bundle: &mut EnrollmentBundle,
+        bundle: Option<&mut EnrollmentBundle>,
         proof: &EnrollmentProof,
         expected_identity: IdentityId,
         clock: &EnrollmentClock,
@@ -1097,16 +1192,21 @@ impl EnrollmentConsumptionService {
             .events
             .lock()
             .map_err(|_| EnrollmentConsumeError::EventUnavailable)?;
-        self.consume_proof(
-            bundle,
-            proof,
-            expected_identity,
-            clock,
-            binding,
-            capability,
-            channel,
-            Some(&mut *events),
-        )
+        match bundle {
+            Some(bundle) => self.consume_proof(
+                bundle,
+                proof,
+                expected_identity,
+                clock,
+                binding,
+                capability,
+                channel,
+                Some(&mut *events),
+            ),
+            None => {
+                self.consume_unbound_proof(clock, binding, capability, channel, Some(&mut *events))
+            }
+        }
     }
 
     pub fn reconnect(
@@ -1290,12 +1390,36 @@ impl EnrollmentConsumptionService {
         Ok(())
     }
 }
+/// The host-budget bucket for one endpoint, one bucket per loopback address.
+///
+/// FR-009 budgets failed pairing attempts per loopback address, and
+/// `validate_endpoint` admits the IPv6 loopback in two spellings. Collapsing them
+/// keeps one bucket per address, so rewriting the presented spelling reaches no
+/// second budget.
 fn host_key(endpoint: &str) -> Option<String> {
     let (host, port) = endpoint.rsplit_once(':')?;
     if host.is_empty() || port.is_empty() {
         return None;
     }
-    Some(host.to_string())
+    Some(match host {
+        "[::1]" => "::1".to_owned(),
+        other => other.to_owned(),
+    })
+}
+
+/// The bucket charged for an attempt that bound to no pending enrollment.
+///
+/// Only the presented endpoint attributes such an attempt, and a presented endpoint
+/// that is not a valid loopback endpoint attributes it to no address at all. Those
+/// charge one reserved bucket rather than none: `host_key` never yields an empty
+/// host, so no presentable endpoint can reach that bucket or split it, and an
+/// unattributable attempt still costs its host attempt instead of being free.
+fn unbound_attempt_host_key(endpoint: &str) -> String {
+    if validate_endpoint(endpoint) {
+        host_key(endpoint).unwrap_or_default()
+    } else {
+        String::new()
+    }
 }
 
 fn proof_message(bundle: &EnrollmentBundle, long_term: &PublicKey) -> Vec<u8> {

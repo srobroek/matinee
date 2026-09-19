@@ -148,15 +148,17 @@ fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
 
     assert_eq!(
         host.proof_challenge(ticket.enrollment(), &proof.long_term_public_key),
-        Err(EnrollmentFailure::UnknownEnrollment),
-        "a consumed enrollment leaves host custody"
+        Err(EnrollmentFailure::Consume(
+            EnrollmentConsumeError::InvalidProof
+        )),
+        "a consumed enrollment leaves host custody, and its absence is not reported as its own code"
     );
     assert_eq!(
         session
             .complete_pairing(&completion(&ticket, identity, &proof, binding(), 1_001))
             .unwrap_err(),
-        EnrollmentFailure::UnknownEnrollment,
-        "replay finds no pending enrollment"
+        EnrollmentFailure::Consume(EnrollmentConsumeError::InvalidProof),
+        "a replay against a spent enrollment binds to nothing and is refused as any other unbindable attempt"
     );
 }
 
