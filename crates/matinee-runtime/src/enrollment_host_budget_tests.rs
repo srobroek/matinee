@@ -7,9 +7,9 @@
 
 use matinee_runtime::{
     ConnectionId, DevelopmentIdentityAllowance, EnrollmentBinding, EnrollmentConsumeError,
-    EnrollmentCreation, EnrollmentExpiry, EnrollmentFailure, EnrollmentProof, ExpiryResult,
-    IdentityId, PairingCompletion, PairingSession, PairingTicket, PublicKey, TransitionId,
-    UNCOMPRESSED_KEY_BYTES, enrollment_host,
+    EnrollmentCreation, EnrollmentExpiry, EnrollmentFailure, EnrollmentHost, EnrollmentProof,
+    ExpiryResult, IdentityId, PairingCompletion, PairingSession, PairingTicket, PublicKey,
+    TransitionId, UNCOMPRESSED_KEY_BYTES,
 };
 use matinee_security::SupportedExtensionVersions;
 use ring::rand::SystemRandom;
@@ -99,6 +99,7 @@ fn unsigned_proof(identity: IdentityId) -> EnrollmentProof {
 }
 
 fn client_proof(
+    host: &EnrollmentHost,
     session: &mut PairingSession<'_>,
     ticket: &PairingTicket,
     identity: IdentityId,
@@ -114,7 +115,7 @@ fn client_proof(
     let mut bytes = [0u8; UNCOMPRESSED_KEY_BYTES];
     bytes.copy_from_slice(long_term.public_key().as_ref());
     let public = PublicKey::from_uncompressed(bytes).expect("uncompressed SEC1 point");
-    let challenge = enrollment_host()
+    let challenge = host
         .proof_challenge(ticket.enrollment(), &public)
         .expect("host publishes the challenge");
     let signature = session
@@ -131,9 +132,7 @@ fn client_proof(
 /// same loopback host, and a fresh connection does not refill the budget.
 #[test]
 fn host_budget_accumulates_across_connections_and_enrollments() {
-    let _test_guard = crate::lock_enrollment_tests();
-    enrollment_host().reset_for_test();
-    let host = enrollment_host();
+    let host = EnrollmentHost::new_for_test();
     let identity = IdentityId::new(Uuid::from_u128(0xfa11));
     let mut connection = 0x8100u128;
     let mut occurrence = 1_000u64;
@@ -207,7 +206,7 @@ fn host_budget_accumulates_across_connections_and_enrollments() {
         .session(ConnectionId::new(Uuid::from_u128(connection)), 1)
         .expect("open a fresh session");
     connection += 1;
-    let proof = client_proof(&mut limited, &ticket, identity);
+    let proof = client_proof(&host, &mut limited, &ticket, identity);
     occurrence += 1;
     assert_eq!(
         limited
@@ -233,7 +232,7 @@ fn host_budget_accumulates_across_connections_and_enrollments() {
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(connection)), 1)
         .expect("open a session for the other host");
-    let other_proof = client_proof(&mut session, &other, other_identity);
+    let other_proof = client_proof(&host, &mut session, &other, other_identity);
     let paired = session
         .complete_pairing_at(
             &completion(
@@ -285,7 +284,7 @@ fn host_budget_accumulates_across_connections_and_enrollments() {
     let mut reset_session = host
         .session(ConnectionId::new(Uuid::from_u128(0x8300)), 1)
         .expect("open reset session");
-    let reset_proof = client_proof(&mut reset_session, &reset_ticket, reset_identity);
+    let reset_proof = client_proof(&host, &mut reset_session, &reset_ticket, reset_identity);
     assert!(
         reset_session
             .complete_pairing_at(
@@ -337,7 +336,7 @@ fn host_budget_accumulates_across_connections_and_enrollments() {
     let mut public_session = host
         .session(ConnectionId::new(Uuid::from_u128(0x8600)), 1)
         .expect("open public-clock session");
-    let public_proof = client_proof(&mut public_session, &public_ticket, public_identity);
+    let public_proof = client_proof(&host, &mut public_session, &public_ticket, public_identity);
     let public_completion = PairingCompletion {
         enrollment: public_ticket.enrollment(),
         expected_identity: public_identity,

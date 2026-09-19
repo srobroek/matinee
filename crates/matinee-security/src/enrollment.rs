@@ -299,7 +299,6 @@ impl EnrollmentClock {
     }
 }
 
-
 pub struct EnrollmentBundle {
     enrollment: ExtensionEnrollment,
     enrollment_id: TransitionId,
@@ -812,15 +811,6 @@ pub struct EnrollmentConsumptionService {
     events: Mutex<AggregationState>,
 }
 
-impl EnrollmentConsumptionService {
-    /// Clear process state for crate-internal deterministic tests.
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn reset_for_test(&self) {
-        *self.state.lock().expect("enrollment state lock") = ConsumptionState::default();
-        *self.events.lock().expect("enrollment event lock") = AggregationState::default();
-    }
-}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EnrollmentChannelState {
     Open,

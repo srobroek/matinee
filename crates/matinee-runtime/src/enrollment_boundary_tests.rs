@@ -8,9 +8,9 @@
 use matinee_runtime::{
     ChromeReconnectOutcome, ConnectionId, DevelopmentIdentityAllowance, EnrollmentBinding,
     EnrollmentConsumeError, EnrollmentCreation, EnrollmentCustodyError, EnrollmentExpiry,
-    EnrollmentFailure, EnrollmentProof, ExpiryResult, IdentityId, PairingCompletion,
-    PairingSession, PairingTicket, PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES,
-    enrollment_host,
+    EnrollmentFailure, EnrollmentHost, EnrollmentProof, ExpiryResult, IdentityId,
+    PairingCompletion, PairingSession, PairingTicket, PublicKey, TransitionId,
+    UNCOMPRESSED_KEY_BYTES, enrollment_host,
 };
 use matinee_security::SupportedExtensionVersions;
 use ring::rand::SystemRandom;
@@ -84,6 +84,7 @@ fn long_term_keypair(rng: &SystemRandom) -> (EcdsaKeyPair, PublicKey) {
 /// The client half of `/v1/pair`: take the sealed one-time key off the channel, mint
 /// a fresh long-term key, and sign the challenge the host publishes.
 fn client_proof(
+    host: &EnrollmentHost,
     session: &mut PairingSession<'_>,
     ticket: &PairingTicket,
     identity: IdentityId,
@@ -97,7 +98,7 @@ fn client_proof(
     );
     let rng = SystemRandom::new();
     let (_long_term, public) = long_term_keypair(&rng);
-    let challenge = enrollment_host()
+    let challenge = host
         .proof_challenge(ticket.enrollment(), &public)
         .expect("host publishes the challenge for a pending enrollment");
     let signature = session
@@ -112,9 +113,7 @@ fn client_proof(
 
 #[test]
 fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
-    let _test_guard = crate::lock_enrollment_tests();
-    enrollment_host().reset_for_test();
-    let host = enrollment_host();
+    let host = EnrollmentHost::new_for_test();
     let identity = IdentityId::new(Uuid::from_u128(0x1000));
     let ticket = host
         .create_pairing_at(creation(0x1001, 0x1002), CREATED_MS)
@@ -127,7 +126,7 @@ fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(0x1003)), 1)
         .expect("open pairing session");
-    let proof = client_proof(&mut session, &ticket, identity);
+    let proof = client_proof(&host, &mut session, &ticket, identity);
     assert_eq!(
         session
             .deliver_one_time_key(ticket.enrollment())
@@ -176,8 +175,6 @@ fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
 
 #[test]
 fn registration_and_custody_survive_session_replacement() {
-    let _test_guard = crate::lock_enrollment_tests();
-    enrollment_host().reset_for_test();
     let host = enrollment_host();
     let identity = IdentityId::new(Uuid::from_u128(0x2000));
     let ticket = host
@@ -186,7 +183,7 @@ fn registration_and_custody_survive_session_replacement() {
     let mut first = host
         .session(ConnectionId::new(Uuid::from_u128(0x2003)), 1)
         .expect("open first session");
-    let proof = client_proof(&mut first, &ticket, identity);
+    let proof = client_proof(host, &mut first, &ticket, identity);
     let paired = first
         .complete_pairing_at(
             &completion(&ticket, identity, &proof, binding(), 2_000),
@@ -266,9 +263,7 @@ fn registration_and_custody_survive_session_replacement() {
 
 #[test]
 fn browser_without_required_key_semantics_fails_closed() {
-    let _test_guard = crate::lock_enrollment_tests();
-    enrollment_host().reset_for_test();
-    let host = enrollment_host();
+    let host = EnrollmentHost::new_for_test();
     let identity = IdentityId::new(Uuid::from_u128(0x3000));
     let ticket = host
         .create_pairing_at(creation(0x3001, 0x3002), CREATED_MS)
@@ -276,7 +271,7 @@ fn browser_without_required_key_semantics_fails_closed() {
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(0x3003)), 1)
         .expect("open pairing session");
-    let proof = client_proof(&mut session, &ticket, identity);
+    let proof = client_proof(&host, &mut session, &ticket, identity);
 
     let mut unsupported = completion(&ticket, identity, &proof, binding(), 3_000);
     unsupported.storage_local = false;
@@ -305,9 +300,7 @@ fn browser_without_required_key_semantics_fails_closed() {
 
 #[test]
 fn invalid_proof_closes_the_channel_and_registers_nothing() {
-    let _test_guard = crate::lock_enrollment_tests();
-    enrollment_host().reset_for_test();
-    let host = enrollment_host();
+    let host = EnrollmentHost::new_for_test();
     let identity = IdentityId::new(Uuid::from_u128(0x4000));
     let ticket = host
         .create_pairing_at(creation(0x4001, 0x4002), CREATED_MS)
@@ -315,7 +308,7 @@ fn invalid_proof_closes_the_channel_and_registers_nothing() {
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(0x4003)), 1)
         .expect("open pairing session");
-    let mut proof = client_proof(&mut session, &ticket, identity);
+    let mut proof = client_proof(&host, &mut session, &ticket, identity);
     proof.signature[0] ^= 0xff;
 
     assert_eq!(
@@ -343,9 +336,7 @@ fn invalid_proof_closes_the_channel_and_registers_nothing() {
 
 #[test]
 fn uncertain_expiry_refuses_pairing_without_consuming_the_enrollment() {
-    let host = enrollment_host();
-    let _test_guard = crate::lock_enrollment_tests();
-    enrollment_host().reset_for_test();
+    let host = EnrollmentHost::new_for_test();
     let identity = IdentityId::new(Uuid::from_u128(0x5000));
     let ticket = host
         .create_pairing_at(creation(0x5001, 0x5002), CREATED_MS)
@@ -353,7 +344,7 @@ fn uncertain_expiry_refuses_pairing_without_consuming_the_enrollment() {
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(0x5003)), 1)
         .expect("open pairing session");
-    let proof = client_proof(&mut session, &ticket, identity);
+    let proof = client_proof(&host, &mut session, &ticket, identity);
 
     let mut uncertain = completion(&ticket, identity, &proof, binding(), 5_000);
     uncertain.expiry = ExpiryResult::uncertain(DEADLINE_MS);
@@ -383,9 +374,7 @@ fn uncertain_expiry_refuses_pairing_without_consuming_the_enrollment() {
 
 #[test]
 fn a_closed_channel_seals_and_opens_no_one_time_key() {
-    let _test_guard = crate::lock_enrollment_tests();
-    enrollment_host().reset_for_test();
-    let host = enrollment_host();
+    let host = EnrollmentHost::new_for_test();
     let ticket = host
         .create_pairing_at(creation(0x6001, 0x6002), CREATED_MS)
         .expect("create pairing");
@@ -421,7 +410,7 @@ fn a_closed_channel_seals_and_opens_no_one_time_key() {
 
 #[test]
 fn a_live_enrollment_identifier_is_never_silently_replaced() {
-    let host = enrollment_host();
+    let host = EnrollmentHost::new_for_test();
     host.create_pairing_at(creation(0x7001, 0x7002), CREATED_MS)
         .expect("create pairing");
     assert_eq!(

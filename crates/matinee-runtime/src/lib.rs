@@ -28,11 +28,6 @@ mod enrollment_boundary_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "enrollment_host_budget_tests.rs"]
 mod enrollment_host_budget_tests;
-#[cfg(all(test, feature = "test-support"))]
-pub(crate) fn lock_enrollment_tests() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().expect("test lock")
-}
 
 static PRODUCTION_REGISTRY: OnceLock<config::DescriptorRegistry> = OnceLock::new();
 

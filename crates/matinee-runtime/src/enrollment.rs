@@ -47,11 +47,9 @@ impl EnrollmentHost {
             pending: Mutex::new(HashMap::new()),
         }
     }
-
     #[cfg(test)]
-    pub(crate) fn reset_for_test(&self) {
-        *self.pending.lock().expect("pending enrollment lock") = HashMap::new();
-        self.service.reset_for_test();
+    pub(crate) fn new_for_test() -> Self {
+        Self::new()
     }
 
     /// Open one bounded, one-time enrollment at this host's own clock reading and keep
@@ -93,8 +91,6 @@ impl EnrollmentHost {
     ) -> Result<PairingTicket, EnrollmentFailure> {
         self.create_pairing_at_instant(creation, created_ms)
     }
-
-
 
     /// The one creation path. `created_ms` reaches it from this host's own clock or from
     /// a `test-support` fixture, and from nowhere a consumer of this crate can reach.

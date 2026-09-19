@@ -23,7 +23,7 @@ macro_rules! rotation_revocation_tests {
         };
         use crate::transition::{
             BootstrapMaterial, DecisionState, ReplacementCredential, SecurityTransitions,
-            TransitionMaterial, TransitionRecord,
+            TransitionMaterial, TransitionRecord, TransitionRejection,
         };
         use crate::{CapabilityAction, ChannelSigner, ObjectOwner, PayloadKind, ProjectionClass, SecurityCommand, SessionInput, SessionProjection};
         use uuid::Uuid;
@@ -1408,6 +1408,7 @@ macro_rules! rotation_revocation_tests {
                             PrincipalKind::NativeAdmin,
                             &signer,
                         );
+                        let mut setup_sink = RecordingSink::default();
                         create_enrollment_with_default_expiry(
                             transitions,
                             enrollment,
@@ -1415,7 +1416,7 @@ macro_rules! rotation_revocation_tests {
                             199,
                             0,
                             0,
-                            None,
+                            Some(&mut setup_sink),
                         )
                         .expect("the first enrollment opens");
                         create_enrollment_with_default_expiry(
@@ -1520,7 +1521,7 @@ macro_rules! rotation_revocation_tests {
                 let transitions = SecurityTransitions::default();
                 let mut sink = RecordingSink::default();
                 let rejection = apply_case(case, &transitions, Some(&mut sink))
-                    .expect_err("each matrix row is a creation refusal");
+                    .expect_err(&format!("{case}: assertion phase with recording sink"));
                 assert_eq!(rejection.code(), expected, "{case} failure code");
                 assert_eq!(
                     rejection.outcome(),
@@ -1550,7 +1551,7 @@ macro_rules! rotation_revocation_tests {
                 let mut unavailable = RecordingSink::default();
                 unavailable.unavailable = true;
                 let rejection = apply_case(case, &transitions, Some(&mut unavailable))
-                    .expect_err("each matrix row refuses with an unavailable sink");
+                    .expect_err(&format!("{case}: assertion phase with unavailable sink"));
                 if fact.is_some() {
                     assert_eq!(
                         rejection.code(),
