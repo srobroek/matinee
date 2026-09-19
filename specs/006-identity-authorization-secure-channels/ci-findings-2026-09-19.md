@@ -37,8 +37,9 @@ only available signal.
 
 ## Finding 2: the local verification recipe did not match CI's gate set
 
-Four defects in this effort reached CI because the local gates covered a narrower
-surface than CI does:
+Four surfaces sat outside the local gate set. Two of them produced CI failures, Linux
+provisioning and the clippy lint gate, and two were caught locally before CI reached
+them. The list below marks which is which:
 
 1. Linux. `keyring`'s `linux-native-sync-persistent` feature pulls `libdbus-sys`,
    which needs `libdbus-1-dev`. Every local gate ran on macOS, so all three Ubuntu

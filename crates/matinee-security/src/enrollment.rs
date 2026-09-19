@@ -1,7 +1,8 @@
 //! Closed, bounded enrollment creation and binding validation.
 
-// The complete enrollment boundary is owned here for Spec 008/daemon integration;
-// Spec 006 has no downstream caller, while contract tests exercise the public seam.
+// The complete enrollment boundary is owned here for downstream wiring: Spec 008 owns
+// the extension and pairing caller, and Spec 007 owns the daemon transition actor that
+// drives creation. Spec 006 has no such caller, while contract tests exercise the seam.
 #![cfg_attr(not(test), allow(dead_code))]
 use core::fmt;
 use std::collections::HashMap;
