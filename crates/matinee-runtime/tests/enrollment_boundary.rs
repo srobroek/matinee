@@ -11,6 +11,7 @@ use matinee_runtime::{
     EnrollmentProof, ExpiryResult, IdentityId, PairingCompletion, PairingSession, PairingTicket,
     PublicKey, TransitionId, UNCOMPRESSED_KEY_BYTES, enrollment_host,
 };
+use matinee_security::SupportedExtensionVersions;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 use uuid::Uuid;
@@ -20,7 +21,8 @@ const STORE: &str = "Chrome Web Store";
 const UPDATE: &str = "https://updates.example.test/ext.xml";
 const INSTALL: &str = "normal";
 const ENDPOINT: &str = "127.0.0.1:7777";
-const DEADLINE_MS: u64 = 600_000;
+const CREATED_MS: u64 = 1_000;
+const DEADLINE_MS: u64 = CREATED_MS + 600_000;
 
 fn creation(enrollment: u128, daemon: u128) -> EnrollmentCreation {
     EnrollmentCreation::new(
@@ -29,8 +31,10 @@ fn creation(enrollment: u128, daemon: u128) -> EnrollmentCreation {
         STORE,
         UPDATE,
         INSTALL,
+        SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
         IdentityId::new(Uuid::from_u128(daemon)),
         ENDPOINT,
+        CREATED_MS,
         ExpiryResult::valid(DEADLINE_MS).expect("bounded deadline"),
     )
 }
@@ -42,6 +46,7 @@ fn binding() -> EnrollmentBinding<'static> {
         store_metadata: STORE,
         update_metadata: UPDATE,
         install_metadata: INSTALL,
+        version: "1.0",
         development_allowance: DevelopmentIdentityAllowance::None,
     }
 }
