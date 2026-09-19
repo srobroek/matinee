@@ -1,3 +1,4 @@
+Successor: `security-review-final-2026-09-19.md` records the final state at `a9731080`; this report remains the historical assessment at `66a0943b`.
 ---
 document_type: security-review
 review_type: branch
