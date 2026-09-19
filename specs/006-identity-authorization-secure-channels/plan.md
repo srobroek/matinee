@@ -25,10 +25,11 @@ dependencies only to `crates/matinee-security/Cargo.toml`:
 
 | Dependency | Version | Features | Evidence and boundary |
 |---|---|---|---|
-| `ring` | `0.17.x` | no feature override | Spec 001 selects reviewed `ring` primitives for P-256, HKDF-SHA-256, and AES-256-GCM; cryptographic operations stay private. |
+| `ring` | `0.17.x` | no feature override | Spec 001 selects reviewed `ring` primitives for P-256, HKDF-SHA-256, and AES-256-GCM; cryptographic operations stay private. Uncompressed-point validation is part of the P-256 primitive and is also taken from `ring`, so no second curve implementation is required. |
 | `keyring` | `3.6.3` | `default-features = false`; `apple-native`, `windows-native`, `linux-native-sync-persistent`, `crypto-rust` | `keyring 3.6.3` declares Rust 1.75 compatibility, so it supports the fixed Rust 1.85 workspace and the required macOS, Windows, and Linux backends. `keyring 4.0.0` requires Rust 1.88 and is rejected. No plaintext fallback is permitted. |
 | `serde` | `1.x` | `derive` | The current runtime already uses this feature for typed envelopes. |
 | `uuid` | `1.x` | `v7`, `serde` | Spec 001 selects UUIDv7 identifiers and the data model serializes typed identifiers. |
+| `libc` | `0.2.x` | no feature override | Not a cryptographic dependency: the FFI declarations for the inherited OS-pipe seam, which reads the bootstrap envelope from an inherited file descriptor. Confined to `src/adapters/os_pipe.rs`. |
 
 Do not add `tokio`, `axum`, `rusqlite`, `rmcp`, or a second cryptographic library to
 this crate. The Spec 001 dependency list is a product baseline. It does not transfer ownership of its

@@ -572,5 +572,144 @@ macro_rules! foundation_contract_tests {
                 assert_eq!(command, &command.clone());
             }
         }
+
+        /// The uncompressed-point boundary, pinned case by case.
+        ///
+        /// Point validation is `ring`-only (`identity::is_valid_uncompressed_point`). The
+        /// accept/reject column below is the recorded output of a differential run against
+        /// `p256::PublicKey::from_sec1_bytes`, the validator this boundary used before the
+        /// crate returned to a single cryptographic library: 16 named shapes plus a
+        /// 512-case single-bit sweep and a 2000-case random sweep agreed on every input.
+        /// Both production sinks are asserted, because the identity constructor and the
+        /// bootstrap envelope must refuse the same bytes at their own boundary rather than
+        /// storing a point that only fails later at key agreement.
+        #[test]
+        fn uncompressed_point_boundary_accepts_and_rejects_exactly_as_before() {
+            /// P-256 field modulus, an out-of-range coordinate.
+            const FIELD_MODULUS: [u8; 32] = [
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff,
+            ];
+            /// The SEC1 uncompressed encoding of the P-256 generator.
+            const GENERATOR: [u8; crate::identity::UNCOMPRESSED_KEY_BYTES] = [
+                0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63,
+                0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39,
+                0x45, 0xd8, 0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e,
+                0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e,
+                0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+            ];
+
+            // Both sinks: the identity constructor and the bootstrap envelope.
+            let accepted = |bytes: [u8; crate::identity::UNCOMPRESSED_KEY_BYTES]| {
+                let by_identity = crate::identity::PublicKey::from_uncompressed(bytes).is_ok();
+                let by_envelope = crate::adapters::os_pipe::BootstrapEnvelope::new(
+                    [9u8; 32],
+                    Uuid::from_u128(1),
+                    Uuid::from_u128(2),
+                    Uuid::from_u128(3),
+                    bytes,
+                )
+                .is_ok();
+                assert_eq!(
+                    by_identity, by_envelope,
+                    "the two production sinks must share one validator"
+                );
+                by_identity
+            };
+
+            let with_tag = |tag: u8| {
+                let mut bytes = GENERATOR;
+                bytes[0] = tag;
+                bytes
+            };
+            let with_flipped = |index: usize| {
+                let mut bytes = GENERATOR;
+                bytes[index] ^= 0x01;
+                bytes
+            };
+            let with_coordinate = |offset: usize, value: [u8; 32]| {
+                let mut bytes = GENERATOR;
+                bytes[offset..offset + 32].copy_from_slice(&value);
+                bytes
+            };
+            // A compressed encoding zero-padded to the uncompressed length.
+            let compressed = |tag: u8| {
+                let mut bytes = [0u8; crate::identity::UNCOMPRESSED_KEY_BYTES];
+                bytes[0] = tag;
+                bytes[1..33].copy_from_slice(&GENERATOR[1..33]);
+                bytes
+            };
+            // A DER `SubjectPublicKeyInfo` header in place of the SEC1 tag.
+            let der_shaped = || {
+                let mut bytes = [0u8; crate::identity::UNCOMPRESSED_KEY_BYTES];
+                bytes[0] = 0x30;
+                bytes[1] = 0x3f;
+                bytes[2..].copy_from_slice(&GENERATOR[..63]);
+                bytes
+            };
+            let mut tagged_identity = [0u8; crate::identity::UNCOMPRESSED_KEY_BYTES];
+            tagged_identity[0] = 0x04;
+
+            for (label, bytes, expected) in [
+                ("generator", GENERATOR, true),
+                ("wrong tag, uniform bytes", [3u8; 65], false),
+                ("all zeroes", [0u8; 65], false),
+                ("identity point, tagged", tagged_identity, false),
+                ("off curve, y flipped", with_flipped(64), false),
+                ("off curve, x flipped", with_flipped(1), false),
+                ("hybrid tag 0x06", with_tag(0x06), false),
+                ("hybrid tag 0x07", with_tag(0x07), false),
+                ("tag 0x00", with_tag(0x00), false),
+                ("tag 0x05", with_tag(0x05), false),
+                ("compressed 0x02, padded", compressed(0x02), false),
+                ("compressed 0x03, padded", compressed(0x03), false),
+                (
+                    "x equals field modulus",
+                    with_coordinate(1, FIELD_MODULUS),
+                    false,
+                ),
+                (
+                    "y equals field modulus",
+                    with_coordinate(33, FIELD_MODULUS),
+                    false,
+                ),
+                ("DER header", der_shaped(), false),
+            ] {
+                assert_eq!(accepted(bytes), expected, "boundary changed for {label}");
+            }
+
+            // A freshly generated P-256 key is accepted, so the validator refuses nothing
+            // legitimate: a rejection-only check would pass every case above vacuously.
+            let rng = ring::rand::SystemRandom::new();
+            for _ in 0..4 {
+                let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+                    &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+                    &rng,
+                )
+                .unwrap();
+                let pair = ring::signature::EcdsaKeyPair::from_pkcs8(
+                    &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+                    pkcs8.as_ref(),
+                    &rng,
+                )
+                .unwrap();
+                let mut fresh = [0u8; crate::identity::UNCOMPRESSED_KEY_BYTES];
+                fresh.copy_from_slice(ring::signature::KeyPair::public_key(&pair).as_ref());
+                assert!(accepted(fresh), "a generated P-256 key must be accepted");
+            }
+
+            // Every single-bit mutation of either coordinate leaves the curve.
+            for index in 1..crate::identity::UNCOMPRESSED_KEY_BYTES {
+                for bit in 0..8u32 {
+                    let mut mutated = GENERATOR;
+                    mutated[index] ^= 1u8 << bit;
+                    assert!(
+                        !accepted(mutated),
+                        "byte {index} bit {bit} of the generator must be rejected"
+                    );
+                }
+            }
+        }
     };
 }
