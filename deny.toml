@@ -97,3 +97,17 @@ version = "0.52.6"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# Skip-entry scope, verified 2026-09-19 against this lockfile.
+# cargo-deny matches a skip by name and version only, so an entry cannot be
+# constrained to a parent. Each version skipped above resolves to exactly one
+# requiring path in this graph, checked with
+# `cargo tree -i <crate>@<version> --target all --edges normal`, so the global
+# exception is equivalent in effect to a parent-scoped one here:
+#   getrandom 0.2.17        <- ring 0.17.14
+#   syn 2.0.119             <- zeroize_derive 1.5.0 <- zeroize <- keyring 3.6.3
+#   windows-sys 0.52.0      <- ring 0.17.14
+#   windows-sys 0.60.2      <- keyring 3.6.3
+#   windows-targets 0.52.6  <- windows-sys 0.52.0 <- ring 0.17.14
+# Re-run that command when the lockfile changes. A second requiring path would
+# widen these exceptions silently.
