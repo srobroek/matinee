@@ -89,6 +89,35 @@ pub const UNCOMPRESSED_KEY_BYTES: usize = 65;
 const UNCOMPRESSED_KEY_HEX: usize = UNCOMPRESSED_KEY_BYTES * 2;
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
+/// Whether `bytes` is the uncompressed SEC1 encoding of a P-256 point that lies on the
+/// curve and is not the identity. This is the crate's only point validator, and it uses
+/// only `ring`, so the fixed profile keeps a single reviewed cryptographic library.
+///
+/// `ring` publishes no standalone point parser, so the check borrows the one entry point
+/// whose result depends on nothing but the peer point: `agreement::agree_ephemeral` over
+/// `ECDH_P256` parses the peer encoding — `0x04` tag, both coordinates below the field
+/// modulus, the curve equation, and rejection of the identity — and its only other
+/// failure mode is an algorithm mismatch that a fixed pair of `ECDH_P256` values cannot
+/// produce. A valid point therefore never fails: P-256 has cofactor one and a generated
+/// ephemeral scalar is never zero modulo the group order, so the agreement result is
+/// never the identity. The `ECDSA_P256_SHA256_FIXED` verifier parses the same encoding
+/// but folds a bad point and a bad signature into one opaque `Unspecified`, so it cannot
+/// decide point validity. The throwaway agreement costs one key generation and one
+/// scalar multiplication and discards the shared secret without reading it.
+///
+/// Generation failure returns `false`: an unavailable RNG refuses the key rather than
+/// admitting one that was never checked.
+pub(crate) fn is_valid_uncompressed_point(bytes: &[u8; UNCOMPRESSED_KEY_BYTES]) -> bool {
+    let rng = ring::rand::SystemRandom::new();
+    let Ok(private) =
+        ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::ECDH_P256, &rng)
+    else {
+        return false;
+    };
+    let peer = ring::agreement::UnparsedPublicKey::new(&ring::agreement::ECDH_P256, bytes);
+    ring::agreement::agree_ephemeral(private, &peer, |_shared| ()).is_ok()
+}
+
 /// A public key. This is the only key representation in this module: no private,
 /// one-time, or derived key byte has one here.
 ///
@@ -100,7 +129,7 @@ const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 pub struct PublicKey([u8; UNCOMPRESSED_KEY_BYTES]);
 impl PublicKey {
     pub fn from_uncompressed(bytes: [u8; UNCOMPRESSED_KEY_BYTES]) -> Result<Self, &'static str> {
-        if p256::PublicKey::from_sec1_bytes(&bytes).is_err() {
+        if !is_valid_uncompressed_point(&bytes) {
             return Err("public key must be a valid uncompressed P-256 point");
         }
         Ok(Self(bytes))

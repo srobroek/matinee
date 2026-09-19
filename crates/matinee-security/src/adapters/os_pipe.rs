@@ -236,7 +236,7 @@ impl BootstrapEnvelope {
         bootstrap: uuid::Uuid,
         public_key: [u8; 65],
     ) -> Result<Self, EnvelopeError> {
-        if p256::PublicKey::from_sec1_bytes(&public_key).is_err() {
+        if !crate::identity::is_valid_uncompressed_point(&public_key) {
             return Err(EnvelopeError::Malformed);
         }
         Ok(Self {
