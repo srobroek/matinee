@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{LazyLock, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use matinee_security::{
     ChromeCapability, EncryptedKeyOutput, EnrollmentBundle, EnrollmentChannel, EnrollmentClock,
@@ -47,21 +48,50 @@ impl EnrollmentHost {
         }
     }
 
-    /// Open one bounded, one-time enrollment at `created_ms` and keep its bundle in
-    /// host custody.
+    /// Open one bounded, one-time enrollment at this host's own clock reading and keep
+    /// its bundle in host custody.
     ///
-    /// `created_ms` is this host's own clock reading, and it is the instant every bound
-    /// the enrollment carries is measured from. The security boundary defines no clock,
-    /// so the reading has to arrive here from the process that took it; what it must not
-    /// do is arrive twice, because two creation instants let the described enrollment
-    /// place a ten-minute window wherever it likes. `EnrollmentCreation` therefore names
-    /// no instant at all, and this one anchors the window.
+    /// The invariant this entry point establishes: a caller outside this crate cannot
+    /// choose the instant an enrollment's ten-minute window is anchored to. This host is
+    /// the process that holds the clock, so it takes the reading itself. The security
+    /// boundary deliberately defines no clock trait, and `EnrollmentCreation` names no
+    /// instant, so a described enrollment carries nothing its window could be measured
+    /// from; the reading has to arrive from the process that took it. What it must not do
+    /// is arrive from the caller, because an anchor the caller supplies satisfies the
+    /// width check and still places a ten-minute window arbitrarily far ahead, which
+    /// bounds the width and nothing else. A requested `EnrollmentExpiry::Deadline` stays
+    /// the caller's to name, but it is now measured against real time, so it can only
+    /// fall within ten minutes of now.
     ///
     /// The returned ticket carries only ceremony-safe facts. The one-time private
     /// key leaves this host only as sealed channel output. A second creation under
     /// a live enrollment identifier is refused rather than replacing it, because
     /// replacement would refill that enrollment's failed-proof budget.
     pub fn create_pairing(
+        &self,
+        creation: EnrollmentCreation,
+    ) -> Result<PairingTicket, EnrollmentFailure> {
+        self.create_pairing_at_instant(creation, host_clock_ms()?)
+    }
+
+    /// Open one enrollment at a fixture's chosen instant.
+    ///
+    /// Expiry assertions have to name the instant they measure from, so the test
+    /// surfaces pin it rather than racing the wall clock. Production compiles no such
+    /// entry point, which is what keeps the anchor out of a caller's hands.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn create_pairing_at(
+        &self,
+        creation: EnrollmentCreation,
+        created_ms: u64,
+    ) -> Result<PairingTicket, EnrollmentFailure> {
+        self.create_pairing_at_instant(creation, created_ms)
+    }
+
+    /// The one creation path. `created_ms` reaches it from this host's own clock or from
+    /// a `test-support` fixture, and from nowhere a consumer of this crate can reach.
+    fn create_pairing_at_instant(
         &self,
         creation: EnrollmentCreation,
         created_ms: u64,
@@ -176,6 +206,21 @@ impl EnrollmentHost {
     }
 }
 
+/// This host's clock, in milliseconds since the Unix epoch.
+///
+/// The deadline an enrollment fixes travels to the extension inside a ticket and is
+/// compared against the occurrence time of a later pairing attempt, so the anchor has to
+/// be an absolute instant both sides can name; a monotonic `Instant` carries no such base
+/// and could not be published. A clock set before the epoch, or so far past it that the
+/// millisecond count leaves `u64`, offers no usable anchor, so each fails closed rather
+/// than substituting an instant nothing vouched for.
+fn host_clock_ms() -> Result<u64, EnrollmentFailure> {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| EnrollmentFailure::HostUnavailable)?;
+    u64::try_from(since_epoch.as_millis()).map_err(|_| EnrollmentFailure::HostUnavailable)
+}
+
 /// The ceremony-safe projection of one pending enrollment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PairingTicket {
@@ -219,7 +264,7 @@ impl PairingTicket {
         &self.daemon_endpoint
     }
 
-    /// The enrollment deadline in the caller's own time base.
+    /// The enrollment deadline, in the time base of the clock the creating host read.
     pub fn expiry_deadline_ms(&self) -> u64 {
         self.expiry_deadline_ms
     }
@@ -473,6 +518,10 @@ mod tests {
     const UPDATE: &str = "https://updates.example.test/ext.xml";
     const INSTALL: &str = "normal";
     const ENDPOINT: &str = "127.0.0.1:7777";
+    /// FR-007's window, restated here so a change to the security crate's ceiling shows
+    /// up as a failure at this boundary rather than passing silently.
+    const TEN_MINUTES_MS: u64 = 10 * 60 * 1_000;
+    const A_YEAR_MS: u64 = 365 * 24 * 60 * 60 * 1_000;
 
     fn binding() -> EnrollmentBinding<'static> {
         EnrollmentBinding {
@@ -589,7 +638,7 @@ mod tests {
     fn a_pending_and_an_absent_identifier_refuse_identically() {
         let host = EnrollmentHost::new();
         let ticket = host
-            .create_pairing(
+            .create_pairing_at_instant(
                 EnrollmentCreation::new(
                     TransitionId::new(Uuid::from_u128(0xbc01)),
                     ORIGIN,
@@ -611,6 +660,90 @@ mod tests {
         assert_eq!(
             pending, absent,
             "a pending identifier and an absent one must not be told apart by their refusal"
+        );
+    }
+
+    fn described(enrollment: u128, expiry: EnrollmentExpiry) -> EnrollmentCreation {
+        EnrollmentCreation::new(
+            TransitionId::new(Uuid::from_u128(enrollment)),
+            ORIGIN,
+            STORE,
+            UPDATE,
+            INSTALL,
+            SupportedExtensionVersions::parse("1.0", "2.5.1").expect("bounded versions"),
+            IdentityId::new(Uuid::from_u128(0xbc02)),
+            ENDPOINT,
+            expiry,
+        )
+    }
+
+    /// A caller cannot anchor an enrollment's ten-minute window in the future.
+    ///
+    /// `create_pairing` accepts no instant, so the only instant a caller can still name
+    /// is the requested deadline, and this host measures it from its own clock. A
+    /// deadline a year out therefore describes a year-wide window and is refused. The
+    /// same deadline beside a caller-supplied creation instant a year ahead described a
+    /// ten-minute window placed a year ahead, and passed the width check: that is the
+    /// hole, and restoring the instant parameter reopens it and fails this test.
+    #[test]
+    fn a_caller_cannot_anchor_the_expiry_window_in_the_future() {
+        let host = EnrollmentHost::new();
+        let far_future = host_clock_ms().expect("a readable host clock") + A_YEAR_MS;
+        assert_eq!(
+            host.create_pairing(described(
+                0xbd01,
+                EnrollmentExpiry::Deadline(
+                    ExpiryResult::valid(far_future + TEN_MINUTES_MS).expect("bounded deadline")
+                ),
+            ))
+            .unwrap_err(),
+            EnrollmentFailure::Create(EnrollmentCreateError::InvalidExpiry),
+            "a deadline a year ahead is a year-wide window once it is measured from this \
+             host's own clock, and no caller may widen it"
+        );
+    }
+
+    /// A legitimate creation still opens a window, and opens it ten minutes past real time.
+    ///
+    /// The deadline has to land ten minutes past an instant bracketed by two readings of
+    /// this host's clock. An anchor frozen at some constant would put it ten minutes past
+    /// that constant instead, which is exactly what this refuses to accept.
+    #[test]
+    fn a_default_expiry_opens_ten_minutes_past_this_hosts_clock() {
+        let host = EnrollmentHost::new();
+        let before = host_clock_ms().expect("a readable host clock");
+        let ticket = host
+            .create_pairing(described(0xbd02, EnrollmentExpiry::Default))
+            .expect("a described enrollment with a default expiry is created");
+        let after = host_clock_ms().expect("a readable host clock");
+        let deadline = ticket.expiry_deadline_ms();
+        assert!(
+            (before + TEN_MINUTES_MS..=after + TEN_MINUTES_MS).contains(&deadline),
+            "deadline {deadline} is not ten minutes past an instant this host read between \
+             {before} and {after}"
+        );
+    }
+
+    /// A caller may still name a deadline; it just has to be one real time allows.
+    ///
+    /// Taking the anchor away from callers must not take the requested deadline with it,
+    /// so a deadline five minutes out is still honoured exactly as named.
+    #[test]
+    fn a_requested_deadline_within_ten_minutes_is_honoured() {
+        let host = EnrollmentHost::new();
+        let requested = host_clock_ms().expect("a readable host clock") + TEN_MINUTES_MS / 2;
+        let ticket = host
+            .create_pairing(described(
+                0xbd03,
+                EnrollmentExpiry::Deadline(
+                    ExpiryResult::valid(requested).expect("bounded deadline"),
+                ),
+            ))
+            .expect("a deadline inside ten minutes of now is created");
+        assert_eq!(
+            ticket.expiry_deadline_ms(),
+            requested,
+            "a deadline real time allows is carried through unchanged"
         );
     }
 }

@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let extension = IdentityId::new(Uuid::now_v7());
 
     println!("1. create pairing");
-    let ticket = host.create_pairing(
+    let ticket = host.create_pairing_at(
         EnrollmentCreation::new(
             TransitionId::new(Uuid::now_v7()),
             ORIGIN,
@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("7. a browser without the required key semantics fails closed");
     let unsupported_identity = IdentityId::new(Uuid::now_v7());
-    let unsupported = host.create_pairing(
+    let unsupported = host.create_pairing_at(
         EnrollmentCreation::new(
             TransitionId::new(Uuid::now_v7()),
             ORIGIN,

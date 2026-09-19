@@ -125,7 +125,7 @@ fn host_budget_accumulates_across_connections_and_enrollments() {
 
     for enrollment in [0x8001u128, 0x8002] {
         let ticket = host
-            .create_pairing(creation(enrollment, LOOPBACK_V4), CREATED_MS)
+            .create_pairing_at(creation(enrollment, LOOPBACK_V4), CREATED_MS)
             .expect("create pairing");
         for attempt in 0..5 {
             let mut session = host
@@ -180,7 +180,7 @@ fn host_budget_accumulates_across_connections_and_enrollments() {
     // Eleventh counted attempt on this host key: refused before any proof work,
     // even with a valid proof and a brand-new connection.
     let ticket = host
-        .create_pairing(creation(0x8003, LOOPBACK_V4), CREATED_MS)
+        .create_pairing_at(creation(0x8003, LOOPBACK_V4), CREATED_MS)
         .expect("create pairing");
     let mut limited = host
         .session(ConnectionId::new(Uuid::from_u128(connection)), 1)
@@ -210,7 +210,7 @@ fn host_budget_accumulates_across_connections_and_enrollments() {
     // The budget is scoped to its own loopback host key, not to the process.
     let other_identity = IdentityId::new(Uuid::from_u128(0xfa12));
     let other = host
-        .create_pairing(creation(0x8004, LOOPBACK_V6), CREATED_MS)
+        .create_pairing_at(creation(0x8004, LOOPBACK_V6), CREATED_MS)
         .expect("create pairing on the other loopback host");
     let mut session = host
         .session(ConnectionId::new(Uuid::from_u128(connection)), 1)
