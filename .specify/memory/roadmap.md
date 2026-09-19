@@ -1,12 +1,17 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.2.1 -> 1.2.2
-Bump rationale: PATCH -- advanced spec 006 from planned to in-progress after the accepted pre-implementation brief recommended the transition.
+Version change: 1.2.2 -> 1.2.3
+Bump rationale: PATCH -- advanced spec 006 from in-progress to verified after the merged-head conformance review and completed Beads ledger.
 
 Changes this revision:
-  - Amended spec 006 status from planned to in-progress.
-  - Added the existing Spec 006 feature directory pointer.
+  - Amended spec 006 status from in-progress to verified.
+  - Closed the implementation ledger against merge commit b467ddd3.
+  - Retained all existing scope, outcome, and entry history.
+
+Specs affected: 006
+Open questions added/resolved: none
+
   - Updated roadmap metadata while retaining all existing scope, outcome, and entry history.
 
 Specs affected: 006
@@ -133,7 +138,7 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Depends on:** 001
 - **Governed by:** C-01, C-02, C-09
 
-### 006 -- Identity, Authorization, and Secure Channels  [status: in-progress]
+### 006 -- Identity, Authorization, and Secure Channels  [status: verified]
 
 - **Description:** Implement local principal identity, authorization, enrollment, revocation, and authenticated communication between Matinee processes.
 - **Outcome:** Approved principals connect through the specified channels. Unknown, revoked, downgraded, or replayed peers fail before mutation.
