@@ -71,18 +71,24 @@ printf '%s\n' 'Host: macOS; Linux and Windows matrix legs are not runnable here.
 printf '%s\n' "CARGO_TARGET_DIR: $CARGO_TARGET_DIR (fresh directory)"
 printf '%s\n' 'CI command transcription: lint (fmt, clippy); test matrix (workspace all-targets); dependency-provenance (cargo-deny install, locked build/test, deny version/check).'
 
-run_step 'CI lint: cargo fmt' cargo fmt --all -- --check
+run_step 'CI lint: pinned fmt' cargo +1.85.0 fmt --all -- --check
 touch_security_lib
 run_step 'CI lint: pinned clippy' cargo +1.85.0 clippy --all-targets -- -D warnings
 
 touch_security_lib
-run_step 'CI test: default workspace all-targets' cargo test --workspace --all-targets
+run_step 'CI test: pinned workspace all-targets' cargo +1.85.0 test --workspace --all-targets
 
 touch_security_lib
 run_step 'CI dependency-provenance: locked workspace build' cargo +1.85.0 build --locked --workspace --all-targets
 
 touch_security_lib
 run_step 'CI dependency-provenance: locked workspace test' cargo +1.85.0 test --workspace --all-targets --locked
+# CI installs cargo-deny 0.20.2 for the 1.88.0 toolchain and runs `cargo +1.88.0
+# deny --version` then `cargo +1.88.0 deny check`. This host has no cargo-deny on
+# that toolchain, so the same pinned 0.20.2 binary runs through mise. The binary
+# version matches CI; the invoking toolchain does not, which is a known deviation
+# because cargo-deny reads Cargo.lock rather than compiling the workspace.
+run_step 'CI dependency-provenance: cargo-deny version' mise x cargo:cargo-deny@0.20.2 -- cargo deny --version
 run_step 'CI dependency-provenance: cargo-deny check' mise x cargo:cargo-deny@0.20.2 -- cargo deny check
 
 printf '\n%s\n' '=== Beyond-CI all-features surface (not part of CI parity) ==='
