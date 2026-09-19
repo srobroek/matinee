@@ -4,7 +4,6 @@
 //! the whole pairing lifecycle - create, seal the one-time key, consume the proof,
 //! reconnect on a replacement connection, update custody, revoke - against the one
 //! process-lifetime host, and it plays the client half over the same channel.
-
 use std::error::Error;
 
 use matinee_runtime::{
@@ -13,6 +12,7 @@ use matinee_runtime::{
     IdentityId, PairingCompletion, PairingSession, PairingTicket, PublicKey, TransitionId,
     UNCOMPRESSED_KEY_BYTES, enrollment_host,
 };
+use matinee_security::SupportedExtensionVersions;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 use uuid::Uuid;
@@ -22,7 +22,8 @@ const STORE: &str = "Chrome Web Store";
 const UPDATE: &str = "https://updates.example.test/ext.xml";
 const INSTALL: &str = "normal";
 const ENDPOINT: &str = "127.0.0.1:7777";
-const DEADLINE_MS: u64 = 600_000;
+const CREATED_MS: u64 = 1_000;
+const DEADLINE_MS: u64 = CREATED_MS + 600_000;
 
 fn binding() -> EnrollmentBinding<'static> {
     EnrollmentBinding {
@@ -31,6 +32,7 @@ fn binding() -> EnrollmentBinding<'static> {
         store_metadata: STORE,
         update_metadata: UPDATE,
         install_metadata: INSTALL,
+        version: "1.0",
         development_allowance: DevelopmentIdentityAllowance::None,
     }
 }
@@ -80,8 +82,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         STORE,
         UPDATE,
         INSTALL,
+        SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
         daemon,
         ENDPOINT,
+        CREATED_MS,
         ExpiryResult::valid(DEADLINE_MS)?,
     ))?;
     println!(
@@ -155,8 +159,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         STORE,
         UPDATE,
         INSTALL,
+        SupportedExtensionVersions::parse("1.0", "2.5.1").expect("supported versions"),
         daemon,
         ENDPOINT,
+        CREATED_MS,
         ExpiryResult::valid(DEADLINE_MS)?,
     ))?;
     let mut unsupported_session = host.session(ConnectionId::new(Uuid::now_v7()), 1)?;
