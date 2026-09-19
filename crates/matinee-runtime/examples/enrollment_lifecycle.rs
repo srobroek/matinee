@@ -102,16 +102,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proof = client_proof(&mut session, &ticket, extension)?;
 
     println!("3. consume the pairing proof");
-    let paired = session.complete_pairing(&PairingCompletion {
-        enrollment: ticket.enrollment(),
-        expected_identity: extension,
-        proof: &proof,
-        binding: binding(),
-        occurrence_ms: 1_000,
-        expiry: ExpiryResult::valid(DEADLINE_MS)?,
-        storage_local: true,
-        non_exportable: true,
-    })?;
+    let paired = session.complete_pairing_at(
+        &PairingCompletion {
+            enrollment: ticket.enrollment(),
+            expected_identity: extension,
+            proof: &proof,
+            binding: binding(),
+            expiry: ExpiryResult::valid(DEADLINE_MS)?,
+            storage_local: true,
+            non_exportable: true,
+        },
+        1_000,
+    )?;
     let original = paired.fingerprint().clone();
     println!(
         "  registered {} as {}",
@@ -173,16 +175,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let unsupported_proof =
         client_proof(&mut unsupported_session, &unsupported, unsupported_identity)?;
     let refusal = unsupported_session
-        .complete_pairing(&PairingCompletion {
-            enrollment: unsupported.enrollment(),
-            expected_identity: unsupported_identity,
-            proof: &unsupported_proof,
-            binding: binding(),
-            occurrence_ms: 2_000,
-            expiry: ExpiryResult::valid(DEADLINE_MS)?,
-            storage_local: false,
-            non_exportable: true,
-        })
+        .complete_pairing_at(
+            &PairingCompletion {
+                enrollment: unsupported.enrollment(),
+                expected_identity: unsupported_identity,
+                proof: &unsupported_proof,
+                binding: binding(),
+                expiry: ExpiryResult::valid(DEADLINE_MS)?,
+                storage_local: false,
+                non_exportable: true,
+            },
+            2_000,
+        )
         .expect_err("a browser without durable custody must not pair");
     if refusal != EnrollmentFailure::Consume(EnrollmentConsumeError::CapabilityRejected) {
         return Err(format!("expected a capability refusal, observed {refusal}").into());

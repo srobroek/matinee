@@ -63,7 +63,6 @@ fn completion<'a>(
         expected_identity: identity,
         proof,
         binding,
-        occurrence_ms,
         expiry: ExpiryResult::valid(DEADLINE_MS).expect("bounded deadline"),
         storage_local: true,
         non_exportable: true,
@@ -136,7 +135,10 @@ fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
     );
 
     let paired = session
-        .complete_pairing(&completion(&ticket, identity, &proof, binding(), 1_000))
+        .complete_pairing_at(
+            &completion(&ticket, identity, &proof, binding(), 1_000),
+            1_000,
+        )
         .expect("consume the pairing proof");
     assert_eq!(
         host.registered_fingerprint(identity).as_ref(),
@@ -160,7 +162,10 @@ fn pairing_registers_the_principal_and_seals_the_one_time_key_once() {
     );
     assert_eq!(
         session
-            .complete_pairing(&completion(&ticket, identity, &proof, binding(), 1_001))
+            .complete_pairing_at(
+                &completion(&ticket, identity, &proof, binding(), 1_001),
+                1_001
+            )
             .unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::InvalidProof),
         "a replay against a spent enrollment binds to nothing and is refused as any other unbindable attempt"
@@ -179,7 +184,10 @@ fn registration_and_custody_survive_session_replacement() {
         .expect("open first session");
     let proof = client_proof(&mut first, &ticket, identity);
     let paired = first
-        .complete_pairing(&completion(&ticket, identity, &proof, binding(), 2_000))
+        .complete_pairing_at(
+            &completion(&ticket, identity, &proof, binding(), 2_000),
+            2_000,
+        )
         .expect("consume the pairing proof");
     let original = paired.fingerprint().clone();
     first.close();
@@ -267,14 +275,16 @@ fn browser_without_required_key_semantics_fails_closed() {
     let mut unsupported = completion(&ticket, identity, &proof, binding(), 3_000);
     unsupported.storage_local = false;
     assert_eq!(
-        session.complete_pairing(&unsupported).unwrap_err(),
+        session
+            .complete_pairing_at(&unsupported, 3_000)
+            .unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::CapabilityRejected)
     );
 
     let mut exportable = completion(&ticket, identity, &proof, binding(), 3_001);
     exportable.non_exportable = false;
     assert_eq!(
-        session.complete_pairing(&exportable).unwrap_err(),
+        session.complete_pairing_at(&exportable, 3_001).unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::CapabilityRejected)
     );
 
@@ -302,14 +312,20 @@ fn invalid_proof_closes_the_channel_and_registers_nothing() {
 
     assert_eq!(
         session
-            .complete_pairing(&completion(&ticket, identity, &proof, binding(), 4_000))
+            .complete_pairing_at(
+                &completion(&ticket, identity, &proof, binding(), 4_000),
+                4_000
+            )
             .unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::InvalidProof)
     );
     assert!(!session.is_open(), "a failed proof closes the channel");
     assert_eq!(
         session
-            .complete_pairing(&completion(&ticket, identity, &proof, binding(), 4_001))
+            .complete_pairing_at(
+                &completion(&ticket, identity, &proof, binding(), 4_001),
+                4_001
+            )
             .unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::ChannelClosed),
         "the closed channel accepts no further attempt"
@@ -332,19 +348,22 @@ fn uncertain_expiry_refuses_pairing_without_consuming_the_enrollment() {
     let mut uncertain = completion(&ticket, identity, &proof, binding(), 5_000);
     uncertain.expiry = ExpiryResult::uncertain(DEADLINE_MS);
     assert_eq!(
-        session.complete_pairing(&uncertain).unwrap_err(),
+        session.complete_pairing_at(&uncertain, 5_000).unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::UncertainExpiry)
     );
 
     let mut expired = completion(&ticket, identity, &proof, binding(), 5_001);
     expired.expiry = ExpiryResult::expired(DEADLINE_MS);
     assert_eq!(
-        session.complete_pairing(&expired).unwrap_err(),
+        session.complete_pairing_at(&expired, 5_001).unwrap_err(),
         EnrollmentFailure::Consume(EnrollmentConsumeError::Expired)
     );
 
     let paired = session
-        .complete_pairing(&completion(&ticket, identity, &proof, binding(), 5_002))
+        .complete_pairing_at(
+            &completion(&ticket, identity, &proof, binding(), 5_002),
+            5_002,
+        )
         .expect("a certain, valid expiry still pairs");
     assert_eq!(
         host.registered_fingerprint(identity).as_ref(),

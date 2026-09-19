@@ -218,6 +218,10 @@ fn host_clock_ms() -> Result<u64, EnrollmentFailure> {
     let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| EnrollmentFailure::HostUnavailable)?;
+    host_clock_ms_from_duration(since_epoch)
+}
+
+fn host_clock_ms_from_duration(since_epoch: std::time::Duration) -> Result<u64, EnrollmentFailure> {
     u64::try_from(since_epoch.as_millis()).map_err(|_| EnrollmentFailure::HostUnavailable)
 }
 
@@ -310,8 +314,6 @@ pub struct PairingCompletion<'a> {
     pub proof: &'a EnrollmentProof,
     /// The Origin, endpoint, and install metadata the client presented.
     pub binding: EnrollmentBinding<'a>,
-    /// The caller's occurrence time for this attempt.
-    pub occurrence_ms: u64,
     /// The caller's typed expiry observation for this attempt.
     pub expiry: ExpiryResult,
     /// Whether the browser reported durable `chrome.storage.local` custody.
@@ -410,6 +412,12 @@ impl PairingSession<'_> {
 
     /// Consume one pairing proof and register its long-term key.
     ///
+    /// The invariant this entry point establishes: a caller outside this crate cannot
+    /// choose the instant used by the host's failed-pairing budget. This host owns the
+    /// clock reading, so production pairing always measures the attempt against the
+    /// instant this process observed rather than against a caller-supplied occurrence.
+    /// A bad host clock fails closed as [`EnrollmentFailure::HostUnavailable`].
+    ///
     /// Success removes the enrollment from host custody: it is one-use. A failure
     /// leaves it pending so that its own failed-proof budget, and the shared host
     /// budget, keep counting.
@@ -420,16 +428,39 @@ impl PairingSession<'_> {
     /// `contracts/enrollment-bootstrap.md` requires such an envelope to count
     /// against the host budget and to owe its fact. Refusing it early would also
     /// answer whether that enrollment is pending.
+    ///
     pub fn complete_pairing(
         &mut self,
         completion: &PairingCompletion<'_>,
     ) -> Result<PairedPrincipal, EnrollmentFailure> {
+        self.complete_pairing_with_clock(completion, host_clock_ms())
+    }
+
+    /// Consume one pairing proof at a fixture's chosen instant.
+    ///
+    /// Production code cannot reach this deterministic clock injection point.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn complete_pairing_at(
+        &mut self,
+        completion: &PairingCompletion<'_>,
+        occurrence_ms: u64,
+    ) -> Result<PairedPrincipal, EnrollmentFailure> {
+        self.complete_pairing_with_clock(completion, Ok(occurrence_ms))
+    }
+
+    fn complete_pairing_with_clock(
+        &mut self,
+        completion: &PairingCompletion<'_>,
+        occurrence_ms: Result<u64, EnrollmentFailure>,
+    ) -> Result<PairedPrincipal, EnrollmentFailure> {
+        let occurrence_ms = occurrence_ms?;
         let capability = ChromeCapability::reported(
             &completion.binding,
             completion.storage_local,
             completion.non_exportable,
         )?;
-        let clock = EnrollmentClock::new(completion.occurrence_ms, completion.expiry.clone());
+        let clock = EnrollmentClock::new(occurrence_ms, completion.expiry.clone());
         let mut pending = self
             .host
             .pending
@@ -548,11 +579,11 @@ mod tests {
         PublicKey::from_uncompressed(bytes).unwrap()
     }
 
-    fn attempt_unknown(
+    fn attempt_unknown_at_clock(
         host: &EnrollmentHost,
         connection: u128,
         enrollment: u128,
-        occurrence_ms: u64,
+        occurrence_ms: Result<u64, EnrollmentFailure>,
     ) -> EnrollmentFailure {
         let proof = EnrollmentProof {
             identity: IdentityId::new(Uuid::from_u128(0xd00d)),
@@ -561,17 +592,64 @@ mod tests {
         };
         host.session(ConnectionId::new(Uuid::from_u128(connection)), 1)
             .expect("open a session")
-            .complete_pairing(&PairingCompletion {
-                enrollment: TransitionId::new(Uuid::from_u128(enrollment)),
-                expected_identity: IdentityId::new(Uuid::from_u128(0xd00d)),
-                proof: &proof,
-                binding: binding(),
+            .complete_pairing_with_clock(
+                &PairingCompletion {
+                    enrollment: TransitionId::new(Uuid::from_u128(enrollment)),
+                    expected_identity: IdentityId::new(Uuid::from_u128(0xd00d)),
+                    proof: &proof,
+                    binding: binding(),
+                    expiry: ExpiryResult::valid(600_000).expect("bounded deadline"),
+                    storage_local: true,
+                    non_exportable: true,
+                },
                 occurrence_ms,
-                expiry: ExpiryResult::valid(600_000).expect("bounded deadline"),
-                storage_local: true,
-                non_exportable: true,
-            })
+            )
             .expect_err("an enrollment that was never created cannot pair")
+    }
+
+    fn attempt_unknown(
+        host: &EnrollmentHost,
+        connection: u128,
+        enrollment: u128,
+        occurrence_ms: u64,
+    ) -> EnrollmentFailure {
+        attempt_unknown_at_clock(host, connection, enrollment, Ok(occurrence_ms))
+    }
+
+    #[test]
+    fn a_bad_host_clock_fails_closed_without_granting_an_attempt() {
+        let host = EnrollmentHost::new();
+        assert_eq!(
+            attempt_unknown_at_clock(
+                &host,
+                0xc300,
+                0xbeef,
+                Err(EnrollmentFailure::HostUnavailable),
+            ),
+            EnrollmentFailure::HostUnavailable,
+        );
+        for attempt in 0..10u64 {
+            assert_eq!(
+                attempt_unknown(&host, 0xc400 + u128::from(attempt), 0xbeef, attempt + 1),
+                EnrollmentFailure::Consume(EnrollmentConsumeError::InvalidProof),
+            );
+        }
+        assert_eq!(
+            attempt_unknown(&host, 0xc410, 0xbeef, 11),
+            EnrollmentFailure::Consume(EnrollmentConsumeError::RateLimited),
+        );
+    }
+
+    #[test]
+    fn an_unrepresentable_clock_reading_fails_closed() {
+        assert_eq!(
+            host_clock_ms_from_duration(
+                std::time::Duration::from_millis(u64::MAX)
+                    .checked_add(std::time::Duration::from_millis(1))
+                    .expect("duration arithmetic")
+            ),
+            Err(EnrollmentFailure::HostUnavailable),
+        );
     }
 
     /// An identifier this host holds nothing for reaches the budgeted boundary.
