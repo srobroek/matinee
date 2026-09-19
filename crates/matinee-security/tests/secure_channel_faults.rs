@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! secure_channel_faults_tests {
     () => {
         mod secure_channel_faults_inner {

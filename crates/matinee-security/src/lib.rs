@@ -368,6 +368,8 @@ impl fmt::Debug for AuthorizedOutput {
 /// authenticated for life and a client session never holds one. There is no unbound state
 /// and no rebinding call, so a session cannot acquire, swap, or clear an authorization
 /// identity after establishment.
+// Keep the authenticated context inline so a session cannot rebind through indirection.
+#[allow(clippy::large_enum_variant)]
 enum SessionPeer {
     Principal(authorization::AuthorizationContext),
     Daemon {
@@ -783,8 +785,9 @@ pub enum SecurityCommand {
 }
 
 impl SecurityCommand {
-    /// The transition operation this command records. The mapping is exhaustive: a
-    /// new command variant fails to compile until it names its operation.
+    /// The transition digest and Spec 007's durable outcome comparison consume this
+    /// mapping once daemon/store wiring reaches the closed command boundary.
+    #[allow(dead_code)]
     pub(crate) fn operation(&self) -> TransitionOperation {
         match self {
             Self::Bootstrap { .. } => TransitionOperation::Bootstrap,
@@ -795,7 +798,9 @@ impl SecurityCommand {
         }
     }
 
-    /// The key that makes a retry of this command the same command.
+    /// The transition ledger and Spec 007's idempotent retry handling consume this
+    /// key once daemon/store wiring reaches the closed command boundary.
+    #[allow(dead_code)]
     pub(crate) fn idempotency(&self) -> IdempotencyKey {
         match self {
             Self::Bootstrap { idempotency, .. }

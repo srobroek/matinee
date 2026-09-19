@@ -7,6 +7,9 @@
 //! validates completely, requires its security event to be available, and only then
 //! commits. A refused transition, an unavailable sink, and a poisoned lock all leave
 //! the whole state exactly as it was.
+// Spec 007 owns the daemon transition actor that instantiates this complete engine;
+// Spec 006 contract tests cover selected paths while the rest await that wiring.
+#![cfg_attr(not(test), allow(dead_code))]
 use core::fmt;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -174,6 +177,7 @@ impl BootstrapState {
     }
 
     /// Production convenience entrypoint for the raw inherited descriptor/handle.
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn bootstrap_inherited_handle<S: SecurityEventSink + ?Sized>(
         &mut self,
         handle: u64,
@@ -195,6 +199,8 @@ impl BootstrapState {
     }
 
     #[cfg(test)]
+    // Test bootstrap inputs mirror the contract fields one-for-one.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn bootstrap_encoded_with_store_for_test<
         P: OsPipe + ?Sized,
         C: CredentialStore + ?Sized,
@@ -222,6 +228,8 @@ impl BootstrapState {
     }
 
     #[cfg(test)]
+    // Test bootstrap inputs mirror the contract fields one-for-one.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn bootstrap_encoded_for_test<
         P: OsPipe + ?Sized,
         C: CredentialStore + ?Sized,
@@ -249,6 +257,8 @@ impl BootstrapState {
         )
     }
 
+    // Bootstrap transition inputs are contract-fixed for ordering and failure evidence.
+    #[allow(clippy::too_many_arguments)]
     fn bootstrap_encoded_inner<
         P: OsPipe + ?Sized,
         C: CredentialStore + ?Sized,
@@ -284,6 +294,8 @@ impl BootstrapState {
 
     /// Apply one already parsed envelope after the endpoint and event time have
     /// crossed their typed boundaries. This is called only by [`bootstrap_encoded`].
+    // Parsed bootstrap inputs are contract-fixed for the atomic transition boundary.
+    #[allow(clippy::too_many_arguments)]
     fn apply<C: CredentialStore + ?Sized, S: SecurityEventSink + ?Sized>(
         &mut self,
         envelope: &BootstrapEnvelope,
@@ -408,7 +420,7 @@ impl BootstrapState {
             self.ledger.release(&envelope.nonce);
             BootstrapError::EventUnavailable
         })?;
-        emit_required(sink.as_deref_mut(), identity_event).map_err(|_| {
+        emit_required(sink, identity_event).map_err(|_| {
             self.ledger.release(&envelope.nonce);
             BootstrapError::EventUnavailable
         })?;
@@ -627,6 +639,7 @@ pub(crate) struct BootstrapMaterial<'a> {
 impl<'a> BootstrapMaterial<'a> {
     /// Production construction. Custody is not selectable here, so no caller can route
     /// a bootstrap commit past the platform credential store.
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn platform(
         pipe: &'a dyn OsPipe,
         envelope: &'a [u8],
@@ -1790,6 +1803,8 @@ impl SecurityTransitions {
 }
 
 impl TransitionState {
+    // Transition command fields are fixed by the lifecycle contract.
+    #[allow(clippy::too_many_arguments)]
     fn bootstrap<S: SecurityEventSink + ?Sized>(
         &mut self,
         command: &SecurityCommand,
@@ -1888,6 +1903,8 @@ impl TransitionState {
         }
     }
 
+    // Enrollment transition fields are fixed by the lifecycle contract.
+    #[allow(clippy::too_many_arguments)]
     fn create_enrollment<S: SecurityEventSink + ?Sized>(
         &mut self,
         command: &SecurityCommand,
@@ -2054,6 +2071,8 @@ impl TransitionState {
         Ok(TransitionOutcome::Committed)
     }
 
+    // Pairing transition fields are fixed by the lifecycle contract.
+    #[allow(clippy::too_many_arguments)]
     fn consume_enrollment<S: SecurityEventSink + ?Sized>(
         &mut self,
         command: &SecurityCommand,
@@ -2226,6 +2245,8 @@ impl TransitionState {
         Ok(TransitionOutcome::Committed)
     }
 
+    // Rotation transition fields are fixed by the lifecycle contract.
+    #[allow(clippy::too_many_arguments)]
     fn rotate<S: SecurityEventSink + ?Sized>(
         &mut self,
         command: &SecurityCommand,
@@ -2374,6 +2395,8 @@ impl TransitionState {
         Ok(TransitionOutcome::Committed)
     }
 
+    // Revocation transition fields are fixed by the lifecycle contract.
+    #[allow(clippy::too_many_arguments)]
     fn revoke<S: SecurityEventSink + ?Sized>(
         &mut self,
         command: &SecurityCommand,

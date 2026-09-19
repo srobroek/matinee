@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! enrollment_failure_tests {
     () => {
         use crate::enrollment::{
@@ -37,7 +38,7 @@ macro_rules! enrollment_failure_tests {
             )
         }
 
-        fn binding<'a>(input: &'a EnrollmentCreation) -> EnrollmentBinding<'a> {
+        fn binding(input: &EnrollmentCreation) -> EnrollmentBinding<'_> {
             EnrollmentBinding {
                 origin: input.origin.as_str(),
                 endpoint: input.daemon_endpoint.as_str(),

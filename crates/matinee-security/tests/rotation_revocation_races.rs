@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! rotation_revocation_races_tests {
     () => {
         use crate::enrollment::{EnrollmentChannel, EnrollmentClock};

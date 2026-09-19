@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! foundation_contract_tests {
     () => {
         use crate::adapters::credential_store::{CredentialBinding, CredentialStore};

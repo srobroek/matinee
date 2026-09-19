@@ -48,6 +48,7 @@ impl EnrollmentHost {
         }
     }
     #[cfg(test)]
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn new_for_test() -> Self {
         Self::new()
     }
@@ -84,6 +85,7 @@ impl EnrollmentHost {
     /// surfaces pin it rather than racing the wall clock. Production compiles no such
     /// entry point, which is what keeps the anchor out of a caller's hands.
     #[cfg(test)]
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn create_pairing_at(
         &self,
         creation: EnrollmentCreation,
@@ -443,6 +445,7 @@ impl PairingSession<'_> {
     ///
     /// Production code cannot reach this deterministic clock injection point.
     #[cfg(test)]
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn complete_pairing_at(
         &mut self,
         completion: &PairingCompletion<'_>,

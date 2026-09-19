@@ -4,6 +4,9 @@
 //! untrusted condition into one of the closed [`FailureCode`] values.  Consequently
 //! formatting a [`SecurityFailure`] cannot accidentally disclose bytes from a
 //! frame, credential, URL, or protected object.
+// These closed failure values are consumed by downstream transition and channel
+// owners; Spec 006 retains the full redacted vocabulary before those callers exist.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::fmt;
 
@@ -260,7 +263,9 @@ impl fmt::Display for SecurityFailure {
 }
 
 // Intentional aliases make the contract vocabulary explicit to sibling modules.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) type StableFailureCode = FailureCode;
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) type Failure = SecurityFailure;
 #[cfg(test)]
 mod tests {

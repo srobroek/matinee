@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! authorization_privacy_tests {
     () => {
         mod authorization_privacy_inner {

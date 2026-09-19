@@ -124,9 +124,9 @@ where
     } else if operation.owner() != ObjectOwner::Owned(principal.owner()) {
         // An unknown object, a cross-owner object, and a filtered object are one outcome.
         Err(FailureCode::ObjectNotFound)
-    } else if !ceiling_allows(principal, operation.requested()) {
-        Err(FailureCode::AuthorizationDenied)
-    } else if !grant_allows(principal, operation) {
+    } else if !ceiling_allows(principal, operation.requested())
+        || !grant_allows(principal, operation)
+    {
         Err(FailureCode::AuthorizationDenied)
     } else if payload_bytes > operation.kind().max_bytes() {
         Err(FailureCode::ResourceLimit)

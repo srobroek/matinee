@@ -3,6 +3,10 @@
 //! The adapter returns opaque handles only. It deliberately has no operation
 //! for exporting key material, and its errors contain no provider diagnostics or
 //! identifiers that could disclose credential state.
+// T011 requires the complete private credential-store seam before the daemon
+// exists; Spec 007 is the production owner that wires PlatformCredentialStore.
+// Tests intentionally inject fakes, so this module is uninstantiated in Spec 006.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use core::fmt;
 

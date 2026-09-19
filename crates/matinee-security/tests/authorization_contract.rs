@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! authorization_contract_tests {
     () => {
         use crate::authorization::{AuthorizationContext, AuthorizationRequest, authorize};
@@ -84,12 +85,12 @@ macro_rules! authorization_contract_tests {
             AuthorizationContext::new(principal, 1, 1, 1)
         }
 
-        fn operation<'a>(
+        fn operation(
             requested: Capability,
             kind: PayloadKind,
             owner: ObjectOwner,
-            grant: Option<&'a ExtensionGrant>,
-        ) -> SessionInput<'a> {
+            grant: Option<&ExtensionGrant>,
+        ) -> SessionInput<'_> {
             SessionInput::new(requested, kind, owner, grant)
         }
 

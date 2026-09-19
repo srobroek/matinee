@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! events_contract_tests {
     () => {
         use crate::ChannelSigner;
@@ -319,7 +320,7 @@ macro_rules! events_contract_tests {
         fn channel_admission_facts() -> Vec<events::SecurityCode> {
             use crate::identity::PrincipalKind;
             use crate::test_support_channel::{
-                RecordingSink, RingSigner, establish_pair_for, id, registered_principal,
+                RecordingSink, RingSigner, establish_pair_for, registered_principal,
             };
             use crate::test_support_transitions::{EXTENSION, ceiling, connection, registered};
             use crate::transition::SecurityTransitions;

@@ -3,6 +3,10 @@
 //! Bootstrap uses an anonymous inherited handle only. Envelope parsing and
 //! validation belong to the bootstrap implementation; this seam exposes no
 //! plaintext or platform error details.
+// T011 requires the complete private inherited-pipe seam before the daemon
+// exists; Spec 007 is the production owner that wires PlatformOsPipe.
+// Tests intentionally inject fakes, so this module is uninstantiated in Spec 006.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use core::cell::Cell;
 use core::fmt;
@@ -13,18 +17,21 @@ use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::os::windows::io::{FromRawHandle, OwnedHandle, RawHandle};
 
 #[cfg(unix)]
+#[cfg_attr(test, allow(dead_code))]
 enum OwnedPlatformHandle {
     Unix(OwnedFd),
     #[cfg(test)]
     Test,
 }
 #[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
 enum OwnedPlatformHandle {
     Windows(OwnedHandle),
     #[cfg(test)]
     Test,
 }
 #[cfg(not(any(unix, windows)))]
+#[cfg_attr(test, allow(dead_code))]
 enum OwnedPlatformHandle {
     #[cfg(test)]
     Test,
@@ -88,11 +95,11 @@ impl InheritedPipe {
             // SAFETY: F_GETFD succeeded, and this constructor takes ownership
             // of the descriptor exactly once.
             let owned = unsafe { OwnedFd::from_raw_fd(raw) };
-            return Ok(Self {
+            Ok(Self {
                 handle: Some(OwnedPlatformHandle::Unix(owned)),
                 close_on_exec: true,
                 closed: false,
-            });
+            })
         }
 
         #[cfg(windows)]
@@ -167,9 +174,11 @@ impl Drop for InheritedPipe {
 
 /// Production inherited-pipe source. The caller supplies the raw inherited
 /// descriptor/handle exactly once; [`InheritedPipe`] then owns and closes it.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct PlatformOsPipe {
     handle: Cell<Option<u64>>,
 }
+#[cfg_attr(test, allow(dead_code))]
 impl PlatformOsPipe {
     pub(crate) const fn new(handle: u64) -> Self {
         Self {

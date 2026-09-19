@@ -2,6 +2,9 @@
 //!
 //! This module deliberately contains identifiers and references only. Private key
 //! bytes, enrollment secrets, and derived key material have no representation here.
+// Typed identities are the shared boundary for Specs 007--015; this implementation
+// retains the complete lifecycle API before downstream owners wire every caller.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use core::fmt;
 
@@ -180,7 +183,7 @@ impl Serialize for PublicKey {
 impl<'de> Deserialize<'de> for PublicKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct UncompressedHex;
-        impl<'v> Visitor<'v> for UncompressedHex {
+        impl Visitor<'_> for UncompressedHex {
             type Value = PublicKey;
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str(
@@ -339,6 +342,7 @@ impl DaemonIdentity {
         self.lifecycle = DaemonLifecycle::Active;
         Ok(())
     }
+    #[cfg_attr(test, allow(dead_code))]
     pub fn replace(&mut self) -> Result<(), &'static str> {
         if self.lifecycle != DaemonLifecycle::Active {
             return Err("daemon is not active");
@@ -659,7 +663,10 @@ pub struct Connection {
     receive_exhausted: bool,
     lifecycle: ConnectionLifecycle,
 }
+#[cfg_attr(test, allow(dead_code))]
 impl Connection {
+    // Connection protocol fields are contract-fixed; keep construction explicit.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: ConnectionId,
         principal: IdentityId,
@@ -875,6 +882,8 @@ pub struct RotationTransition {
     outcome: TransitionOutcome,
 }
 impl RotationTransition {
+    // Rotation record fields are contract-fixed for idempotent transition evidence.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         idempotency: IdempotencyKey,
         principal: IdentityId,
@@ -906,9 +915,11 @@ impl RotationTransition {
     pub fn principal(&self) -> IdentityId {
         self.principal
     }
+    #[cfg_attr(test, allow(dead_code))]
     pub fn old_fingerprint(&self) -> &Fingerprint {
         &self.old_fingerprint
     }
+    #[cfg_attr(test, allow(dead_code))]
     pub fn new_fingerprint(&self) -> &Fingerprint {
         &self.new_fingerprint
     }

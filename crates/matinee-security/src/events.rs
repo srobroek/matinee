@@ -2,6 +2,9 @@
 //
 // This module owns no clock, persistence, or queue. A caller supplies the event time
 // and a sink decides whether the fact is accepted or aggregated.
+// Spec 015 owns durable event delivery; Spec 006 keeps this complete typed sink
+// boundary for that downstream wiring while tests cover the redaction contract.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -12,7 +15,6 @@ const MAX_METADATA_KEY_BYTES: usize = 32;
 const MAX_METADATA_VALUE_BYTES: usize = 128;
 const MAX_METADATA_BYTES: usize = 512;
 const MAX_BUCKETS: usize = 64;
-const MAX_COUNT: u8 = u8::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EventBoundary {
@@ -119,6 +121,8 @@ pub(crate) enum EventBuildError {
 }
 
 impl SecurityEvent {
+    // Event contract fields are fixed individually for redaction and audit bounds.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         event_id: Uuid,
         boundary: EventBoundary,
@@ -252,6 +256,7 @@ pub enum SecurityEventSinkResult {
     Aggregated,
     Unavailable,
 }
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) type SinkResult = SecurityEventSinkResult;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -283,10 +288,12 @@ pub trait SecurityEventSink {
 
 /// Adapts a crate-local callback to the event-sink seam without exposing event
 /// delivery outside this crate. The callback receives only bounded, redacted data.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct CallbackSecurityEventSink<F> {
     callback: F,
 }
 
+#[cfg_attr(test, allow(dead_code))]
 impl<F> CallbackSecurityEventSink<F> {
     pub(crate) fn new(callback: F) -> Self {
         Self { callback }
@@ -326,7 +333,7 @@ impl AggregationState {
             endpoint: event.endpoint,
         };
         if let Some(count) = self.buckets.get_mut(&key) {
-            *count = count.saturating_add(1).min(MAX_COUNT);
+            *count = count.saturating_add(1);
             return SecurityEventSinkResult::Aggregated;
         }
         if self.buckets.len() >= MAX_BUCKETS {

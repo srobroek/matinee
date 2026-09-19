@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! bootstrap_recovery_tests {
     () => {
         use crate::adapters::credential_store::{

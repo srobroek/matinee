@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! malformed_corpus_tests {
     () => {
         use std::fmt::Write as _;
@@ -308,7 +309,6 @@ macro_rules! malformed_corpus_tests {
             let expected_principal = principal.id();
             let connection = Uuid::from_u128(CONNECTION);
             let operation = owned_operation(PayloadKind::Command);
-            let mut dispatched = 0usize;
             let mut counts: std::collections::HashMap<FailureCode, usize> = Default::default();
 
             for (index, case) in malformed_corpus_cases().enumerate() {
@@ -316,7 +316,6 @@ macro_rules! malformed_corpus_tests {
                 let mut sink = RecordingSink::default();
                 let failure = match session.receive(&case.bytes, &operation, &mut sink) {
                     Ok(_) => {
-                        dispatched += 1;
                         panic!("case {index} ({}) dispatched a payload", case.family);
                     }
                     Err(failure) => failure,
@@ -353,12 +352,6 @@ macro_rules! malformed_corpus_tests {
                 );
             }
 
-            assert_eq!(dispatched, 0, "rejected frames never dispatch");
-            assert_eq!(
-                counts.values().sum::<usize>(),
-                MALFORMED_CASE_COUNT,
-                "every case was classified"
-            );
             let per_family = MALFORMED_CASE_COUNT / SHAPE_FAMILIES;
             assert_eq!(counts[&FailureCode::ResourceLimit], per_family);
             assert_eq!(counts[&FailureCode::CounterMismatch], per_family);

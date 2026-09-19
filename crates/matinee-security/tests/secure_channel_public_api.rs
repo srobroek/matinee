@@ -96,7 +96,7 @@ fn registered_principal(key: PublicKey, owner: IdentityId, epoch: u64) -> Princi
                 Fingerprint::new(format!("{:064x}", index + 1)).unwrap(),
                 CredentialReference::new(
                     "consumer-store",
-                    &format!("principal-key-{}", index + 1),
+                    format!("principal-key-{}", index + 1),
                     owner,
                     id(9),
                 )

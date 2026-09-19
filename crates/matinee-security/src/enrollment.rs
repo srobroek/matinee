@@ -1,5 +1,8 @@
 //! Closed, bounded enrollment creation and binding validation.
 
+// The complete enrollment boundary is owned here for Spec 008/daemon integration;
+// Spec 006 has no downstream caller, while contract tests exercise the public seam.
+#![cfg_attr(not(test), allow(dead_code))]
 use core::fmt;
 use std::collections::HashMap;
 use std::sync::{
@@ -48,8 +51,7 @@ impl ExtensionVersion {
             return Err(ExtensionVersionError::Malformed);
         }
         let mut components = [0u16; 4];
-        let mut count = 0usize;
-        for part in value.split('.') {
+        for (count, part) in value.split('.').enumerate() {
             if count == components.len() {
                 return Err(ExtensionVersionError::Malformed);
             }
@@ -62,7 +64,6 @@ impl ExtensionVersion {
             components[count] = part
                 .parse::<u16>()
                 .map_err(|_| ExtensionVersionError::Malformed)?;
-            count += 1;
         }
         Ok(Self(components))
     }
@@ -675,15 +676,6 @@ impl HostAttemptBudget {
         self.failures = self.failures.saturating_add(1);
         HostAttemptResult::Allowed
     }
-    pub(crate) fn reset_if_elapsed(&mut self, occurrence_ms: u64) {
-        if self
-            .window_start_ms
-            .is_some_and(|start| occurrence_ms.saturating_sub(start) >= 60_000)
-        {
-            self.window_start_ms = None;
-            self.failures = 0;
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -958,6 +950,8 @@ impl EnrollmentConsumptionService {
     }
 
     /// Consume one pairing proof against the enrollment it bound to.
+    // Pairing proof fields are contract-fixed; keep this boundary explicit.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn consume_proof<S: SecurityEventSink + ?Sized>(
         &self,
         bundle: &mut EnrollmentBundle,
@@ -1225,6 +1219,8 @@ impl EnrollmentConsumptionService {
     /// A host passes `None` for an identifier it holds no pending enrollment for,
     /// rather than refusing it itself, so that attempt is budgeted and stated here
     /// and cannot become an existence oracle at the route.
+    // Host pairing fields are contract-fixed at the public security boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn consume_pairing_proof(
         &self,
         bundle: Option<&mut EnrollmentBundle>,

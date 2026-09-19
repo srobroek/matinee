@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! secure_channel_frames_tests {
     () => {
         use crate::test_support_channel::{

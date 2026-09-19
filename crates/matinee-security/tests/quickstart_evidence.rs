@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! quickstart_evidence_tests {
     () => {
         const FR_EVIDENCE: &[(u8, &str)] = &[

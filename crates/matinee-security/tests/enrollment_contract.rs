@@ -1,3 +1,4 @@
+#[allow(unused_macros)]
 macro_rules! enrollment_contract_tests {
     () => {
         use crate::enrollment::{
