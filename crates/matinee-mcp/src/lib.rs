@@ -1160,8 +1160,19 @@ fn safe_error_detail(detail: &str) -> String {
         .collect()
 }
 
+/// Reports whether a URL names the pinned fixture origin.
+///
+/// The extension manifest grants host access to `http://127.0.0.1/*` only, so
+/// `localhost` is rejected here as well. Accepting it would let a navigation
+/// pass this pre-dispatch check and then fail at the browser boundary.
 fn is_fixture_url(url: &str) -> bool {
-    url.starts_with(FIXTURE_ORIGIN_PREFIX) || url.starts_with("http://localhost")
+    let Some(remainder) = url.strip_prefix(FIXTURE_ORIGIN_PREFIX) else {
+        return false;
+    };
+    remainder.is_empty()
+        || remainder.starts_with('/')
+        || remainder.starts_with(':')
+        || remainder.starts_with('?')
 }
 
 fn now_ms() -> i64 {
@@ -1169,4 +1180,24 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_fixture_url;
+
+    /// The extension only holds host access to `http://127.0.0.1/*`, so any URL
+    /// this accepts must be one the browser boundary can also act on.
+    #[test]
+    fn only_the_pinned_fixture_origin_is_accepted() {
+        assert!(is_fixture_url("http://127.0.0.1:8787/alpha"));
+        assert!(is_fixture_url("http://127.0.0.1/alpha"));
+        assert!(is_fixture_url("http://127.0.0.1"));
+
+        assert!(!is_fixture_url("http://localhost:8787/alpha"));
+        assert!(!is_fixture_url("https://127.0.0.1:8787/alpha"));
+        assert!(!is_fixture_url("http://127.0.0.1.example.com/alpha"));
+        assert!(!is_fixture_url("http://127.0.0.10/alpha"));
+        assert!(!is_fixture_url("http://example.com/alpha"));
+    }
 }
