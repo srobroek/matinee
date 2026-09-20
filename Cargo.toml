@@ -1,3 +1,10 @@
 [workspace]
-members = ["crates/matinee-cli", "crates/matinee-runtime", "crates/matinee-security"]
+members = [
+    "crates/matinee-cli",
+    "crates/matinee-daemon",
+    "crates/matinee-fixture",
+    "crates/matinee-mcp",
+    "crates/matinee-runtime",
+    "crates/matinee-security",
+]
 resolver = "3"
