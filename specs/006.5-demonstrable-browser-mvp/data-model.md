@@ -143,4 +143,4 @@ Failed masking yields no artifact identity and no bytes (`FR-030`).
 6. Action sequences increase monotonically per session and never repeat.
 7. An unobserved `failed` Operation blocks conflicting work on its target for the
    rest of the run (`FR-044`).
-8. No secret, cookie, or unredacted screenshot is exposed (`FR-047`).
+8. No secret, cookie, or unredacted screenshot is exposed (`FR-016`, `FR-030`).

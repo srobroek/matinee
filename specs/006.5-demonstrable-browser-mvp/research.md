@@ -2,7 +2,8 @@
 
 **Feature**: `specs/006.5-demonstrable-browser-mvp/spec.md` | **Date**: 2026-09-20
 
-Every pin below was compiled under `cargo +1.85.0 check` in this worktree. The
+Every pin selected below was compiled under `cargo +1.85.0 check` in this
+worktree, and every pin rejected below failed that same check. The
 constitution fixes the minimum supported Rust version at 1.85, so a declared or
 inferred MSRV was not accepted as evidence.
 

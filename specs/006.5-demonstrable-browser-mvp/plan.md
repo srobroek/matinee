@@ -91,7 +91,7 @@ specs/006.5-demonstrable-browser-mvp/
 ├── quickstart.md                # Phase 1 demonstration procedure (FR-056)
 ├── checklists/requirements.md   # Specification quality checklist
 └── contracts/
-    ├── mcp-tools.md             # The 12 MVP tools and their schemas
+    ├── mcp-tools.md             # The 10 MVP tools and their schemas
     ├── daemon-protocol.md       # Native bootstrap and control messages
     └── extension-protocol.md    # Loopback WebSocket frames
 ```
@@ -100,7 +100,7 @@ specs/006.5-demonstrable-browser-mvp/
 
 ```text
 crates/
-├── matinee-cli/          # bin `matinee`: setup, status, doctor, stop, daemon, mcp, fixture
+├── matinee-cli/          # bin `matinee`: setup, status, doctor, stop, mcp, fixture
 ├── matinee-daemon/       # NEW lib: lifecycle, in-memory registry, sessions, transports
 ├── matinee-mcp/          # NEW lib: JSON-RPC stdio adapter and tool dispatch
 ├── matinee-fixture/      # NEW lib: deterministic two-route axum site
