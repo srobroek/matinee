@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Matinee Browser MVP",
+  "version": "0.1.0",
+  "description": "A paired, fixture-only browser control extension for Matinee.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuyvnXDxE/1n4ow5GdcIhM+7UFigqC5qtHfQyJm+loqEwUd+dMhlQn6wJNFRJ/buvbzjbGmAws1WoDWbNVQsntsN+PtVwwDrxLg8EoI1EKIxdi6wZZJepwz9IR3yuQXB/R0t48Tjjwg/lqupjcHLID+4qZv/u/6FRv4uvhmAf1jPo0UBzxOholNsYDC9/MkvfMj0VAlqOkOadVkDYMV6cRfg7gHb6K+/lMcUqoUc9+bVy8qsB7qyfEl3O7GWA3A1prLdx+vtoxnPH7RNft6AAFVbFMb0Km0e3REVXnssHz6dhomQq7W6ag/arv436xdWH/mlf4Hg9KkUtMQ40ZAQHzQIDAQAB",
+  "permissions": [
+    "scripting",
+    "activeTab",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "options_page": "options.html"
+}

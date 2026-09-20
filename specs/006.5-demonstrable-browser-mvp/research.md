@@ -3,9 +3,10 @@
 **Feature**: `specs/006.5-demonstrable-browser-mvp/spec.md` | **Date**: 2026-09-20
 
 Every pin selected below was compiled under `cargo +1.85.0 check` in this
-worktree, and every pin rejected below failed that same check. The
-constitution fixes the minimum supported Rust version at 1.85, so a declared or
-inferred MSRV was not accepted as evidence.
+worktree. `rmcp` was compiled and failed there. The other rejected options were
+ruled out on published metadata and maturity statements rather than by a local
+compile. The constitution fixes the minimum supported Rust version at 1.85, so a
+declared or inferred MSRV was not accepted as evidence for a selected pin.
 
 ## D1: MCP stdio adapter implements JSON-RPC directly
 

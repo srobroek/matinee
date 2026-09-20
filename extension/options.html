@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Matinee pairing</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px system-ui, sans-serif; }
+    body { max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin: 1rem 0 .35rem; font-weight: 600; }
+    input { box-sizing: border-box; width: 100%; padding: .55rem; }
+    button { margin-top: 1.25rem; padding: .6rem 1rem; }
+    output { display: block; margin-top: 1rem; min-height: 1.5rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Pair Matinee</h1>
+    <p>Enter the one-time pairing key issued by Matinee setup. The extension keeps its private key locally and sends only its public key and fingerprint.</p>
+    <form id="pairing-form">
+      <label for="endpoint">Daemon WebSocket endpoint</label>
+      <input id="endpoint" name="endpoint" type="url" value="ws://127.0.0.1:7777/v1/extension" required pattern="wss?://127\.0\.0\.1(?::[0-9]+)?/[^ ]+">
+      <label for="pairing-key">One-time pairing key</label>
+      <input id="pairing-key" name="pairing-key" type="password" autocomplete="off" required>
+      <button type="submit">Pair extension</button>
+    </form>
+    <output id="status" role="status" aria-live="polite"></output>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
