@@ -1508,16 +1508,23 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Decodes a public key or signature carried on the extension channel.
+/// Length of an uncompressed P-256 public key, which both encodings must yield.
+const RAW_P256_KEY_LEN: usize = 65;
+
+/// Decodes an uncompressed P-256 public key from base64url or hex.
 ///
-/// The extension encodes both as base64url, so that is tried first. Hex is also
-/// accepted because an operator may paste a key in that form. Parsing only one
-/// of the two would make a real handshake fail before signature verification,
-/// which is how this defect first shipped.
+/// Every lowercase hex string is also valid base64url, so trying one then the
+/// other silently produces the wrong bytes for a hex input. The two encodings of
+/// a 65-byte key have different lengths, so the decoded length disambiguates
+/// them: only a candidate that yields exactly 65 bytes is accepted.
+///
+/// The extension sends base64url. Hex is accepted because an operator may paste a
+/// key that way.
 fn decode_key_material(value: &str) -> Option<Vec<u8>> {
-    decode_base64_url(value)
-        .filter(|bytes| !bytes.is_empty())
-        .or_else(|| decode_hex(value))
+    let correct_length = |bytes: &Vec<u8>| bytes.len() == RAW_P256_KEY_LEN;
+    decode_hex(value)
+        .filter(correct_length)
+        .or_else(|| decode_base64_url(value).filter(correct_length))
 }
 
 fn hex_digit(value: u8) -> Option<u8> {
@@ -1605,6 +1612,25 @@ mod tests {
             Some(public_key.as_slice()),
             "the daemon must decode the encoding the extension sends"
         );
+
+        // Lowercase hex is also valid base64url, so a decoder that tried base64url
+        // first would decode a hex key to the wrong bytes and never reach hex.
+        let hex_key: String = public_key
+            .iter()
+            .flat_map(|byte| {
+                const DIGITS: &[u8; 16] = b"0123456789abcdef";
+                [
+                    DIGITS[usize::from(byte >> 4)] as char,
+                    DIGITS[usize::from(byte & 0x0f)] as char,
+                ]
+            })
+            .collect();
+        assert_eq!(
+            decode_key_material(&hex_key).as_deref(),
+            Some(public_key.as_slice()),
+            "a hex-configured key must decode to the same bytes"
+        );
+        assert_ne!(hex_key, encoded_key, "the two encodings differ");
 
         let frame = json!({"signature": base64_url(signature.as_ref())});
         assert!(verify_extension_proof(
