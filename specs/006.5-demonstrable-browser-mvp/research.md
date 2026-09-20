@@ -45,18 +45,7 @@ and authorizes commands only after it completes.
 **Alternatives rejected**: `axum 0.8.9` adds a router and framework state for one
 upgrade endpoint. A raw TCP upgrade would reimplement the WebSocket protocol.
 
-**Address literal, not `localhost`**: Every listener, the fixture origin, and the
-pinned extension origin use the literal `127.0.0.1`. A name would add a
-resolution step through `/etc/hosts`, NSS, and possibly DNS, and that step is
-reachable by misconfiguration or by an attacker. A redirected `localhost` would
-let the daemon bind a routable interface while still passing an origin check, and
-Chrome's `--host-resolver-rules` can remap the name per profile. Chrome also
-treats `http://localhost/*` and `http://127.0.0.1/*` as distinct host
-permissions, so the name would widen the manifest for no gain. On a dual-stack
-host `localhost` often resolves to `::1` first, which would produce a
-connection refusal that looks like a daemon defect. If an IPv6-only environment
-later matters, the fix is an explicit second `[::1]:0` listener with its own
-pinned origin, never a hostname and never a wildcard.
+**Address literal, not `localhost`**: The daemon and fixture listeners bind the literal `127.0.0.1`, and the fixture origin uses that literal. The pinned extension origin is the separate `chrome-extension://<id>` origin. A hostname would add a resolution step through `/etc/hosts`, NSS, and possibly DNS, and that step is reachable by misconfiguration or by an attacker. A redirected `localhost` would let the daemon bind a routable interface while still passing an origin check, and Chrome's `--host-resolver-rules` can remap the name per profile. Chrome also treats `http://localhost/*` and `http://127.0.0.1/*` as distinct host permissions, so the name would widen the manifest for no gain. On a dual-stack host `localhost` often resolves to `::1` first, which would produce a connection refusal that looks like a daemon defect. If an IPv6-only environment later matters, the fix is an explicit second `[::1]:0` listener with its own pinned origin, never a hostname and never a wildcard.
 
 ## D3: No storage engine; state lives in memory
 
@@ -120,11 +109,7 @@ that focus change.
 daemon-issued tab incarnation at session bind time, and use the Chrome
 `documentId` as the document generation.
 
-**Rationale**: `Tab.id` is unique only within a browser session and is reused
-after a tab closes, so `FR-023`'s non-repeating incarnation cannot come from it.
-`webNavigation` events expose `documentId`, documented as the document's UUID,
-plus `documentLifecycle`. A changed `documentId` is exactly the stale-generation
-signal `FR-025` needs.
+`Tab.id` is unique only within a browser session and is reused after a tab closes, so `FR-027`'s non-repeating incarnation cannot come from it. `webNavigation` events expose `documentId`, documented as the document's UUID, plus `documentLifecycle`. A changed `documentId` is exactly the stale-generation signal `FR-025` needs.
 
 ## D7: Extension identity is pinned by manifest key
 

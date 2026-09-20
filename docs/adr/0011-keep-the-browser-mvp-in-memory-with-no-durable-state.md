@@ -14,8 +14,6 @@ supersedes: adr-9 (in part)
 
 ## Considered Options
 
-Three options were weighed:
-
 - Keep the SQLite journal already built for this MVP. Rejected: it protects a
   fixture counter, and it costs a schema, recovery paths, and a bundled C
   dependency.
@@ -71,13 +69,9 @@ One risk remains. A client that retries after a restart can duplicate an effect,
 because no record survives to refuse the reused key. The fixture-only restriction
 bounds that risk, which MUST be closed before real-site automation.
 
-`FR-031` through `FR-050` became the in-run effect boundary. `SC-006`, `SC-007`,
-`SC-009`, `SC-012`, and `SC-014` now measure instance detection, honest failure,
-sequence monotonicity, and absent state.
+`FR-031` through `FR-044` define the in-run effect boundary. `SC-006`, `SC-007`, `SC-009`, `SC-012`, and `SC-014` measure instance detection, honest failure, sequence monotonicity, and absent state.
 
 ### Confirmation
-
-The MVP acceptance run must show four things:
 
 - An extension disconnect ends an operation as `failed`, naming that boundary.
 - A restarted daemon rejects a stale instance identity with `daemon.restarted`.
