@@ -727,6 +727,122 @@ pub async fn run_stdio(daemon: Arc<Daemon>, principal_id: Uuid) -> io::Result<()
     adapter.serve(input, output).await
 }
 
+/// Runs the stdio adapter as a client of a long-lived daemon.
+pub async fn run_stdio_client(
+    endpoint: matinee_daemon::server::Endpoint,
+    principal_id: Uuid,
+) -> io::Result<()> {
+    let client = matinee_daemon::server::ControlClient::new(endpoint.clone());
+    let mut input = tokio::io::BufReader::new(tokio::io::stdin());
+    let mut output = tokio::io::stdout();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if input.read_line(&mut line).await? == 0 {
+            return Ok(());
+        }
+        let parsed = match serde_json::from_str::<Value>(&line) {
+            Ok(value) => value,
+            Err(error) => error_response(
+                Value::Null,
+                -32700,
+                "Parse error",
+                Some(json!({"detail": safe_error_detail(&error.to_string())})),
+                endpoint.instance_id,
+            ),
+        };
+        let response = if let Some(object) = parsed.as_object() {
+            let id = object.get("id").cloned().unwrap_or(Value::Null);
+            match object.get("method").and_then(Value::as_str) {
+                Some("initialize") => success_response(
+                    id,
+                    json!({"protocolVersion":PROTOCOL_VERSION,"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"matinee","version":env!("CARGO_PKG_VERSION")},"daemon_instance_id":endpoint.instance_id.to_string()}),
+                    endpoint.instance_id,
+                ),
+                Some("tools/list") => success_response(
+                    id,
+                    json!({"tools":tool_definitions()}),
+                    endpoint.instance_id,
+                ),
+                Some("tools/call") => {
+                    let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
+                    let mut request = json!({"command":"tool_call","principal_id":principal_id,"name":params.get("name").and_then(Value::as_str).unwrap_or(""),"arguments":params.get("arguments").cloned().unwrap_or_else(|| json!({}))});
+                    if let Some(arguments) =
+                        request.get_mut("arguments").and_then(Value::as_object_mut)
+                    {
+                        if let Some(instance) = object.get("daemon_instance_id") {
+                            arguments.insert("daemon_instance_id".to_owned(), instance.clone());
+                        }
+                    }
+                    match client.request(request).await {
+                        Ok(result) if result.get("ok").and_then(Value::as_bool) == Some(true) => {
+                            success_response(
+                                id,
+                                result.get("result").cloned().unwrap_or_else(|| json!({})),
+                                endpoint.instance_id,
+                            )
+                        }
+                        Ok(result) => error_response(
+                            id,
+                            -32000,
+                            "Matinee operation failed",
+                            Some(
+                                json!({"failure":failure_envelope(parse_failure_code(result.get("code").and_then(Value::as_str).unwrap_or("operation.target_lost")), result.get("detail").and_then(Value::as_str).unwrap_or("daemon operation failed"))}),
+                            ),
+                            endpoint.instance_id,
+                        ),
+                        Err(error) => error_response(
+                            id,
+                            -32000,
+                            "Daemon unavailable",
+                            Some(json!({"detail":safe_error_detail(&error.to_string())})),
+                            endpoint.instance_id,
+                        ),
+                    }
+                }
+                Some("resources/read") => error_response(
+                    id,
+                    -32000,
+                    "Resource unavailable",
+                    Some(
+                        json!({"failure":failure_envelope(FailureCode::AuthorizationDenied,"resource reads require a daemon artifact" )}),
+                    ),
+                    endpoint.instance_id,
+                ),
+                _ => error_response(id, -32601, "Method not found", None, endpoint.instance_id),
+            }
+        } else {
+            error_response(
+                Value::Null,
+                -32600,
+                "Invalid Request",
+                None,
+                endpoint.instance_id,
+            )
+        };
+        let encoded = serde_json::to_vec(&response)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        output.write_all(&encoded).await?;
+        output.write_all(b"\n").await?;
+        output.flush().await?;
+    }
+}
+
+fn parse_failure_code(code: &str) -> FailureCode {
+    match code {
+        "daemon.start_conflict" => FailureCode::DaemonStartConflict,
+        "daemon.restarted" => FailureCode::DaemonRestarted,
+        "operation.extension_disconnected" => FailureCode::ExtensionDisconnected,
+        "operation.deadline_expired" => FailureCode::DeadlineExpired,
+        "candidate.revision_stale" => FailureCode::CandidateRevisionStale,
+        "generation.stale" => FailureCode::GenerationStale,
+        "incarnation.stale" => FailureCode::IncarnationStale,
+        "idempotency.conflict" => FailureCode::IdempotencyConflict,
+        "origin.rejected" => FailureCode::OriginRejected,
+        _ => FailureCode::TargetLost,
+    }
+}
+
 struct AdapterError {
     rpc_code: i64,
     message: String,

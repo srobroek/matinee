@@ -1,9 +1,10 @@
 //! Canonical public states for daemon records.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Canonical `Session` state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
     /// A session is being opened.
     Opening,

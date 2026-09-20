@@ -43,8 +43,10 @@ impl LifecycleState {
 /// A lifecycle error with a stable public failure code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleError {
-    code: FailureCode,
-    detail: String,
+    /// Stable failure code.
+    pub code: FailureCode,
+    /// Safe diagnostic detail.
+    pub detail: String,
 }
 
 impl LifecycleError {

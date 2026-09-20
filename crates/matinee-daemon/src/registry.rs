@@ -371,6 +371,24 @@ impl Registry {
         Ok(())
     }
 
+    /// Resolves an active pairing by the fingerprint that proved possession.
+    ///
+    /// A channel that proves a key must be bound to the pairing record that owns
+    /// the browser profile, so revocation and status govern it. Returns `None`
+    /// when no pairing carries that fingerprint or when the pairing is not
+    /// active.
+    pub fn active_pairing_by_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> Result<Option<PairingRecord>, RegistryError> {
+        let inner = self.lock()?;
+        Ok(inner
+            .pairings
+            .values()
+            .find(|record| record.fingerprint == fingerprint && record.status == "active")
+            .cloned())
+    }
+
     /// Begins a request, assigning action sequences and applying idempotency.
     pub fn begin_request(&self, spec: RequestSpec) -> Result<BeginRequestResult, RegistryError> {
         if spec.operations.is_empty() {

@@ -898,6 +898,7 @@ dependencies = [
  "matinee-daemon",
  "matinee-fixture",
  "matinee-mcp",
+ "serde_json",
  "tokio",
  "uuid",
 ]
@@ -906,9 +907,11 @@ dependencies = [
 name = "matinee-daemon"
 version = "0.0.2"
 dependencies = [
+ "futures-util",
  "libc",
  "matinee-runtime",
  "matinee-security",
+ "ring",
  "serde",
  "serde_json",
  "tokio",

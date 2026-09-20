@@ -14,7 +14,11 @@ pub(crate) enum Dispatch {
     Status,
     Stop,
     Mcp,
-    Fixture { port: u16 },
+    Fixture {
+        port: u16,
+    },
+    #[doc(hidden)]
+    DaemonChild,
     Invalid(OsString),
 }
 
@@ -50,6 +54,7 @@ where
         "stop" if arguments.next().is_none() => Dispatch::Stop,
         "mcp" if arguments.next().is_none() => Dispatch::Mcp,
         "fixture" => parse_fixture(arguments),
+        "--__daemon-child" if arguments.next().is_none() => Dispatch::DaemonChild,
         _ => Dispatch::Invalid(command),
     }
 }

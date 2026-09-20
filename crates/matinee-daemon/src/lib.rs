@@ -7,3 +7,4 @@ pub mod failure;
 pub mod lifecycle;
 pub mod record;
 pub mod registry;
+pub mod server;

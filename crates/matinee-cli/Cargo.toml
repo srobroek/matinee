@@ -16,4 +16,5 @@ matinee-daemon = { path = "../matinee-daemon" }
 matinee-fixture = { path = "../matinee-fixture" }
 matinee-mcp = { path = "../matinee-mcp" }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util", "signal"] }
+serde_json = "1"
 uuid = { version = "1", features = ["v7"] }

@@ -1,10 +1,13 @@
 mod dispatch;
 mod doctor;
 
-use std::{env, io, path::PathBuf, process::ExitCode, sync::Arc};
+use std::{
+    env, io,
+    path::PathBuf,
+    process::{Command, ExitCode, Stdio},
+};
 
-use matinee_daemon::failure::FailureCode;
-use matinee_daemon::lifecycle::Daemon;
+use matinee_daemon::server::{ControlClient, Endpoint};
 use uuid::Uuid;
 
 fn main() -> ExitCode {
@@ -23,6 +26,7 @@ fn main() -> ExitCode {
         dispatch::Dispatch::Stop => stop(),
         dispatch::Dispatch::Mcp => mcp(),
         dispatch::Dispatch::Fixture { port } => fixture(port),
+        dispatch::Dispatch::DaemonChild => daemon_child(),
         dispatch::Dispatch::Invalid(argument) => {
             eprintln!(
                 "error: unrecognized argument '{}'\n\nUsage: matinee <COMMAND>",
@@ -40,51 +44,98 @@ fn state_dir() -> PathBuf {
 }
 
 fn setup() -> ExitCode {
-    match Daemon::start(state_dir()) {
-        Ok(daemon) => {
-            println!("daemon\tready\t{}", daemon.instance_id());
+    let runtime = runtime();
+    match runtime.block_on(ensure_daemon(state_dir())) {
+        Ok(endpoint) => {
+            println!(
+                "daemon\tready\t{}\tcontrol={}\textension={}",
+                endpoint.instance_id, endpoint.control_addr, endpoint.extension_addr
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("{}: {}", error.code(), error.detail());
+            eprintln!("{error}");
             ExitCode::FAILURE
         }
     }
 }
 
 fn status() -> ExitCode {
-    match Daemon::start(state_dir()) {
-        Ok(daemon) => {
-            drop(daemon);
+    let state = state_dir();
+    let runtime = runtime();
+    match runtime.block_on(read_ready(&state)) {
+        Ok(Some(endpoint)) => {
+            println!(
+                "daemon\tready\t{}\tcontrol={}\textension={}",
+                endpoint.instance_id, endpoint.control_addr, endpoint.extension_addr
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(None) => {
             println!("daemon\tstopped");
             ExitCode::SUCCESS
         }
-        Err(error) if error.code() == FailureCode::DaemonStartConflict => {
-            println!("daemon\trunning");
-            ExitCode::SUCCESS
-        }
         Err(error) => {
-            eprintln!("{}: {}", error.code(), error.detail());
+            eprintln!("{error}");
             ExitCode::FAILURE
         }
     }
 }
 
 fn stop() -> ExitCode {
-    // The public CLI has no daemon-start command and cannot address a daemon
-    // that belongs to another process without the authenticated control
-    // channel. The command remains an idempotent status operation until that
-    // channel is available.
-    match Daemon::start(state_dir()) {
-        Ok(daemon) => {
-            drop(daemon);
+    let state = state_dir();
+    let runtime = runtime();
+    match runtime.block_on(async {
+        let Some(endpoint) = Endpoint::read(&state)? else {
+            return Ok::<_, io::Error>(false);
+        };
+        let response = ControlClient::new(endpoint)
+            .request(serde_json::json!({"command":"stop"}))
+            .await
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(response
+            .get("ok")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
+    }) {
+        Ok(true) => {
             println!("daemon\tstopped");
             ExitCode::SUCCESS
         }
-        Err(error) if error.code() == FailureCode::DaemonStartConflict => {
-            println!("daemon\trunning");
+        Ok(false) => {
+            println!("daemon\tstopped");
             ExitCode::SUCCESS
         }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn mcp() -> ExitCode {
+    let runtime = runtime();
+    match runtime.block_on(ensure_daemon(state_dir())) {
+        Ok(endpoint) => {
+            match runtime.block_on(matinee_mcp::run_stdio_client(endpoint, Uuid::now_v7())) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("MCP stdio failed: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn daemon_child() -> ExitCode {
+    let runtime = runtime();
+    match runtime.block_on(matinee_daemon::server::run(state_dir())) {
+        Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {}", error.code(), error.detail());
             ExitCode::FAILURE
@@ -92,34 +143,50 @@ fn stop() -> ExitCode {
     }
 }
 
-fn mcp() -> ExitCode {
-    let daemon = match Daemon::start(state_dir()) {
-        Ok(daemon) => Arc::new(daemon),
-        Err(error) => {
-            eprintln!("{}: {}", error.code(), error.detail());
-            return ExitCode::FAILURE;
-        }
-    };
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_io()
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
         .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("failed to start MCP runtime: {error}");
-            return ExitCode::FAILURE;
-        }
+        .expect("tokio runtime")
+}
+
+async fn read_ready(state: &PathBuf) -> io::Result<Option<Endpoint>> {
+    let Some(endpoint) = Endpoint::read(state)? else {
+        return Ok(None);
     };
-    eprintln!(
-        "matinee MCP adapter ready on stdio (daemon instance {})",
-        daemon.instance_id()
-    );
-    match runtime.block_on(matinee_mcp::run_stdio(daemon, Uuid::now_v7())) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("MCP stdio failed: {error}");
-            ExitCode::FAILURE
+    match ControlClient::new(endpoint.clone())
+        .request(serde_json::json!({"command":"status"}))
+        .await
+    {
+        Ok(_) => Ok(Some(endpoint)),
+        Err(_) => Ok(None),
+    }
+}
+
+async fn ensure_daemon(state: PathBuf) -> io::Result<Endpoint> {
+    if let Some(endpoint) = read_ready(&state).await? {
+        return Ok(endpoint);
+    }
+    let executable = env::current_exe()?;
+    Command::new(executable)
+        .arg("--__daemon-child")
+        .env("MATINEE_STATE_DIR", &state)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(endpoint) = read_ready(&state).await? {
+            return Ok(endpoint);
         }
+        if start.elapsed() > std::time::Duration::from_secs(5) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "daemon did not become ready",
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 }
 
