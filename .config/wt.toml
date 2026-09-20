@@ -1,0 +1,9 @@
+# Repository-local Worktrunk provisioning for Matinee.
+
+[post-start]
+copy-project-ignored = "wt -y step copy-ignored --require-include"
+
+[step.copy-ignored]
+# The embedded Beads store is shared through the canonical checkout. Worktrunk
+# generates a per-worktree Cargo config, so neither may be copied.
+exclude = [".beads/", ".cargo/config.toml", ".venv/", "venv/"]
