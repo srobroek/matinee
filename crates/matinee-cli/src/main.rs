@@ -2,7 +2,7 @@ mod dispatch;
 mod doctor;
 
 use std::{
-    env, io,
+    env, fs, io,
     path::PathBuf,
     process::{Command, ExitCode, Stdio},
 };
@@ -25,6 +25,7 @@ fn main() -> ExitCode {
         dispatch::Dispatch::SetupPairExtension => pair_extension(),
         dispatch::Dispatch::Status => status(),
         dispatch::Dispatch::Stop => stop(),
+        dispatch::Dispatch::Report { output } => report(output),
         dispatch::Dispatch::Mcp => mcp(),
         dispatch::Dispatch::Fixture { port } => fixture(port),
         dispatch::Dispatch::DaemonChild => daemon_child(),
@@ -148,6 +149,69 @@ fn stop() -> ExitCode {
         }
         Ok(false) => {
             println!("daemon\tstopped");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn report(output: PathBuf) -> ExitCode {
+    let state = state_dir();
+    let runtime = runtime();
+    match runtime.block_on(async {
+        let endpoint = Endpoint::read(&state)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "daemon is not running"))?;
+        let response = ControlClient::new(endpoint)
+            .request(serde_json::json!({"command":"evidence"}))
+            .await?;
+        if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            let code = response
+                .get("code")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("authorization.denied");
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, code));
+        }
+        let report = response
+            .get("report")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "evidence report missing"))?;
+        let mut encoded = serde_json::to_vec_pretty(report)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        encoded.push(b'\n');
+        fs::write(&output, encoded)?;
+        let count = |name: &str| {
+            report
+                .get(name)
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len)
+        };
+        let lost_boundary_count = report
+            .get("lost_boundary")
+            .and_then(|value| value.get("operations"))
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len);
+        Ok::<_, io::Error>((
+            count("sessions"),
+            count("requests"),
+            count("operations"),
+            count("artifacts"),
+            count("resource_reads"),
+            lost_boundary_count,
+        ))
+    }) {
+        Ok((sessions, requests, operations, artifacts, resource_reads, lost_boundaries)) => {
+            println!(
+                "report\t{}\tsessions={}\trequests={}\toperations={}\tartifacts={}\tresource_reads={}\tlost_boundary_operations={}",
+                output.display(),
+                sessions,
+                requests,
+                operations,
+                artifacts,
+                resource_reads,
+                lost_boundaries,
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {

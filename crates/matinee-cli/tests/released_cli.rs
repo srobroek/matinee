@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{env, fs, process::Command};
 
 #[test]
 fn help_is_successful_and_writes_no_diagnostics() {
@@ -73,7 +73,7 @@ fn help_advertises_supported_commands_and_options() {
         .map(|(command, _)| command)
         .collect();
     for command in [
-        "doctor", "setup", "status", "stop", "mcp", "fixture", "help",
+        "doctor", "setup", "status", "stop", "report", "mcp", "fixture", "help",
     ] {
         assert!(
             commands.iter().any(|entry| entry == command),
@@ -90,6 +90,18 @@ fn help_advertises_supported_commands_and_options() {
 }
 
 #[test]
+fn report_requires_output_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_matinee"))
+        .arg("report")
+        .output()
+        .expect("run matinee report without output");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.stdout, b"");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized argument"));
+}
+
+#[test]
 fn every_advertised_command_is_recognized_when_run() {
     let help = Command::new(env!("CARGO_BIN_EXE_matinee"))
         .arg("--help")
@@ -98,10 +110,21 @@ fn every_advertised_command_is_recognized_when_run() {
     let help_text = String::from_utf8(help.stdout).expect("help output is UTF-8");
 
     for (command, _) in advertised_entries(&help_text, "Commands:") {
-        let output = Command::new(env!("CARGO_BIN_EXE_matinee"))
-            .arg(&command)
-            .output()
-            .expect("run advertised matinee command");
+        let report_path = (command == "report").then(|| {
+            env::temp_dir().join(format!(
+                "matinee-released-cli-report-{}",
+                std::process::id()
+            ))
+        });
+        let mut invocation = Command::new(env!("CARGO_BIN_EXE_matinee"));
+        invocation.arg(&command);
+        if let Some(path) = report_path.as_ref() {
+            invocation.args(["--output", path.to_str().expect("temporary path is UTF-8")]);
+        }
+        let output = invocation.output().expect("run advertised matinee command");
+        if let Some(path) = report_path {
+            let _ = fs::remove_file(path);
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         assert!(

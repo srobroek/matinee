@@ -12,7 +12,13 @@ fake.
 - Rust 1.85 or later, with the workspace building.
 - Chrome or Chromium, with a profile you are willing to pair.
 - A platform credential store the current user can unlock.
-- A free loopback port for the fixture and one for the extension channel.
+- A free loopback port for the fixture. The daemon picks ephemeral ports itself.
+- One shell variable used by every command below, because the CLI reads the state
+  directory from the environment rather than a flag:
+
+```bash
+export MATINEE_STATE_DIR="$PWD/target/mvp-demo/state"
+```
 
 ## 1. Start the fixture
 
@@ -26,7 +32,7 @@ field and a counter. Leave it running.
 ## 2. Initialize the state directory
 
 ```bash
-cargo run -p matinee -- setup --state-dir "$PWD/target/mvp-demo/state"
+cargo run -p matinee -- setup
 ```
 
 Expect: a state id, the created credential references, the ownership lock, and a
@@ -37,7 +43,7 @@ must report ownership conflict rather than reinitializing.
 ## 3. Confirm the daemon is ready
 
 ```bash
-cargo run -p matinee -- status --state-dir "$PWD/target/mvp-demo/state"
+cargo run -p matinee -- status
 ```
 
 Expect: `ready`, the bound loopback endpoints, the daemon instance identity, and
@@ -46,26 +52,32 @@ zero sessions on a fresh run.
 ## 4. Pair the extension
 
 ```bash
-cargo run -p matinee -- setup pair-extension --allow-development
+cargo run -p matinee -- setup pair-extension
 ```
 
-Expect: a pairing id, a one-time key, and the pinned
-`chrome-extension://<id>` origin.
+Expect: a one-time pairing key, the daemon's extension WebSocket URL, and the
+pinned `chrome-extension://<id>` origin. The key is valid for ten minutes and may
+be spent once. An unauthenticated caller asking for it is denied.
 
 Then load the extension:
 
 1. Open `chrome://extensions`.
 2. Enable Developer mode.
 3. Choose Load unpacked and select the `extension/` directory.
-4. Open the extension's options page and paste the one-time key.
+4. Confirm the id Chrome shows matches the origin printed above.
+5. Open the extension's options page, paste the one-time key and the WebSocket
+   URL, and submit.
 
-Expect: the daemon logs a completed handshake and one active channel generation.
-The extension badge shows the paired state.
+Expect: the options page reports that pairing started. That message confirms only
+that the extension accepted the configuration and opened the socket; it does not
+wait for the daemon's signed acceptance. Verify the pairing itself in step 6, where
+`session_open` succeeds only over an authenticated channel. A pairing that never
+completed makes that call fail with `operation.extension_disconnected`.
 
 ## 5. Connect the MCP client
 
 ```bash
-cargo run -p matinee -- mcp --state-dir "$PWD/target/mvp-demo/state"
+cargo run -p matinee -- mcp
 ```
 
 This speaks JSON-RPC on stdio. Point your MCP client at that command, then call
@@ -113,8 +125,9 @@ tab, with zero cross-tab mutation.
 3. Disconnect the extension before the click result arrives.
 4. Read the fixture counter:
    `curl http://127.0.0.1:8787/alpha/counter`.
-5. Kill the daemon: `pkill -f 'matinee.*(daemon|setup)'`.
-6. Start the MCP adapter again, which brings a fresh daemon up.
+5. Kill the daemon: `pkill -f '__daemon-child'`.
+6. Start the MCP adapter again with the same `MATINEE_STATE_DIR`, which brings a
+   fresh daemon up.
 7. Call `request_get` for the disconnected request using the prior daemon
    instance identity.
 
@@ -124,19 +137,13 @@ fails with `daemon.restarted` naming its last action sequence. The restarted
 daemon holds zero sessions, and the fixture counter has advanced at most once.
 Matinee never re-sends the click.
 
-## 10. Prove stop safety
+## 10. Write the evidence report
 
-Request stop as the authenticated native principal.
-
-Expect: stop always succeeds. The daemon enters `draining`, rejects new
-operations, abandons its in-memory state, disconnects the extension, leaves every
-fixture tab open, and exits. No stop request is blocked by an outstanding
-Operation.
-
-## 11. Write the evidence report
+Capture the report before stopping anything. The daemon holds every record in
+memory, so stop discards exactly the evidence `FR-058` requires.
 
 ```bash
-cargo run -p matinee -- fixture --report target/mvp-demo/evidence.json
+cargo run -p matinee -- report --output target/mvp-demo/evidence.json
 ```
 
 Expect a sanitized machine-readable report containing component versions,
@@ -146,12 +153,21 @@ sequences, screenshot artifact digests, resource-read results, and evidence that
 a lost boundary terminated an Operation as `failed`. It must contain no secret,
 raw page text, or private browser data.
 
+A report captured from a run that skipped steps 6 through 9 is valid but empty.
+An empty report is not `FR-058` proof; only a report from a completed run is.
+
+## 11. Prove stop safety
+
+Request stop as the authenticated native principal.
+
+Expect: stop always succeeds. The daemon enters `draining`, rejects new
+operations, abandons its in-memory state, disconnects the extension, leaves every
+fixture tab open, and exits. No stop request is blocked by an outstanding
+Operation.
+
 ## Cleanup
 
-```bash
-cargo run -p matinee -- stop
-```
-
-The stop command releases the ownership lock. Remove the unpacked extension from
-`chrome://extensions`; there is no state database to delete.
+Step 11 already stopped the daemon and released the ownership lock. Stop the
+fixture, then remove the unpacked extension from `chrome://extensions`. There is
+no state database to delete, because the MVP keeps none.
 

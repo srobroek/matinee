@@ -552,6 +552,7 @@ impl Service {
             "status" => {
                 json!({"ok":true,"instance_id":instance_id,"state":self.daemon.state().map(|s|s.as_str()).unwrap_or("failed"),"control_addr":self.endpoint.control_addr,"extension_addr":self.endpoint.extension_addr})
             }
+            "evidence" => self.evidence(),
             "pair_extension" => {
                 if authenticated.principal_id != self.auth.native.id().get() {
                     return error_response(
@@ -607,6 +608,26 @@ impl Service {
             "tool_call" => self.tool_call(object, authenticated).await,
             _ => error_response(instance_id, "invalid.command", "unknown control command"),
         }
+    }
+    /// Returns the sanitized, point-in-time evidence report for this daemon run.
+    fn evidence(&self) -> Value {
+        let snapshot = match self.daemon.registry().snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return error_response(
+                    self.endpoint.instance_id,
+                    "storage.unavailable",
+                    error.detail(),
+                );
+            }
+        };
+        let state = self
+            .daemon
+            .state()
+            .map(|state| state.as_str())
+            .unwrap_or("failed");
+        let report = evidence_report(self.daemon.instance_id(), state, snapshot);
+        json!({"ok":true,"instance_id":self.endpoint.instance_id,"report":report})
     }
 
     async fn begin_request(
@@ -1588,6 +1609,259 @@ fn parse_request_spec(value: &Value) -> Result<RequestSpec, String> {
     })
 }
 
+fn evidence_report(
+    instance_id: Uuid,
+    daemon_state: &str,
+    snapshot: crate::registry::RegistrySnapshot,
+) -> Value {
+    let principal_fingerprints = snapshot
+        .principals
+        .iter()
+        .map(|principal| {
+            json!({
+                "identity_id": principal.identity_id,
+                "kind": safe_principal_kind(&principal.kind),
+                "fingerprint": hex_digest(principal.identity_id.as_bytes()),
+            })
+        })
+        .collect::<Vec<_>>();
+    let pairing_fingerprints = snapshot
+        .pairings
+        .iter()
+        .map(|pairing| {
+            json!({
+                "pairing_id": pairing.pairing_id,
+                "extension_identity_id": pairing.extension_identity_id,
+                "fingerprint": redacted_fingerprint(&pairing.fingerprint),
+            })
+        })
+        .collect::<Vec<_>>();
+    let sessions = snapshot
+        .sessions
+        .iter()
+        .map(|session| {
+            json!({
+                "session_id": session.session_id,
+                "pairing_id": session.pairing_id,
+                "tab_incarnation": session.tab_incarnation,
+                "document_generation": session.document_generation,
+                "state": session.state.as_str(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let tabs = snapshot
+        .sessions
+        .iter()
+        .filter_map(|session| {
+            session.tab_incarnation.as_ref().map(|tab| {
+                json!({
+                    "session_id": session.session_id,
+                    "tab_incarnation": tab,
+                    "document_generation": session.document_generation,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let requests = snapshot
+        .requests
+        .iter()
+        .map(|request| {
+            json!({
+                "request_id": request.request_id,
+                "principal_id": request.mcp_principal_id,
+                "tool": safe_tool_name(&request.tool),
+                "fingerprint": redacted_fingerprint(&request.fingerprint),
+                "state": request.state.as_str(),
+                "failure_code": request.failure_code.map(|code| code.as_str()),
+                "operations": request.operations.iter().map(report_operation_value).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let operations = snapshot
+        .operations
+        .iter()
+        .map(|operation| {
+            let failure_code = snapshot
+                .requests
+                .iter()
+                .find(|request| request.request_id == operation.request_id)
+                .and_then(|request| request.failure_code)
+                .filter(|_| operation.state == OperationState::Failed)
+                .map(|code| code.as_str());
+            json!({
+                "operation_id": operation.operation_id,
+                "request_id": operation.request_id,
+                "session_id": operation.session_id,
+                "sequence": operation.sequence,
+                "action_sequence": operation.action_sequence,
+                "fingerprint": redacted_fingerprint(&operation.fingerprint),
+                "state": operation.state.as_str(),
+                "failure_code": failure_code,
+            })
+        })
+        .collect::<Vec<_>>();
+    let screenshot_artifacts = snapshot
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "screenshot")
+        .map(|artifact| {
+            json!({
+                "artifact_id": artifact.artifact_id,
+                "operation_id": artifact.operation_id,
+                "digest": artifact_digest(&artifact.digest),
+                "byte_length": artifact.byte_length,
+            })
+        })
+        .collect::<Vec<_>>();
+    let resource_reads = snapshot
+        .operations
+        .iter()
+        .filter_map(|operation| {
+            let request = snapshot
+                .requests
+                .iter()
+                .find(|request| request.request_id == operation.request_id)?;
+            if !is_resource_read_tool(&request.tool) {
+                return None;
+            }
+            Some(json!({
+                "request_id": request.request_id,
+                "operation_id": operation.operation_id,
+                "tool": safe_tool_name(&request.tool),
+                "action_sequence": operation.action_sequence,
+                "state": operation.state.as_str(),
+                "result": (operation.state == OperationState::Succeeded).then_some(json!({"status":"available"})),
+                "failure_code": request.failure_code.map(|code| code.as_str()).filter(|_| operation.state == OperationState::Failed),
+            }))
+        })
+        .collect::<Vec<_>>();
+    let lost_boundary_operations = snapshot
+        .operations
+        .iter()
+        .filter_map(|operation| {
+            if operation.state != OperationState::Failed {
+                return None;
+            }
+            let request = snapshot
+                .requests
+                .iter()
+                .find(|request| request.request_id == operation.request_id)?;
+            let code = request
+                .failure_code
+                .filter(|code| is_lost_boundary(*code))?;
+            Some(json!({
+                "operation_id": operation.operation_id,
+                "request_id": operation.request_id,
+                "action_sequence": operation.action_sequence,
+                "state": "failed",
+                "boundary_code": code.as_str(),
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "schema_version": 1,
+        "component_versions": {
+            "matinee_cli": env!("CARGO_PKG_VERSION"),
+            "matinee_daemon": env!("CARGO_PKG_VERSION"),
+            "matinee_mcp": env!("CARGO_PKG_VERSION"),
+            "control_protocol": CONTROL_PROTOCOL_VERSION,
+            "extension_protocol": EXTENSION_PROTOCOL_VERSION,
+        },
+        "identity_fingerprints": {
+            "principals": principal_fingerprints,
+            "pairings": pairing_fingerprints,
+        },
+        "daemon": {
+            "instance_id": instance_id,
+            "fingerprint": hex_digest(instance_id.as_bytes()),
+            "state": daemon_state,
+        },
+        "sessions": sessions,
+        "tabs": tabs,
+        "requests": requests,
+        "operations": operations,
+        "artifacts": screenshot_artifacts,
+        "resource_reads": resource_reads,
+        "lost_boundary": {
+            "observed": !lost_boundary_operations.is_empty(),
+            "operations": lost_boundary_operations,
+        },
+    })
+}
+
+fn report_operation_value(operation: &crate::registry::OperationRecord) -> Value {
+    json!({
+        "operation_id": operation.operation_id,
+        "session_id": operation.session_id,
+        "sequence": operation.sequence,
+        "action_sequence": operation.action_sequence,
+        "state": operation.state.as_str(),
+    })
+}
+fn safe_principal_kind(kind: &str) -> &'static str {
+    match kind {
+        "native" | "native_admin" => "native_admin",
+        "mcp" | "mcp_client" => "mcp_client",
+        "extension" => "extension",
+        _ => "other",
+    }
+}
+
+fn safe_tool_name(tool: &str) -> &'static str {
+    match tool {
+        "browser_list" => "browser_list",
+        "session_open" => "session_open",
+        "session_get" => "session_get",
+        "session_close" => "session_close",
+        "page_observe" => "page_observe",
+        "page_navigate" => "page_navigate",
+        "element_click" => "element_click",
+        "element_type" => "element_type",
+        "page_screenshot" => "page_screenshot",
+        "request_get" => "request_get",
+        _ => "other",
+    }
+}
+
+fn is_resource_read_tool(tool: &str) -> bool {
+    matches!(tool, "session_get" | "page_observe" | "request_get")
+}
+
+fn is_lost_boundary(code: FailureCode) -> bool {
+    matches!(
+        code,
+        FailureCode::ExtensionDisconnected | FailureCode::TargetLost | FailureCode::DeadlineExpired
+    )
+}
+
+fn redacted_fingerprint(value: &str) -> String {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        value.to_owned()
+    } else {
+        hex_digest(value.as_bytes())
+    }
+}
+
+fn artifact_digest(value: &str) -> String {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return format!("sha256:{}", hex_digest(value.as_bytes()));
+    };
+    if digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        value.to_owned()
+    } else {
+        format!("sha256:{}", hex_digest(value.as_bytes()))
+    }
+}
+
 fn request_value(request: &crate::registry::RequestRecord) -> Value {
     json!({"request_id":request.request_id,"mcp_principal_id":request.mcp_principal_id,"tool":request.tool,"idempotency_key":request.idempotency_key,"fingerprint":request.fingerprint,"deadline_ms":request.deadline_ms,"effect_hint":request.effect_hint,"state":request.state.as_str(),"created_at":request.created_at,"terminal_at":request.terminal_at,"failure_code":request.failure_code.map(|code| code.as_str()),"operations":request.operations.iter().map(operation_value).collect::<Vec<_>>()})
 }
@@ -1716,7 +1990,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 #[cfg(test)]
 mod tests {
-    use super::{EXTENSION_ORIGIN, decode_key_material, verify_extension_proof};
+    use super::{EXTENSION_ORIGIN, decode_key_material, evidence_report, verify_extension_proof};
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
     use serde_json::Value;
@@ -2054,5 +2328,154 @@ mod tests {
             .expect("serve extension");
         let _ = daemon.stop();
         let _ = std::fs::remove_dir_all(state_dir);
+    }
+    #[test]
+    fn fresh_evidence_report_has_stable_empty_collections() {
+        let report = evidence_report(
+            Uuid::now_v7(),
+            "ready",
+            crate::registry::Registry::new()
+                .snapshot()
+                .expect("empty registry snapshot"),
+        );
+        assert_eq!(report.get("schema_version"), Some(&json!(1)));
+        for field in [
+            "sessions",
+            "tabs",
+            "requests",
+            "operations",
+            "artifacts",
+            "resource_reads",
+        ] {
+            assert_eq!(
+                report.get(field).and_then(Value::as_array).map(Vec::len),
+                Some(0),
+                "{field}"
+            );
+        }
+        assert_eq!(
+            report
+                .get("lost_boundary")
+                .and_then(|value| value.get("operations"))
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn evidence_report_redacts_seeded_secret_values() {
+        let registry = crate::registry::Registry::new();
+        let secret = "FR058-SECRET-MARKER";
+        registry
+            .insert_principal(crate::registry::PrincipalRecord {
+                identity_id: Uuid::now_v7(),
+                kind: "mcp_client".to_owned(),
+                credential_reference: secret.to_owned(),
+                epoch: 1,
+                status: "active".to_owned(),
+                created_at: 0,
+            })
+            .expect("insert principal");
+        let request_id = Uuid::now_v7();
+        let operation_id = Uuid::now_v7();
+        registry
+            .begin_request(crate::registry::RequestSpec {
+                request_id,
+                mcp_principal_id: Uuid::now_v7(),
+                tool: secret.to_owned(),
+                idempotency_key: secret.to_owned(),
+                fingerprint: secret.to_owned(),
+                deadline_ms: 1,
+                effect_hint: secret.to_owned(),
+                operations: vec![crate::registry::OperationSpec {
+                    operation_id,
+                    sequence: 0,
+                    session_id: None,
+                    target_descriptor: secret.to_owned(),
+                    fingerprint: secret.to_owned(),
+                    state: crate::record::OperationState::Planned,
+                    session: None,
+                }],
+            })
+            .expect("insert request");
+        registry
+            .prepare_dispatch(operation_id)
+            .expect("prepare operation");
+        registry
+            .mark_dispatched(operation_id)
+            .expect("dispatch operation");
+        registry
+            .commit_terminal_result(
+                operation_id,
+                crate::registry::TerminalResult {
+                    operation_state: crate::record::OperationState::Succeeded,
+                    request_state: crate::record::RequestState::Succeeded,
+                    result: Some(secret.to_owned()),
+                    failure_code: None,
+                },
+            )
+            .expect("commit operation");
+        let report = evidence_report(
+            Uuid::now_v7(),
+            "ready",
+            registry.snapshot().expect("registry snapshot"),
+        );
+        assert!(!report.to_string().contains(secret));
+    }
+
+    #[test]
+    fn lost_boundary_evidence_keeps_failed_operation_and_boundary_code() {
+        let registry = crate::registry::Registry::new();
+        let request_id = Uuid::now_v7();
+        let operation_id = Uuid::now_v7();
+        registry
+            .begin_request(crate::registry::RequestSpec {
+                request_id,
+                mcp_principal_id: Uuid::now_v7(),
+                tool: "element_click".to_owned(),
+                idempotency_key: Uuid::now_v7().to_string(),
+                fingerprint: "safe-fingerprint".to_owned(),
+                deadline_ms: 1,
+                effect_hint: "mutate".to_owned(),
+                operations: vec![crate::registry::OperationSpec {
+                    operation_id,
+                    sequence: 0,
+                    session_id: None,
+                    target_descriptor: "{}".to_owned(),
+                    fingerprint: "safe-operation-fingerprint".to_owned(),
+                    state: crate::record::OperationState::Planned,
+                    session: None,
+                }],
+            })
+            .expect("insert request");
+        registry
+            .prepare_dispatch(operation_id)
+            .expect("prepare operation");
+        registry
+            .mark_dispatched(operation_id)
+            .expect("dispatch operation");
+        registry
+            .record_lost_boundary(
+                operation_id,
+                crate::failure::FailureCode::ExtensionDisconnected,
+            )
+            .expect("record lost boundary");
+        let report = evidence_report(
+            Uuid::now_v7(),
+            "ready",
+            registry.snapshot().expect("registry snapshot"),
+        );
+        let lost = report
+            .get("lost_boundary")
+            .and_then(|value| value.get("operations"))
+            .and_then(Value::as_array)
+            .expect("lost boundary operation list");
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].get("state"), Some(&json!("failed")));
+        assert_eq!(
+            lost[0].get("boundary_code"),
+            Some(&json!("operation.extension_disconnected"))
+        );
     }
 }

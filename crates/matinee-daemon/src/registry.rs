@@ -320,6 +320,26 @@ struct RegistryInner {
     next_action_sequence: HashMap<Uuid, i64>,
     blocked_targets: HashSet<(Uuid, Option<String>)>,
 }
+/// A point-in-time copy of all in-memory records owned by one daemon run.
+///
+/// Report producers use this aggregate so they can build one stable snapshot
+/// without exposing the registry's private maps or holding its mutex while
+/// serializing JSON.
+#[derive(Clone, Debug, Default)]
+pub struct RegistrySnapshot {
+    /// Registered native and MCP principals.
+    pub principals: Vec<PrincipalRecord>,
+    /// Extension pairings, including redaction-safe fingerprints.
+    pub pairings: Vec<PairingRecord>,
+    /// Browser sessions.
+    pub sessions: Vec<SessionRecord>,
+    /// Requests admitted during this run.
+    pub requests: Vec<RequestRecord>,
+    /// Operations admitted during this run.
+    pub operations: Vec<OperationRecord>,
+    /// Artifacts produced during this run.
+    pub artifacts: Vec<ArtifactRecord>,
+}
 
 impl Default for Registry {
     fn default() -> Self {
@@ -344,6 +364,42 @@ impl Registry {
                 blocked_targets: HashSet::new(),
             })),
         }
+    }
+    /// Returns a deterministic point-in-time copy of every in-memory record.
+    pub fn snapshot(&self) -> Result<RegistrySnapshot, RegistryError> {
+        let inner = self.lock()?;
+        let mut principals: Vec<_> = inner.principals.values().cloned().collect();
+        let mut pairings: Vec<_> = inner.pairings.values().cloned().collect();
+        let mut sessions: Vec<_> = inner.sessions.values().cloned().collect();
+        let mut requests: Vec<_> = inner
+            .requests
+            .values()
+            .cloned()
+            .map(|mut request| {
+                request.operations = request
+                    .operations
+                    .iter()
+                    .filter_map(|operation| inner.operations.get(&operation.operation_id).cloned())
+                    .collect();
+                request
+            })
+            .collect();
+        let mut operations: Vec<_> = inner.operations.values().cloned().collect();
+        let mut artifacts: Vec<_> = inner.artifacts.values().cloned().collect();
+        principals.sort_by_key(|record| record.identity_id);
+        pairings.sort_by_key(|record| record.pairing_id);
+        sessions.sort_by_key(|record| record.session_id);
+        requests.sort_by_key(|record| record.request_id);
+        operations.sort_by_key(|record| record.operation_id);
+        artifacts.sort_by_key(|record| record.artifact_id);
+        Ok(RegistrySnapshot {
+            principals,
+            pairings,
+            sessions,
+            requests,
+            operations,
+            artifacts,
+        })
     }
 
     /// Returns a principal record, if it exists.
