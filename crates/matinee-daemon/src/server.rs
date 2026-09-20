@@ -1628,8 +1628,9 @@ mod tests {
         assert_eq!(
             decode_key_material(&hex_key).as_deref(),
             Some(public_key.as_slice()),
-            "a hex-configured key must decode to the same bytes"
+            "a 130-character lowercase hex key must decode to the same 65 bytes"
         );
+        assert_eq!(hex_key.len(), 130, "65 bytes are 130 hex characters");
         assert_ne!(hex_key, encoded_key, "the two encodings differ");
 
         let frame = json!({"signature": base64_url(signature.as_ref())});
