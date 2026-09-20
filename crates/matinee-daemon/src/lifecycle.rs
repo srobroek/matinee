@@ -333,6 +333,16 @@ impl Daemon {
             .record_lost_boundary(operation_id, failure_code)
             .map_err(LifecycleError::from_registry)
     }
+    /// Records an operation rejected before a lost browser boundary.
+    pub fn record_rejected_operation(
+        &self,
+        operation_id: Uuid,
+        failure_code: FailureCode,
+    ) -> Result<(), LifecycleError> {
+        self.registry
+            .record_rejected_operation(operation_id, failure_code)
+            .map_err(LifecycleError::from_registry)
+    }
 
     /// Atomically prepares and crosses dispatch admission for one operation.
     pub fn dispatch(&self, operation_id: Uuid) -> Result<(), LifecycleError> {

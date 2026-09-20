@@ -581,6 +581,45 @@ impl Registry {
         inner.sessions.insert(record.session_id, record.clone());
         Ok(record)
     }
+    /// Commits the tab identity returned while opening a browser session.
+    pub fn bind_session(
+        &self,
+        session_id: Uuid,
+        tab_incarnation: String,
+        document_generation: String,
+    ) -> Result<(), RegistryError> {
+        let mut inner = self.lock()?;
+        let session = inner
+            .sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| RegistryError::invalid("session not found"))?;
+        if session.tab_incarnation.is_some() || session.document_generation.is_some() {
+            return Err(RegistryError::invalid("session is already bound"));
+        }
+        session.tab_incarnation = Some(tab_incarnation);
+        session.document_generation = Some(document_generation);
+        session.state = SessionState::Active;
+        Ok(())
+    }
+
+    /// Records a document navigation for an already-bound session.
+    pub fn update_document_generation(
+        &self,
+        session_id: Uuid,
+        tab_incarnation: &str,
+        document_generation: String,
+    ) -> Result<(), RegistryError> {
+        let mut inner = self.lock()?;
+        let session = inner
+            .sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| RegistryError::invalid("session not found"))?;
+        if session.tab_incarnation.as_deref() != Some(tab_incarnation) {
+            return Err(RegistryError::invalid("session incarnation does not match"));
+        }
+        session.document_generation = Some(document_generation);
+        Ok(())
+    }
 
     /// Reads one request and its current operations.
     pub fn request(&self, request_id: Uuid) -> Result<Option<RequestRecord>, RegistryError> {
@@ -619,10 +658,7 @@ impl Registry {
             .ok_or_else(|| RegistryError::invalid("operation not found"))?;
         if !matches!(
             operation.state,
-            OperationState::Planned
-                | OperationState::Queued
-                | OperationState::AwaitingAttention
-                | OperationState::Preflight
+            OperationState::Planned | OperationState::Queued | OperationState::Preflight
         ) {
             return Err(RegistryError::invalid("operation is not dispatchable"));
         }
@@ -755,6 +791,40 @@ impl Registry {
             let key = (session_id, session_incarnation(&inner, session_id));
             inner.blocked_targets.insert(key);
         }
+        let request = inner
+            .requests
+            .get_mut(&request_id)
+            .ok_or_else(|| RegistryError::invalid("request not found"))?;
+        request.state = RequestState::Failed;
+        request.terminal_at = Some(terminal_at);
+        request.failure_code = Some(failure_code);
+        Ok(())
+    }
+    /// Fails an operation rejected at the protocol verification boundary.
+    pub fn record_rejected_operation(
+        &self,
+        operation_id: Uuid,
+        failure_code: FailureCode,
+    ) -> Result<(), RegistryError> {
+        let mut inner = self.lock()?;
+        let (request_id, terminal_at) = {
+            let operation = inner
+                .operations
+                .get_mut(&operation_id)
+                .ok_or_else(|| RegistryError::invalid("operation not found"))?;
+            if !matches!(
+                operation.state,
+                OperationState::Dispatching | OperationState::AwaitingAttention
+            ) {
+                return Err(RegistryError::invalid(
+                    "operation was not awaiting an outcome",
+                ));
+            }
+            let terminal_at = now_ms();
+            operation.state = OperationState::Failed;
+            operation.terminal_at = Some(terminal_at);
+            (operation.request_id, terminal_at)
+        };
         let request = inner
             .requests
             .get_mut(&request_id)

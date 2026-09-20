@@ -777,7 +777,13 @@ impl Service {
         let outcome = match timeout(deadline, receiver).await {
             Ok(Ok(Ok(outcome))) => outcome,
             Ok(Ok(Err(code))) => {
-                let _ = self.daemon.record_lost_boundary(operation_id, code);
+                if self
+                    .daemon
+                    .record_lost_boundary(operation_id, code)
+                    .is_err()
+                {
+                    let _ = self.daemon.record_rejected_operation(operation_id, code);
+                }
                 return failure_response(instance_id, code);
             }
             Ok(Err(_)) | Err(_) => {
@@ -1372,6 +1378,8 @@ async fn handle_extension(stream: TcpStream, service: Service) -> io::Result<()>
                     }
                     Some("result") if authenticated => service.accept_result(frame, generation_value).await,
                     Some("outcome_unobserved") if authenticated => service.accept_unobserved(frame, generation_value).await,
+                    Some("generation_changed") if authenticated => service.accept_generation_changed(frame).await,
+                    Some("incarnation_lost") if authenticated => service.accept_incarnation_lost(frame, generation_value).await,
                     _ => {},
                 }
             }
@@ -1403,17 +1411,21 @@ impl Service {
             return;
         };
         let text = |name: &str| frame.get(name).and_then(Value::as_str).map(str::to_owned);
-        let identity_matches = frame
+        let request_matches = frame
             .get("request_id")
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
-            == Some(item.request_id)
-            && frame
-                .get("session_id")
-                .and_then(Value::as_str)
-                .and_then(|value| Uuid::parse_str(value).ok())
-                == item.session_id;
-        if item.generation != generation || !identity_matches {
+            == Some(item.request_id);
+        let session_matches = frame
+            .get("session_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+            == item.session_id;
+        if !request_matches || !session_matches {
+            let _ = item.result.send(Err(FailureCode::AuthorizationDenied));
+            return;
+        }
+        if item.generation != generation {
             let _ = item.result.send(Err(FailureCode::GenerationStale));
             return;
         }
@@ -1439,12 +1451,86 @@ impl Service {
             .and_then(|value| value.get("code"))
             .and_then(Value::as_str)
             .and_then(parse_failure);
+        if code.is_none() && item.tab_incarnation.is_none() && item.document_generation.is_none() {
+            if let Some(session_id) = item.session_id {
+                let Some(tab_incarnation) = text("tab_incarnation") else {
+                    let _ = item.result.send(Err(FailureCode::IncarnationStale));
+                    return;
+                };
+                let Some(document_generation) = text("document_generation") else {
+                    let _ = item.result.send(Err(FailureCode::GenerationStale));
+                    return;
+                };
+                if self
+                    .daemon
+                    .registry()
+                    .bind_session(session_id, tab_incarnation, document_generation)
+                    .is_err()
+                {
+                    let _ = item.result.send(Err(FailureCode::TargetLost));
+                    return;
+                }
+            }
+        }
         let _ = item.result.send(if let Some(code) = code {
             Err(code)
         } else {
             Ok(outcome)
         });
     }
+    async fn accept_generation_changed(&self, frame: Value) {
+        let Some(session_id) = frame
+            .get("session_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+        else {
+            return;
+        };
+        let Some(tab_incarnation) = frame.get("tab_incarnation").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(document_generation) = frame.get("document_generation").and_then(Value::as_str)
+        else {
+            return;
+        };
+        let _ = self.daemon.registry().update_document_generation(
+            session_id,
+            tab_incarnation,
+            document_generation.to_owned(),
+        );
+    }
+
+    async fn accept_incarnation_lost(&self, frame: Value, generation: u64) {
+        let Some(operation_id) = frame
+            .get("operation_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+        else {
+            return;
+        };
+        let Some(session_id) = frame
+            .get("session_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+        else {
+            return;
+        };
+        let mut pending = self.pending.lock().await;
+        let Some(item) = pending.remove(&operation_id) else {
+            return;
+        };
+        let tab_matches =
+            frame.get("tab_incarnation").and_then(Value::as_str) == item.tab_incarnation.as_deref();
+        if item.generation != generation || item.session_id != Some(session_id) || !tab_matches {
+            let _ = item.result.send(Err(FailureCode::GenerationStale));
+            return;
+        }
+        let _ = self
+            .daemon
+            .record_lost_boundary(operation_id, FailureCode::TargetLost);
+        let _ = item.result.send(Err(FailureCode::TargetLost));
+    }
+
     async fn accept_unobserved(&self, frame: Value, generation: u64) {
         let Some(id) = frame
             .get("operation_id")
@@ -1990,13 +2076,28 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 #[cfg(test)]
 mod tests {
-    use super::{EXTENSION_ORIGIN, decode_key_material, evidence_report, verify_extension_proof};
+    use super::{
+        AuthenticatedControl, EXTENSION_CHANNEL_PATH, EXTENSION_ORIGIN, EXTENSION_PROTOCOL_VERSION,
+        Service, decode_key_material, evidence_report, serve_extensions, verify_extension_proof,
+    };
+    use crate::lifecycle::Daemon;
+    use crate::registry::{BeginRequestResult, OperationSpec, RequestSpec, SessionSpec};
+    use futures_util::{SinkExt, StreamExt};
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
     use serde_json::Value;
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::io;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
     use std::time::Duration;
-    use tokio_tungstenite::tungstenite::Message;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+    use tokio_tungstenite::tungstenite::{Message, http::Request as ClientRequest};
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
     use uuid::Uuid;
 
     fn base64_url(bytes: &[u8]) -> String {
@@ -2477,5 +2578,523 @@ mod tests {
             lost[0].get("boundary_code"),
             Some(&json!("operation.extension_disconnected"))
         );
+    }
+
+    type TestSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+    struct TestExtensionClient {
+        socket: TestSocket,
+        generation: u64,
+        bindings: HashMap<Uuid, (String, String)>,
+    }
+
+    impl TestExtensionClient {
+        async fn connect(address: SocketAddr, auth: &super::control_auth::ControlAuth) -> Self {
+            let request = ClientRequest::builder()
+                .uri(format!(
+                    "ws://127.0.0.1:{}{}",
+                    address.port(),
+                    EXTENSION_CHANNEL_PATH
+                ))
+                .header("Host", format!("127.0.0.1:{}", address.port()))
+                .header("Connection", "Upgrade")
+                .header("Upgrade", "websocket")
+                .header("Origin", EXTENSION_ORIGIN)
+                .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .header("Sec-WebSocket-Version", "13")
+                .header("Sec-WebSocket-Protocol", EXTENSION_PROTOCOL_VERSION)
+                .body(())
+                .expect("websocket request");
+            let (mut socket, _) = connect_async(request).await.expect("connect extension");
+            let challenge = loop {
+                let message = socket
+                    .next()
+                    .await
+                    .expect("challenge frame")
+                    .expect("challenge message");
+                if let Message::Text(text) = message {
+                    break serde_json::from_str::<Value>(&text).expect("challenge JSON");
+                }
+            };
+            let generation = challenge["channel_generation"]
+                .as_u64()
+                .expect("challenge generation");
+            let challenge_text = challenge["challenge"].as_str().expect("challenge text");
+            let details = auth
+                .extension_pairing_details()
+                .expect("enrollment details");
+            let rng = SystemRandom::new();
+            let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+                .expect("generate key");
+            let pair =
+                EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, document.as_ref(), &rng)
+                    .expect("load key");
+            let key = pair.public_key().as_ref().to_vec();
+            let fingerprint = super::hex_digest(&key);
+            socket.send(Message::Text(json!({"type":"pairing_hello","protocol_version":EXTENSION_PROTOCOL_VERSION,"channel_generation":generation,"origin":EXTENSION_ORIGIN,"one_time_key":details.one_time_key,"public_key":base64_url(&key),"fingerprint":fingerprint}).to_string().into())).await.expect("send hello");
+            let transcript = format!(
+                "matinee.browser.pairing.v1\0{}\0{}\0{}",
+                EXTENSION_ORIGIN, fingerprint, challenge_text
+            );
+            let signature = pair
+                .sign(&rng, transcript.as_bytes())
+                .expect("sign transcript");
+            socket.send(Message::Text(json!({"type":"pairing_proof","protocol_version":EXTENSION_PROTOCOL_VERSION,"channel_generation":generation,"signature":base64_url(signature.as_ref())}).to_string().into())).await.expect("send proof");
+            let accepted = loop {
+                let message = socket
+                    .next()
+                    .await
+                    .expect("pairing response")
+                    .expect("pairing message");
+                if let Message::Text(text) = message {
+                    break serde_json::from_str::<Value>(&text).expect("pairing JSON");
+                }
+            };
+            assert_eq!(accepted["type"], json!("pairing_accepted"));
+            Self {
+                socket,
+                generation,
+                bindings: HashMap::new(),
+            }
+        }
+        async fn next_command(&mut self) -> Value {
+            let message = timeout(Duration::from_secs(5), self.socket.next())
+                .await
+                .expect("command timeout")
+                .expect("command frame")
+                .expect("command message");
+            let Message::Text(text) = message else {
+                panic!("expected text command")
+            };
+            serde_json::from_str(&text).expect("command JSON")
+        }
+        async fn send(&mut self, frame: Value) {
+            self.socket
+                .send(Message::Text(frame.to_string().into()))
+                .await
+                .expect("send extension frame");
+        }
+        fn result_for(
+            &self,
+            command: &Value,
+            session_id: Value,
+            tab: Value,
+            document: Value,
+        ) -> Value {
+            json!({"type":"result","protocol_version":EXTENSION_PROTOCOL_VERSION,"channel_generation":self.generation,"correlation_id":command["correlation_id"],"operation_id":command["operation_id"],"request_id":command["request_id"],"session_id":session_id,"tab_incarnation":tab,"document_generation":document,"outcome":{"status":"succeeded","value":{"observed":true}}})
+        }
+        async fn reply_success(&mut self, command: &Value) {
+            let session_id = command["session_id"]
+                .as_str()
+                .and_then(|value| Uuid::parse_str(value).ok());
+            let (tab, document) = if command["type"] == json!("bind_session") {
+                let session_id = session_id.expect("bind session identity");
+                self.bindings
+                    .entry(session_id)
+                    .or_insert_with(|| {
+                        (
+                            format!("incarnation-{session_id}"),
+                            format!("document-{session_id}"),
+                        )
+                    })
+                    .clone()
+            } else {
+                (
+                    command["tab_incarnation"].as_str().unwrap_or("").to_owned(),
+                    command["document_generation"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            };
+            let frame = self.result_for(
+                command,
+                command["session_id"].clone(),
+                json!(tab),
+                json!(document),
+            );
+            self.send(frame).await;
+        }
+    }
+
+    struct TestHarness {
+        daemon: Arc<Daemon>,
+        auth: Arc<super::control_auth::ControlAuth>,
+        service: Service,
+        principal_id: Uuid,
+        pairing_id: Uuid,
+        client: TestExtensionClient,
+        server: JoinHandle<io::Result<()>>,
+        state_dir: std::path::PathBuf,
+    }
+
+    impl TestHarness {
+        async fn new() -> Self {
+            let state_dir =
+                std::env::temp_dir().join(format!("matinee-extension-protocol-{}", Uuid::now_v7()));
+            fs::create_dir_all(&state_dir).expect("create state directory");
+            let daemon = Arc::new(Daemon::start(&state_dir).expect("start daemon"));
+            let auth = Arc::new(
+                super::control_auth::ControlAuth::create("127.0.0.1:0", &state_dir)
+                    .expect("create control auth"),
+            );
+            auth.register(daemon.registry())
+                .expect("register control principals");
+            let listener = TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .expect("bind extension listener");
+            let address = listener.local_addr().expect("extension address");
+            let service = Service {
+                daemon: daemon.clone(),
+                auth: auth.clone(),
+                endpoint: super::Endpoint {
+                    instance_id: daemon.instance_id(),
+                    control_addr: "127.0.0.1:0".to_owned(),
+                    extension_addr: format!(
+                        "ws://127.0.0.1:{}{}",
+                        address.port(),
+                        EXTENSION_CHANNEL_PATH
+                    ),
+                    extension_path: EXTENSION_CHANNEL_PATH.to_owned(),
+                    credential_path: auth.handoff_path().display().to_string(),
+                },
+                pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                channel: Arc::new(tokio::sync::Mutex::new(None)),
+                next_generation: Arc::new(tokio::sync::Mutex::new(0)),
+                stop: Arc::new(tokio::sync::Mutex::new(false)),
+            };
+            let server = tokio::spawn(serve_extensions(listener, service.clone()));
+            let client = TestExtensionClient::connect(address, &auth).await;
+            let pairing_id = daemon
+                .registry()
+                .snapshot()
+                .expect("registry snapshot")
+                .pairings[0]
+                .pairing_id;
+            Self {
+                principal_id: auth.native.id().get(),
+                daemon,
+                auth,
+                service,
+                pairing_id,
+                client,
+                server,
+                state_dir,
+            }
+        }
+        async fn shutdown(&mut self) {
+            let _ = self.client.socket.close(None).await;
+            self.server.abort();
+            let _ = (&mut self.server).await;
+            let _ = self.daemon.stop();
+            let _ = self.auth.remove_handoff();
+            let _ = fs::remove_dir_all(&self.state_dir);
+        }
+    }
+
+    fn admit_operation(
+        harness: &TestHarness,
+        session_id: Uuid,
+        tool: &str,
+        target: Value,
+    ) -> (Uuid, Uuid) {
+        let request_id = Uuid::now_v7();
+        let operation_id = Uuid::now_v7();
+        let result = harness
+            .daemon
+            .registry()
+            .begin_request(RequestSpec {
+                request_id,
+                mcp_principal_id: harness.principal_id,
+                tool: tool.to_owned(),
+                idempotency_key: request_id.to_string(),
+                fingerprint: operation_id.to_string(),
+                deadline_ms: super::now_ms() + 30_000,
+                effect_hint: if tool == "element_click" {
+                    "mutate"
+                } else {
+                    "read"
+                }
+                .to_owned(),
+                operations: vec![OperationSpec {
+                    operation_id,
+                    sequence: 0,
+                    session_id: Some(session_id),
+                    target_descriptor: serde_json::to_string(&target).expect("target JSON"),
+                    fingerprint: operation_id.to_string(),
+                    state: crate::record::OperationState::Planned,
+                    session: (tool == "session_open").then(|| SessionSpec {
+                        session_id,
+                        mcp_principal_id: harness.principal_id,
+                        pairing_id: harness.pairing_id,
+                        browser: "chromium".to_owned(),
+                        profile: "fixture".to_owned(),
+                        window: "fixture-window".to_owned(),
+                    }),
+                }],
+            })
+            .expect("admit operation");
+        assert!(matches!(result, BeginRequestResult::Created(_)));
+        (request_id, operation_id)
+    }
+    fn spawn_dispatch(harness: &TestHarness, operation_id: Uuid) -> JoinHandle<Value> {
+        let service = harness.service.clone();
+        let authenticated = AuthenticatedControl {
+            principal_id: harness.principal_id,
+        };
+        tokio::spawn(async move {
+            service
+                .dispatch(
+                    json!({"operation_id":operation_id}).as_object().unwrap(),
+                    authenticated,
+                )
+                .await
+        })
+    }
+    async fn bind(harness: &mut TestHarness, session_id: Uuid) {
+        let (_, operation_id) = admit_operation(harness, session_id, "session_open", json!({}));
+        let task = spawn_dispatch(harness, operation_id);
+        let command = harness.client.next_command().await;
+        assert_eq!(command["type"], json!("bind_session"));
+        harness.client.reply_success(&command).await;
+        assert_eq!(task.await.expect("bind dispatch")["ok"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn authenticated_extension_protocol_proves_session_aware_routing_and_boundaries() {
+        let mut harness = TestHarness::new().await;
+        let a = Uuid::now_v7();
+        let b = Uuid::now_v7();
+        bind(&mut harness, a).await;
+        bind(&mut harness, b).await;
+        assert_ne!(harness.client.bindings[&a], harness.client.bindings[&b]);
+        assert_eq!(
+            harness.daemon.registry().session(a).unwrap().unwrap().state,
+            crate::record::SessionState::Active
+        );
+        assert_eq!(
+            harness.daemon.registry().session(b).unwrap().unwrap().state,
+            crate::record::SessionState::Active
+        );
+        for index in 0..50 {
+            let session_id = if index % 2 == 0 { a } else { b };
+            let (_, operation_id) = admit_operation(
+                &harness,
+                session_id,
+                "page_observe",
+                json!({"reference":format!("ref-{index}")}),
+            );
+            let task = spawn_dispatch(&harness, operation_id);
+            let command = harness.client.next_command().await;
+            let session_text = session_id.to_string();
+            let expected = &harness.client.bindings[&session_id];
+            assert_eq!(command["session_id"].as_str(), Some(session_text.as_str()));
+            assert_eq!(
+                command["tab_incarnation"].as_str(),
+                Some(expected.0.as_str())
+            );
+            assert_eq!(
+                command["document_generation"].as_str(),
+                Some(expected.1.as_str())
+            );
+            harness.client.reply_success(&command).await;
+            assert_eq!(task.await.unwrap()["ok"], json!(true));
+        }
+        let c = Uuid::now_v7();
+        let d = Uuid::now_v7();
+        let e = Uuid::now_v7();
+        bind(&mut harness, c).await;
+        bind(&mut harness, d).await;
+        bind(&mut harness, e).await;
+        let (_, op_c) = admit_operation(&harness, c, "page_observe", json!({}));
+        let task_c = spawn_dispatch(&harness, op_c);
+        let command_c = harness.client.next_command().await;
+        let cross = harness
+            .client
+            .result_for(&command_c, json!(d), json!("wrong"), json!("wrong"));
+        harness.client.send(cross).await;
+        assert_eq!(task_c.await.unwrap()["code"], json!("authorization.denied"));
+        assert_eq!(
+            harness
+                .daemon
+                .registry()
+                .operation(op_c)
+                .unwrap()
+                .unwrap()
+                .state,
+            crate::record::OperationState::Failed
+        );
+        let (_, op_d) = admit_operation(&harness, d, "page_observe", json!({}));
+        let task_d = spawn_dispatch(&harness, op_d);
+        let command_d = harness.client.next_command().await;
+        let stale_incarnation = harness.client.result_for(
+            &command_d,
+            json!(d),
+            json!("superseded"),
+            command_d["document_generation"].clone(),
+        );
+        harness.client.send(stale_incarnation).await;
+        assert_eq!(task_d.await.unwrap()["code"], json!("incarnation.stale"));
+        let (_, op_e) = admit_operation(&harness, e, "page_observe", json!({}));
+        let task_e = spawn_dispatch(&harness, op_e);
+        let command_e = harness.client.next_command().await;
+        let stale_generation = harness.client.result_for(
+            &command_e,
+            json!(e),
+            command_e["tab_incarnation"].clone(),
+            json!("stale-document"),
+        );
+        harness.client.send(stale_generation).await;
+        assert_eq!(task_e.await.unwrap()["code"], json!("generation.stale"));
+        let f = Uuid::now_v7();
+        let g = Uuid::now_v7();
+        bind(&mut harness, f).await;
+        bind(&mut harness, g).await;
+        let old = harness.client.bindings[&f].1.clone();
+        let new = format!("{old}-next");
+        let f_tab = harness.client.bindings[&f].0.clone();
+        harness.client.send(json!({"type":"generation_changed","protocol_version":EXTENSION_PROTOCOL_VERSION,"channel_generation":harness.client.generation,"correlation_id":Uuid::now_v7(),"session_id":f,"tab_incarnation":f_tab,"previous_document_generation":old,"document_generation":new})).await;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if harness
+                    .daemon
+                    .registry()
+                    .session(f)
+                    .unwrap()
+                    .unwrap()
+                    .document_generation
+                    .as_deref()
+                    == Some(new.as_str())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("generation update");
+        harness.client.bindings.get_mut(&f).unwrap().1 = new.clone();
+        let (_, op_f) =
+            admit_operation(&harness, f, "element_click", json!({"reference":"old-ref"}));
+        let task_f = spawn_dispatch(&harness, op_f);
+        let command_f = harness.client.next_command().await;
+        assert_eq!(command_f["document_generation"], json!(new));
+        let stale_reference = harness.client.result_for(
+            &command_f,
+            json!(f),
+            command_f["tab_incarnation"].clone(),
+            json!(old),
+        );
+        harness.client.send(stale_reference).await;
+        assert_eq!(task_f.await.unwrap()["code"], json!("generation.stale"));
+        let (_, op_g) = admit_operation(&harness, g, "element_click", json!({}));
+        let task_g = spawn_dispatch(&harness, op_g);
+        let command_g = harness.client.next_command().await;
+        harness.client.reply_success(&command_g).await;
+        assert_eq!(task_g.await.unwrap()["ok"], json!(true));
+        let h = Uuid::now_v7();
+        let i = Uuid::now_v7();
+        bind(&mut harness, h).await;
+        bind(&mut harness, i).await;
+        let (_, op_h) = admit_operation(&harness, h, "element_click", json!({}));
+        let task_h = spawn_dispatch(&harness, op_h);
+        let command_h = harness.client.next_command().await;
+        harness.client.send(json!({"type":"incarnation_lost","protocol_version":EXTENSION_PROTOCOL_VERSION,"channel_generation":harness.client.generation,"correlation_id":Uuid::now_v7(),"operation_id":op_h,"request_id":command_h["request_id"],"session_id":h,"tab_incarnation":command_h["tab_incarnation"],"document_generation":command_h["document_generation"],"boundary":"tab"})).await;
+        assert_eq!(
+            task_h.await.unwrap()["code"],
+            json!("operation.target_lost")
+        );
+        let (_, op_i) = admit_operation(&harness, i, "element_click", json!({}));
+        let task_i = spawn_dispatch(&harness, op_i);
+        let command_i = harness.client.next_command().await;
+        harness.client.reply_success(&command_i).await;
+        assert_eq!(task_i.await.unwrap()["ok"], json!(true));
+        let j = Uuid::now_v7();
+        let k = Uuid::now_v7();
+        bind(&mut harness, j).await;
+        bind(&mut harness, k).await;
+        let (_, op_j) = admit_operation(&harness, j, "element_click", json!({}));
+        let (_, op_k) = admit_operation(&harness, k, "element_click", json!({}));
+        let task_j = spawn_dispatch(&harness, op_j);
+        let task_k = spawn_dispatch(&harness, op_k);
+        let command_j = harness.client.next_command().await;
+        let command_k = harness.client.next_command().await;
+        assert_eq!(command_j["session_id"], json!(j));
+        assert_eq!(command_k["session_id"], json!(k));
+        let _ = harness.client.socket.close(None).await;
+        assert_eq!(
+            task_j.await.unwrap()["code"],
+            json!("operation.extension_disconnected")
+        );
+        assert_eq!(
+            task_k.await.unwrap()["code"],
+            json!("operation.extension_disconnected")
+        );
+        assert_eq!(harness.daemon.registry().dispatching_count().unwrap(), 0);
+        assert!(harness.daemon.registry().operation(op_j).unwrap().is_some());
+        assert!(harness.daemon.registry().operation(op_k).unwrap().is_some());
+        harness.server.abort();
+        let _ = (&mut harness.server).await;
+        let _ = harness.daemon.stop();
+        let _ = harness.auth.remove_handoff();
+        let _ = fs::remove_dir_all(&harness.state_dir);
+        let mut second = TestHarness::new().await;
+        let blocked = Uuid::now_v7();
+        let healthy = Uuid::now_v7();
+        bind(&mut second, blocked).await;
+        bind(&mut second, healthy).await;
+        let (_, boundary_op) = admit_operation(&second, blocked, "element_click", json!({}));
+        let boundary_task = spawn_dispatch(&second, boundary_op);
+        let boundary_command = second.client.next_command().await;
+        second.client.send(json!({"type":"incarnation_lost","protocol_version":EXTENSION_PROTOCOL_VERSION,"channel_generation":second.client.generation,"correlation_id":Uuid::now_v7(),"operation_id":boundary_op,"request_id":boundary_command["request_id"],"session_id":blocked,"tab_incarnation":boundary_command["tab_incarnation"],"document_generation":boundary_command["document_generation"],"boundary":"tab"})).await;
+        assert_eq!(
+            boundary_task.await.unwrap()["code"],
+            json!("operation.target_lost")
+        );
+        let request_id = Uuid::now_v7();
+        let conflict_operation = Uuid::now_v7();
+        let error = second
+            .daemon
+            .registry()
+            .begin_request(RequestSpec {
+                request_id,
+                mcp_principal_id: second.principal_id,
+                tool: "element_click".to_owned(),
+                idempotency_key: request_id.to_string(),
+                fingerprint: conflict_operation.to_string(),
+                deadline_ms: super::now_ms() + 30_000,
+                effect_hint: "mutate".to_owned(),
+                operations: vec![OperationSpec {
+                    operation_id: conflict_operation,
+                    sequence: 0,
+                    session_id: Some(blocked),
+                    target_descriptor: "{}".to_owned(),
+                    fingerprint: conflict_operation.to_string(),
+                    state: crate::record::OperationState::Planned,
+                    session: None,
+                }],
+            })
+            .expect_err("blocked target");
+        assert_eq!(error.code(), crate::failure::FailureCode::TargetLost);
+        let (_, healthy_op) = admit_operation(&second, healthy, "element_click", json!({}));
+        let healthy_task = spawn_dispatch(&second, healthy_op);
+        let healthy_command = second.client.next_command().await;
+        second.client.reply_success(&healthy_command).await;
+        assert_eq!(healthy_task.await.unwrap()["ok"], json!(true));
+        let report = evidence_report(
+            second.daemon.instance_id(),
+            "ready",
+            second.daemon.registry().snapshot().unwrap(),
+        );
+        assert!(
+            report["lost_boundary"]["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["operation_id"] == json!(boundary_op)
+                    && entry["state"] == json!("failed")
+                    && entry["boundary_code"] == json!("operation.target_lost"))
+        );
+        second.shutdown().await;
     }
 }
