@@ -148,17 +148,48 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Governed by:** C-01, C-02, C-03, C-06, C-09
 - **Spec dir:** `specs/006-identity-authorization-secure-channels/`
 
-### 007 -- Daemon Lifecycle and Durable Store  [status: planned]
+### 006.5 -- Demonstrable Multi-Tab Browser MVP  [status: specced]
 
-- **Description:** Implement daemon ownership, singleton startup, storage migrations,
-  transaction rules, readiness, shutdown, and recovery gating.
-- **Outcome:** Concurrent starts converge on one daemon, committed state survives a
-  restart, and storage failure blocks unsafe mutation with a diagnostic result.
-- **Scope (in):** Local IPC endpoint, process lock, SQLite schema, migrations,
-  transaction boundaries, startup recovery, readiness, and graceful shutdown.
-- **Scope (out):** Request execution and browser-session behavior.
+- **Description:** Prove the local product loop through one MCP client, one paired
+  Chrome or Chromium profile, one daemon, and multiple visible browser tabs.
+- **Outcome:** From a clean development checkout, a user pairs one extension and
+  uses MCP to navigate, observe, click, type, and capture screenshots in at least
+  two independently addressable visible tabs. A daemon restart never replays an
+  external effect whose outcome is unknown.
+- **Scope (in):** Minimal daemon startup and stop with one version-1 durable store.
+  Communication uses inherited operating-system bootstrap IPC, one loopback
+  extension WebSocket, and one stdio MCP adapter. The MVP has one MCP principal
+  and one extension principal. It provides session-aware frame routing for at
+  least two stable tab handles and the MVP tool subset. It persists Requests,
+  pre-dispatch Operations, and unknown-outcome reservations across restart. It
+  includes one deterministic demonstration fixture.
+- **Scope (out):** Multiple MCP principals, multiple browser profiles,
+  cross-principal channel multiplexing, channel-generation replacement,
+  automatic storage recovery, idle shutdown, schema upgrades, relocation,
+  attention policy, artifact retention beyond MVP screenshots, distribution,
+  and release administration.
 - **Depends on:** 005, 006
+- **Governed by:** C-01, C-03, C-04, C-05, C-06, C-07, C-09
+- **Spec dir:** `specs/006.5-demonstrable-browser-mvp/`
+- **Ownership:** Spec 006.5 is an integration and acceptance slice. It permits
+  intentionally narrow implementations behind the established seams. Specs
+  007-012 must retain MVP criteria SC-006 through SC-012 and SC-016.
+- **Decision:** `adr-9`
+
+### 007 -- Daemon Lifecycle and Durable Store Hardening  [status: deferred]
+
+- **Description:** Deepen the MVP daemon and storage seams after the multi-tab
+  product loop passes its acceptance journey.
+- **Outcome:** Concurrent starts converge on one daemon, committed state survives
+  restart, and storage failure blocks unsafe mutation with a diagnostic result.
+- **Scope (in):** Multi-process startup convergence, production transaction rules,
+  schema migration, automatic storage recovery, readiness, graceful shutdown,
+  and lifecycle hardening.
+- **Scope (out):** Request execution, browser-session behavior, state relocation,
+  and release administration.
+- **Depends on:** 006.5
 - **Governed by:** C-01, C-07, C-09
+- **Decision:** `adr-9`
 
 ### 008 -- Browser Extension and Pairing  [status: planned]
 
@@ -169,7 +200,7 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Scope (in):** Extension package, manifest, pairing surface, loopback WebSocket,
   browser events, permission minimization, reconnect, and indicator shell.
 - **Scope (out):** Session ownership and browser operation semantics.
-- **Depends on:** 005, 006
+- **Depends on:** 006.5
 - **Governed by:** C-03, C-04, C-06, C-09
 
 ### 009 -- MCP Adapter and Tool Contracts  [status: planned]
@@ -181,7 +212,7 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Scope (in):** MCP lifecycle, tool discovery, schema validation, principal
   selection, daemon startup handoff, error mapping, and bounded responses.
 - **Scope (out):** Browser implementation and request recovery rules.
-- **Depends on:** 005, 006, 007
+- **Depends on:** 006.5, 007
 - **Governed by:** C-01, C-02, C-08, C-09
 
 ### 010 -- Durable Request Engine  [status: planned]
@@ -193,7 +224,7 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Scope (in):** Request confirmation, operation ordering, idempotency keys,
   dispatch journal, deadlines, recovery classification, and result projection.
 - **Scope (out):** Browser-specific execution and user-attention presentation.
-- **Depends on:** 007, 009
+- **Depends on:** 006.5, 007, 009
 - **Governed by:** C-05, C-07, C-09
 
 ### 011 -- Browser Discovery and Session Ownership  [status: planned]
@@ -205,7 +236,7 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Scope (in):** Candidate revisions, browser events, session states, contention,
   tab lifecycle, visible ownership indicators, and reconnect deadlines.
 - **Scope (out):** Element inspection and page actions.
-- **Depends on:** 007, 008, 009
+- **Depends on:** 006.5, 007, 008, 009
 - **Governed by:** C-01, C-03, C-04, C-07, C-09
 
 ### 012 -- Semantic Observation, Actions, and Transfer  [status: planned]
@@ -217,7 +248,7 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Scope (in):** Semantic snapshots, frames, element references, navigation, input,
   activation, cursor and highlight behavior, screenshots, and bounded byte streams.
 - **Scope (out):** Approval decisions and durable cancellation policy.
-- **Depends on:** 010, 011
+- **Depends on:** 006.5, 010, 011
 - **Governed by:** C-04, C-05, C-06, C-08, C-09
 
 ### 013 -- Human Attention and Safe Effects  [status: planned]
@@ -263,10 +294,10 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Outcome:** A clean supported machine completes all five spec 001 journeys using
   published artifacts, including one interruption and one attention decision.
 - **Scope (in):** Package metadata, MCP Registry entry, release artifacts, extension
-  delivery, upgrade and rollback rules, compatibility ranges, quickstart, journey
-  acceptance, and recorded warm and cold performance baselines.
+  delivery, state relocation, upgrade and rollback rules, compatibility ranges,
+  quickstart, journey acceptance, and recorded warm and cold performance baselines.
 - **Scope (out):** Hosted distribution services and unsupported browser engines.
-- **Depends on:** 005, 006, 007, 008, 009, 010, 011, 012, 013, 014, 015
+- **Depends on:** 005, 006, 006.5, 007, 008, 009, 010, 011, 012, 013, 014, 015
 - **Governed by:** C-01, C-02, C-03, C-04, C-05, C-06, C-07, C-08, C-09, C-10
 
 ## Open Questions
@@ -281,6 +312,8 @@ None. Deferred entries require a new product decision before their status change
   request lifetime.
 - Browser profile data remains browser-owned. Matinee stores references, grants, and
   redacted evidence rather than credential material.
+- Spec 006.5 is the first implementation gate after the verified foundations.
+  Later hardening MUST NOT block its deterministic multi-tab demonstration.
 - Journey 1, install, pair, and connect, gates specs 005-009 and 016.
 - Journey 2, control a visible authenticated tab, gates specs 009-012 and 016.
 - Journey 3, handle human attention, gates specs 010, 012, 013, and 016.
@@ -289,4 +322,4 @@ None. Deferred entries require a new product decision before their status change
 
 ---
 
-**Version**: 1.2.2 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-16
+**Version**: 1.3.0 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-20
