@@ -17,7 +17,7 @@ use ring::signature::{ECDSA_P256_SHA256_FIXED, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::{Mutex, mpsc, oneshot},
     time::timeout,
@@ -32,7 +32,13 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
+use matinee_security::{
+    ClientHandshake, ClientHandshakeConfig, ConnectionId, SecurityEvent, SecurityEventSink,
+    SecurityEventSinkResult,
+};
+
 use crate::{
+    control_auth::{self, ControlAuth, ControlAuthError},
     failure::FailureCode,
     lifecycle::{Daemon, LifecycleError},
     record::{OperationState, RequestState},
@@ -59,6 +65,8 @@ pub struct Endpoint {
     pub extension_addr: String,
     /// The WebSocket path used by the extension.
     pub extension_path: String,
+    /// The user-readable path of the local control credential handoff.
+    pub credential_path: String,
 }
 
 impl Endpoint {
@@ -115,7 +123,7 @@ impl ControlClient {
         &self.endpoint
     }
 
-    /// Sends one line-delimited JSON command and returns its response.
+    /// Sends one JSON command after one authenticated secure-channel handshake.
     pub async fn request(&self, mut request: Value) -> io::Result<Value> {
         let addr = self
             .endpoint
@@ -123,22 +131,35 @@ impl ControlClient {
             .parse::<SocketAddr>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let mut stream = TcpStream::connect(addr).await?;
-        if let Some(object) = request.as_object_mut() {
-            object
-                .entry("protocol_version")
-                .or_insert_with(|| json!(CONTROL_PROTOCOL_VERSION));
-            object
-                .entry("instance_id")
-                .or_insert_with(|| json!(self.endpoint.instance_id));
-        }
-        let handshake = serde_json::to_vec(&json!({"protocol_version":CONTROL_PROTOCOL_VERSION,"instance_id":self.endpoint.instance_id,"command":"handshake","proof":"matinee.control.v1"})).map_err(|error| io::Error::new(io::ErrorKind::InvalidData,error))?;
-        stream.write_all(&handshake).await?;
-        stream.write_all(b"\n").await?;
-        let line = serde_json::to_vec(&request)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        stream.write_all(&line).await?;
-        stream.write_all(b"\n").await?;
-        stream.flush().await?;
+        let native = request.get("command").and_then(Value::as_str) == Some("stop");
+        let (principal, epoch, principal_key, daemon_key, daemon_id, signer) =
+            control_auth::ControlAuth::client_material(
+                Path::new(&self.endpoint.credential_path),
+                native,
+            )?;
+        let config = ClientHandshakeConfig::new(
+            self.endpoint.control_addr.clone(),
+            principal,
+            principal_key,
+            daemon_id,
+            daemon_key,
+            epoch,
+            control_auth::CONTROL_CONTRACT_MIN,
+            control_auth::CONTROL_CONTRACT_MAX,
+        )
+        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+        let (pending, hello) = ClientHandshake::start(config)
+            .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+        write_binary_frame(&mut stream, &hello).await?;
+        let proof = match read_binary_frame_or_denial(&mut stream).await? {
+            HandshakePayload::Proof(proof) => proof,
+            HandshakePayload::Denied(response) => return Ok(response),
+        };
+        let mut sink = NoopSink;
+        let (session, signature) = pending
+            .finish(&proof, &signer, &mut sink)
+            .map_err(|_| io::Error::new(io::ErrorKind::PermissionDenied, "authorization.denied"))?;
+        write_binary_frame(&mut stream, &signature).await?;
         let mut reader = BufReader::new(stream);
         let mut response = String::new();
         reader.read_line(&mut response).await?;
@@ -153,6 +174,26 @@ impl ControlClient {
         if handshake_response.get("ok").and_then(Value::as_bool) != Some(true) {
             return Ok(handshake_response);
         }
+        if session.principal().get() != principal.get() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "authorization.denied",
+            ));
+        }
+        if let Some(object) = request.as_object_mut() {
+            object
+                .entry("protocol_version")
+                .or_insert_with(|| json!(CONTROL_PROTOCOL_VERSION));
+            object
+                .entry("instance_id")
+                .or_insert_with(|| json!(self.endpoint.instance_id));
+        }
+        let line = serde_json::to_vec(&request)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let stream = reader.get_mut();
+        stream.write_all(&line).await?;
+        stream.write_all(b"\n").await?;
+        stream.flush().await?;
         response.clear();
         reader.read_line(&mut response).await?;
         if response.is_empty() {
@@ -222,12 +263,18 @@ fn resolve_pairing(service: &Service, fingerprint: &str) -> Option<Uuid> {
 #[derive(Clone)]
 struct Service {
     daemon: Arc<Daemon>,
+    auth: Arc<ControlAuth>,
     endpoint: Endpoint,
     pending: Arc<Mutex<HashMap<Uuid, Pending>>>,
     channel: Arc<Mutex<Option<ActiveChannel>>>,
     next_generation: Arc<Mutex<u64>>,
     stop: Arc<Mutex<bool>>,
     extension_public_key: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AuthenticatedControl {
+    principal_id: Uuid,
 }
 
 /// Runs the daemon until a stop request or process signal is received.
@@ -242,6 +289,14 @@ pub async fn run(state_dir: impl AsRef<Path>) -> Result<Endpoint, LifecycleError
         .map_err(storage_error)?;
     let control_addr = control.local_addr().map_err(storage_error)?;
     let extension_addr = extension.local_addr().map_err(storage_error)?;
+    let extension_public_key = std::env::var("MATINEE_EXTENSION_PUBLIC_KEY")
+        .ok()
+        .and_then(|value| decode_key_material(&value));
+    let auth = Arc::new(
+        ControlAuth::create(&control_addr.to_string(), &state_dir, extension_public_key)
+            .map_err(storage_error)?,
+    );
+    auth.register(daemon.registry()).map_err(storage_error)?;
     let endpoint = Endpoint {
         instance_id: daemon.instance_id(),
         control_addr: control_addr.to_string(),
@@ -251,19 +306,19 @@ pub async fn run(state_dir: impl AsRef<Path>) -> Result<Endpoint, LifecycleError
             EXTENSION_CHANNEL_PATH
         ),
         extension_path: EXTENSION_CHANNEL_PATH.to_owned(),
+        credential_path: auth.handoff_path().display().to_string(),
     };
     endpoint.write(&state_dir).map_err(storage_error)?;
 
     let service = Service {
         daemon,
+        auth: auth.clone(),
         endpoint: endpoint.clone(),
         pending: Arc::new(Mutex::new(HashMap::new())),
         channel: Arc::new(Mutex::new(None)),
         next_generation: Arc::new(Mutex::new(0)),
         stop: Arc::new(Mutex::new(false)),
-        extension_public_key: std::env::var("MATINEE_EXTENSION_PUBLIC_KEY")
-            .ok()
-            .and_then(|value| decode_hex(&value)),
+        extension_public_key: auth.extension_public_key.clone(),
     };
     let control_task = serve_control(control, service.clone());
     let extension_task = serve_extensions(extension, service.clone());
@@ -280,6 +335,7 @@ pub async fn run(state_dir: impl AsRef<Path>) -> Result<Endpoint, LifecycleError
         } => {},
     }
     let _ = service.daemon.stop();
+    let _ = auth.remove_handoff();
     let _ = Endpoint::remove(&state_dir);
     Ok(endpoint)
 }
@@ -308,59 +364,165 @@ async fn serve_control(listener: TcpListener, service: Service) -> io::Result<()
     }
 }
 async fn handle_control(stream: TcpStream, service: Service) -> io::Result<()> {
-    let (read_half, mut write_half) = stream.into_split();
-    let mut lines = BufReader::new(read_half).lines();
-    let mut authenticated = false;
+    let (mut reader, mut writer) = stream.into_split();
+    let connection = ConnectionId::new(Uuid::now_v7());
+    let hello = match read_binary_frame(&mut reader).await {
+        Ok(hello) => hello,
+        Err(_) => {
+            write_response(
+                &mut writer,
+                error_response(
+                    service.endpoint.instance_id,
+                    "authorization.denied",
+                    "control handshake required",
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    let (pending, proof, _) = match service.auth.accept(
+        &service.endpoint.control_addr,
+        &hello,
+        connection,
+        service.daemon.registry(),
+    ) {
+        Ok(value) => value,
+        Err(ControlAuthError::Denied) => {
+            write_response(
+                &mut writer,
+                error_response(
+                    service.endpoint.instance_id,
+                    "authorization.denied",
+                    "control handshake failed",
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    write_binary_frame(&mut writer, &proof).await?;
+    let signature = match read_binary_frame(&mut reader).await {
+        Ok(signature) => signature,
+        Err(_) => {
+            write_response(
+                &mut writer,
+                error_response(
+                    service.endpoint.instance_id,
+                    "authorization.denied",
+                    "control handshake failed",
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    let mut sink = NoopSink;
+    let session = match pending.finish(&signature, &mut sink) {
+        Ok(session) => session,
+        Err(_) => {
+            write_response(
+                &mut writer,
+                error_response(
+                    service.endpoint.instance_id,
+                    "authorization.denied",
+                    "control handshake failed",
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    let authenticated = AuthenticatedControl {
+        principal_id: session.principal().get(),
+    };
+    write_response(
+        &mut writer,
+        json!({"ok":true,"instance_id":service.endpoint.instance_id,"authenticated":true}),
+    )
+    .await?;
+    let mut lines = BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await? {
         let request = match serde_json::from_str::<Value>(&line) {
             Ok(value) => value,
             Err(error) => {
-                write_response(&mut write_half, json!({"ok":false,"code":"invalid.request","detail":error.to_string(),"instance_id":service.endpoint.instance_id})).await?;
+                write_response(&mut writer, json!({"ok":false,"code":"invalid.request","detail":error.to_string(),"instance_id":service.endpoint.instance_id})).await?;
                 continue;
             }
         };
-        let command = request.get("command").and_then(Value::as_str).unwrap_or("");
-        if !authenticated {
-            if command != "handshake" {
-                write_response(
-                    &mut write_half,
-                    error_response(
-                        service.endpoint.instance_id,
-                        "authorization.denied",
-                        "control handshake required",
-                    ),
-                )
-                .await?;
-                continue;
-            }
-            authenticated =
-                request.get("proof").and_then(Value::as_str) == Some("matinee.control.v1");
-            if !authenticated {
-                write_response(
-                    &mut write_half,
-                    error_response(
-                        service.endpoint.instance_id,
-                        "authorization.denied",
-                        "control handshake failed",
-                    ),
-                )
-                .await?;
-                continue;
-            }
-            write_response(
-                &mut write_half,
-                json!({"ok":true,"instance_id":service.endpoint.instance_id,"authenticated":true}),
-            )
-            .await?;
-            continue;
-        }
-        let response = service.handle_control(request).await;
-        write_response(&mut write_half, response).await?;
+        let response = service.handle_control(request, authenticated).await;
+        write_response(&mut writer, response).await?;
         if *service.stop.lock().await {
             return Ok(());
         }
     }
     Ok(())
+}
+
+const MAX_CONTROL_FRAME: usize = 4_096;
+
+async fn read_binary_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
+    let length = reader.read_u32().await? as usize;
+    if length > MAX_CONTROL_FRAME {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "control frame exceeds limit",
+        ));
+    }
+    let mut payload = vec![0; length];
+    reader.read_exact(&mut payload).await?;
+    Ok(payload)
+}
+
+async fn write_binary_frame<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> io::Result<()> {
+    let length = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "control frame exceeds limit"))?;
+    writer.write_all(&length.to_be_bytes()).await?;
+    writer.write_all(payload).await?;
+    writer.flush().await
+}
+
+enum HandshakePayload {
+    Proof(Vec<u8>),
+    Denied(Value),
+}
+
+async fn read_binary_frame_or_denial(reader: &mut TcpStream) -> io::Result<HandshakePayload> {
+    let mut prefix = [0u8; 4];
+    reader.read_exact(&mut prefix).await?;
+    let length = u32::from_be_bytes(prefix) as usize;
+    if length <= MAX_CONTROL_FRAME {
+        let mut payload = vec![0; length];
+        reader.read_exact(&mut payload).await?;
+        return Ok(HandshakePayload::Proof(payload));
+    }
+    let mut line = prefix.to_vec();
+    loop {
+        let byte = reader.read_u8().await?;
+        line.push(byte);
+        if byte == b'\n' {
+            break;
+        }
+        if line.len() > MAX_CONTROL_FRAME {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "control denial exceeds limit",
+            ));
+        }
+    }
+    let response = serde_json::from_slice::<Value>(&line)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(HandshakePayload::Denied(response))
+}
+
+struct NoopSink;
+impl SecurityEventSink for NoopSink {
+    fn emit(&mut self, _event: SecurityEvent) -> SecurityEventSinkResult {
+        SecurityEventSinkResult::Accepted
+    }
 }
 
 async fn write_response<W: AsyncWriteExt + Unpin>(
@@ -375,7 +537,7 @@ async fn write_response<W: AsyncWriteExt + Unpin>(
 }
 
 impl Service {
-    async fn handle_control(&self, request: Value) -> Value {
+    async fn handle_control(&self, request: Value, authenticated: AuthenticatedControl) -> Value {
         let instance_id = self.endpoint.instance_id;
         let object = match request.as_object() {
             Some(object) => object,
@@ -406,6 +568,13 @@ impl Service {
                 json!({"ok":true,"instance_id":instance_id,"state":self.daemon.state().map(|s|s.as_str()).unwrap_or("failed"),"control_addr":self.endpoint.control_addr,"extension_addr":self.endpoint.extension_addr})
             }
             "stop" => {
+                if authenticated.principal_id != self.auth.native.id().get() {
+                    return error_response(
+                        instance_id,
+                        "authorization.denied",
+                        "native principal required",
+                    );
+                }
                 let result = self.daemon.stop();
                 if result.is_ok() {
                     *self.stop.lock().await = true;
@@ -416,18 +585,22 @@ impl Service {
                     Err(error) => lifecycle_response(instance_id, error),
                 }
             }
-            "begin_request" => self.begin_request(object).await,
-            "dispatch" => self.dispatch(object).await,
-            "read_request" => self.read_request(object),
-            "read_session" => self.read_session(object),
-            "record_lost_boundary" => self.record_lost(object),
-            "commit_terminal_result" => self.commit_result(object),
-            "tool_call" => self.tool_call(object).await,
+            "begin_request" => self.begin_request(object, authenticated).await,
+            "dispatch" => self.dispatch(object, authenticated).await,
+            "read_request" => self.read_request(object, authenticated),
+            "read_session" => self.read_session(object, authenticated),
+            "record_lost_boundary" => self.record_lost(object, authenticated),
+            "commit_terminal_result" => self.commit_result(object, authenticated),
+            "tool_call" => self.tool_call(object, authenticated).await,
             _ => error_response(instance_id, "invalid.command", "unknown control command"),
         }
     }
 
-    async fn begin_request(&self, object: &serde_json::Map<String, Value>) -> Value {
+    async fn begin_request(
+        &self,
+        object: &serde_json::Map<String, Value>,
+        authenticated: AuthenticatedControl,
+    ) -> Value {
         let instance_id = self.endpoint.instance_id;
         let Some(spec) = object.get("spec") else {
             return error_response(instance_id, "invalid.request", "missing request spec");
@@ -436,6 +609,13 @@ impl Service {
             Ok(spec) => spec,
             Err(detail) => return error_response(instance_id, "invalid.request", &detail),
         };
+        if spec.mcp_principal_id != authenticated.principal_id {
+            return error_response(
+                instance_id,
+                "authorization.denied",
+                "principal does not match authenticated control peer",
+            );
+        }
         let last = object
             .get("last_action_sequence")
             .and_then(Value::as_i64)
@@ -451,7 +631,11 @@ impl Service {
         }
     }
 
-    async fn dispatch(&self, object: &serde_json::Map<String, Value>) -> Value {
+    async fn dispatch(
+        &self,
+        object: &serde_json::Map<String, Value>,
+        authenticated: AuthenticatedControl,
+    ) -> Value {
         let instance_id = self.endpoint.instance_id;
         let Some(operation_id) = object
             .get("operation_id")
@@ -460,9 +644,6 @@ impl Service {
         else {
             return error_response(instance_id, "invalid.request", "missing operation_id");
         };
-        if let Err(error) = self.daemon.dispatch(operation_id) {
-            return lifecycle_response(instance_id, error);
-        }
         let Some(operation) = self
             .daemon
             .registry()
@@ -481,6 +662,16 @@ impl Service {
         else {
             return error_response(instance_id, "invalid.request", "request not found");
         };
+        if request.mcp_principal_id != authenticated.principal_id {
+            return error_response(
+                instance_id,
+                "authorization.denied",
+                "principal does not match authenticated control peer",
+            );
+        }
+        if let Err(error) = self.daemon.dispatch(operation_id) {
+            return lifecycle_response(instance_id, error);
+        }
         let generation = self
             .channel
             .lock()
@@ -635,15 +826,24 @@ impl Service {
         frame
     }
 
-    fn read_request(&self, object: &serde_json::Map<String, Value>) -> Value {
+    fn read_request(
+        &self,
+        object: &serde_json::Map<String, Value>,
+        authenticated: AuthenticatedControl,
+    ) -> Value {
         let id = object
             .get("request_id")
             .and_then(Value::as_str)
             .and_then(|s| Uuid::parse_str(s).ok());
         match id.and_then(|id| self.daemon.registry().request(id).ok().flatten()) {
-            Some(request) => {
+            Some(request) if request.mcp_principal_id == authenticated.principal_id => {
                 json!({"ok":true,"instance_id":self.endpoint.instance_id,"request":request_value(&request)})
             }
+            Some(_) => error_response(
+                self.endpoint.instance_id,
+                "authorization.denied",
+                "request belongs to another principal",
+            ),
             None => error_response(
                 self.endpoint.instance_id,
                 "authorization.denied",
@@ -651,15 +851,24 @@ impl Service {
             ),
         }
     }
-    fn read_session(&self, object: &serde_json::Map<String, Value>) -> Value {
+    fn read_session(
+        &self,
+        object: &serde_json::Map<String, Value>,
+        authenticated: AuthenticatedControl,
+    ) -> Value {
         let id = object
             .get("session_id")
             .and_then(Value::as_str)
             .and_then(|s| Uuid::parse_str(s).ok());
         match id.and_then(|id| self.daemon.registry().session(id).ok().flatten()) {
-            Some(session) => {
+            Some(session) if session.mcp_principal_id == authenticated.principal_id => {
                 json!({"ok":true,"instance_id":self.endpoint.instance_id,"session":session_value(&session)})
             }
+            Some(_) => error_response(
+                self.endpoint.instance_id,
+                "authorization.denied",
+                "session belongs to another principal",
+            ),
             None => error_response(
                 self.endpoint.instance_id,
                 "authorization.denied",
@@ -667,7 +876,11 @@ impl Service {
             ),
         }
     }
-    fn record_lost(&self, object: &serde_json::Map<String, Value>) -> Value {
+    fn record_lost(
+        &self,
+        object: &serde_json::Map<String, Value>,
+        authenticated: AuthenticatedControl,
+    ) -> Value {
         let id = object
             .get("operation_id")
             .and_then(Value::as_str)
@@ -677,12 +890,39 @@ impl Service {
             .and_then(Value::as_str)
             .and_then(parse_failure)
             .unwrap_or(FailureCode::TargetLost);
+        if let Some(operation_id) = id {
+            let owned = self
+                .daemon
+                .registry()
+                .operation(operation_id)
+                .ok()
+                .flatten()
+                .and_then(|operation| {
+                    self.daemon
+                        .registry()
+                        .request(operation.request_id)
+                        .ok()
+                        .flatten()
+                })
+                .is_some_and(|request| request.mcp_principal_id == authenticated.principal_id);
+            if !owned {
+                return error_response(
+                    self.endpoint.instance_id,
+                    "authorization.denied",
+                    "operation belongs to another principal",
+                );
+            }
+        }
         match id.and_then(|id| self.daemon.record_lost_boundary(id, code).ok()) {
             Some(()) => json!({"ok":true,"instance_id":self.endpoint.instance_id}),
             None => failure_response(self.endpoint.instance_id, code),
         }
     }
-    fn commit_result(&self, object: &serde_json::Map<String, Value>) -> Value {
+    fn commit_result(
+        &self,
+        object: &serde_json::Map<String, Value>,
+        authenticated: AuthenticatedControl,
+    ) -> Value {
         let Some(id) = object
             .get("operation_id")
             .and_then(Value::as_str)
@@ -701,6 +941,27 @@ impl Service {
                 "missing result",
             );
         };
+        let owned = self
+            .daemon
+            .registry()
+            .operation(id)
+            .ok()
+            .flatten()
+            .and_then(|operation| {
+                self.daemon
+                    .registry()
+                    .request(operation.request_id)
+                    .ok()
+                    .flatten()
+            })
+            .is_some_and(|request| request.mcp_principal_id == authenticated.principal_id);
+        if !owned {
+            return error_response(
+                self.endpoint.instance_id,
+                "authorization.denied",
+                "operation belongs to another principal",
+            );
+        }
         let terminal = TerminalResult {
             operation_state: OperationState::Succeeded,
             request_state: RequestState::Succeeded,
@@ -721,12 +982,29 @@ impl Service {
         }
     }
 
-    async fn tool_call(&self, object: &serde_json::Map<String, Value>) -> Value {
+    async fn tool_call(
+        &self,
+        object: &serde_json::Map<String, Value>,
+        authenticated: AuthenticatedControl,
+    ) -> Value {
         let name = object.get("name").and_then(Value::as_str).unwrap_or("");
         let arguments = object
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if let Some(body_principal) = object
+            .get("principal_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+        {
+            if body_principal != authenticated.principal_id {
+                return error_response(
+                    self.endpoint.instance_id,
+                    "authorization.denied",
+                    "principal does not match authenticated control peer",
+                );
+            }
+        }
         if name == "browser_list" {
             return json!({"ok":true,"instance_id":self.endpoint.instance_id,"result":{"revision":"fixture-revision-1","expires_at":now_ms()+60_000,"candidates":[{"candidate_id":"fixture-candidate-1","browser":"chromium","profile":"fixture","window":"fixture-window","tab":"fixture-tab-1"}]}});
         }
@@ -745,11 +1023,7 @@ impl Service {
             .and_then(|value| Uuid::parse_str(value).ok())
             .or_else(|| (name == "session_open").then(Uuid::now_v7));
         let target_descriptor = serde_json::to_string(&arguments).unwrap_or_default();
-        let principal = object
-            .get("principal_id")
-            .and_then(Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .unwrap_or_else(Uuid::nil);
+        let principal = authenticated.principal_id;
         // A session records the pairing that owns its browser profile, so opening
         // one requires an authenticated extension channel. Without it there is no
         // paired profile to own the tab.
@@ -821,7 +1095,10 @@ impl Service {
             Ok(BeginRequestResult::Created(request)) => {
                 let dispatch = json!({"operation_id":operation_id});
                 let response = self
-                    .dispatch(dispatch.as_object().expect("dispatch object"))
+                    .dispatch(
+                        dispatch.as_object().expect("dispatch object"),
+                        authenticated,
+                    )
                     .await;
                 if response.get("ok").and_then(Value::as_bool) == Some(true) {
                     json!({"ok":true,"instance_id":self.endpoint.instance_id,"result":response.get("outcome").cloned().unwrap_or_else(|| json!({"status":"succeeded","request_id":request.request_id,"operation_id":operation_id}))})
@@ -911,7 +1188,7 @@ async fn handle_extension(stream: TcpStream, service: Service) -> io::Result<()>
                 if frame.get("channel_generation").and_then(Value::as_u64) != Some(generation_value) { continue; }
                 match frame.get("type").and_then(Value::as_str) {
                     Some("pairing_hello") => {
-                        let key = frame.get("public_key").and_then(Value::as_str).and_then(decode_hex);
+                        let key = frame.get("public_key").and_then(Value::as_str).and_then(decode_key_material);
                         let fingerprint = frame.get("fingerprint").and_then(Value::as_str).unwrap_or("");
                         if key.is_some() && service.extension_public_key.as_ref() == key.as_ref() { presented_key = key; presented_fingerprint = fingerprint.to_owned(); }
                     }
@@ -1231,6 +1508,18 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Decodes a public key or signature carried on the extension channel.
+///
+/// The extension encodes both as base64url, so that is tried first. Hex is also
+/// accepted because an operator may paste a key in that form. Parsing only one
+/// of the two would make a real handshake fail before signature verification,
+/// which is how this defect first shipped.
+fn decode_key_material(value: &str) -> Option<Vec<u8>> {
+    decode_base64_url(value)
+        .filter(|bytes| !bytes.is_empty())
+        .or_else(|| decode_hex(value))
+}
+
 fn hex_digit(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
@@ -1260,4 +1549,80 @@ fn decode_base64_url(value: &str) -> Option<Vec<u8>> {
         }
     }
     Some(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EXTENSION_ORIGIN, decode_key_material, verify_extension_proof};
+    use ring::rand::SystemRandom;
+    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+    use serde_json::json;
+
+    fn base64_url(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut encoded = String::new();
+        for chunk in bytes.chunks(3) {
+            let mut buffer = [0_u8; 3];
+            buffer[..chunk.len()].copy_from_slice(chunk);
+            let value =
+                (u32::from(buffer[0]) << 16) | (u32::from(buffer[1]) << 8) | u32::from(buffer[2]);
+            let digits = chunk.len() + 1;
+            for index in 0..digits {
+                let shift = 18 - index * 6;
+                encoded.push(ALPHABET[((value >> shift) & 0x3f) as usize] as char);
+            }
+        }
+        encoded
+    }
+
+    /// The extension encodes its key and signature as base64url. A daemon that
+    /// only parsed hex rejected every real handshake before verification, so this
+    /// pins the wire encoding both sides actually use.
+    #[test]
+    fn a_base64url_extension_proof_verifies() {
+        let rng = SystemRandom::new();
+        let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("generate signing key");
+        let pair =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, document.as_ref(), &rng)
+                .expect("load signing key");
+        let public_key = pair.public_key().as_ref().to_vec();
+        assert_eq!(public_key.len(), 65, "raw P-256 keys are 65 bytes");
+
+        let fingerprint = "a".repeat(64);
+        let challenge = "1758400000000-01a0c000-0000-7000-8000-000000000000";
+        let transcript = format!(
+            "matinee.browser.pairing.v1\0{}\0{}\0{}",
+            EXTENSION_ORIGIN, fingerprint, challenge
+        );
+        let signature = pair
+            .sign(&rng, transcript.as_bytes())
+            .expect("sign transcript");
+
+        let encoded_key = base64_url(&public_key);
+        assert_eq!(
+            decode_key_material(&encoded_key).as_deref(),
+            Some(public_key.as_slice()),
+            "the daemon must decode the encoding the extension sends"
+        );
+
+        let frame = json!({"signature": base64_url(signature.as_ref())});
+        assert!(verify_extension_proof(
+            decode_key_material(&encoded_key).as_deref(),
+            &fingerprint,
+            challenge,
+            &frame
+        ));
+
+        let wrong = json!({"signature": base64_url(&[7_u8; 64])});
+        assert!(
+            !verify_extension_proof(
+                decode_key_material(&encoded_key).as_deref(),
+                &fingerprint,
+                challenge,
+                &wrong
+            ),
+            "a wrong signature must not verify"
+        );
+    }
 }

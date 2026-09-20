@@ -730,7 +730,7 @@ pub async fn run_stdio(daemon: Arc<Daemon>, principal_id: Uuid) -> io::Result<()
 /// Runs the stdio adapter as a client of a long-lived daemon.
 pub async fn run_stdio_client(
     endpoint: matinee_daemon::server::Endpoint,
-    principal_id: Uuid,
+    _principal_id: Uuid,
 ) -> io::Result<()> {
     let client = matinee_daemon::server::ControlClient::new(endpoint.clone());
     let mut input = tokio::io::BufReader::new(tokio::io::stdin());
@@ -766,7 +766,7 @@ pub async fn run_stdio_client(
                 ),
                 Some("tools/call") => {
                     let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
-                    let mut request = json!({"command":"tool_call","principal_id":principal_id,"name":params.get("name").and_then(Value::as_str).unwrap_or(""),"arguments":params.get("arguments").cloned().unwrap_or_else(|| json!({}))});
+                    let mut request = json!({"command":"tool_call","name":params.get("name").and_then(Value::as_str).unwrap_or(""),"arguments":params.get("arguments").cloned().unwrap_or_else(|| json!({}))});
                     if let Some(arguments) =
                         request.get_mut("arguments").and_then(Value::as_object_mut)
                     {
@@ -830,8 +830,8 @@ pub async fn run_stdio_client(
 
 fn parse_failure_code(code: &str) -> FailureCode {
     match code {
+        "authorization.denied" => FailureCode::AuthorizationDenied,
         "daemon.start_conflict" => FailureCode::DaemonStartConflict,
-        "daemon.restarted" => FailureCode::DaemonRestarted,
         "operation.extension_disconnected" => FailureCode::ExtensionDisconnected,
         "operation.deadline_expired" => FailureCode::DeadlineExpired,
         "candidate.revision_stale" => FailureCode::CandidateRevisionStale,
