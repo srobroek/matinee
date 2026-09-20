@@ -18,8 +18,9 @@ client (`FR-007`).
    pairing is active and unrevoked (`FR-009`).
 
 A reconnect opens a new channel generation. The previous generation stops
-authorizing commands immediately, and durable sessions survive the reconnect
-(`FR-010`, `adr-8`).
+authorizing commands immediately, and sessions survive a reconnect within the
+same daemon run (`FR-010`, `adr-8`). A daemon restart creates a new instance
+with no sessions.
 
 ## Frames
 
@@ -43,9 +44,8 @@ Every frame carries `protocol_version`, `channel_generation`, and a
 
 | Frame | Payload | Notes |
 |---|---|---|
-| `result` | correlation, operation, session, incarnation, generation, outcome | The daemon verifies all five before committing (`FR-042`) |
-| `uncertain` | correlation, operation, reason | The daemon records an Unknown Reservation |
-| `generation_changed` | session, incarnation, new generation | Invalidates stale references |
+| `result` | correlation, operation, session, incarnation, generation, outcome | The daemon verifies all five before accepting a terminal result (`FR-042`) |
+| `outcome_unobserved` | correlation, operation, boundary | The extension reports that it cannot confirm the outcome, and the daemon terminates the Operation as `failed` naming that boundary |
 | `incarnation_lost` | session, incarnation | The user closed or replaced the tab |
 
 ## Verification rules

@@ -1,60 +1,62 @@
-//! Canonical public states and private dispatch phases.
-//!
-//! Public `Request`, `Operation`, and `Session` states stay inside the
-//! `matinee.tools.v1` enumerations. The dispatch phase is private and adds no
-//! public state.
-//!
-//! Data model: `specs/006.5-demonstrable-browser-mvp/data-model.md`.
+//! Canonical public states for daemon records.
 
 use std::fmt;
 
 /// Canonical `Session` state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
+    /// A session is being opened.
     Opening,
+    /// A session is usable.
     Active,
+    /// A session is changing its browser binding.
     Rebinding,
+    /// A session is being released.
     Releasing,
+    /// A session is closed.
     Closed,
+    /// A session failed before it could be used or released.
     Failed,
 }
 
 /// Canonical `Request` state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestState {
+    /// The request was admitted but has not started.
     Accepted,
+    /// At least one operation is executing.
     Running,
+    /// Every operation completed successfully.
     Succeeded,
+    /// The request completed with a failure.
     Failed,
+    /// The request was cancelled before completion.
     Cancelled,
+    /// The request deadline elapsed before completion.
     Expired,
-    ReconciliationRequired,
 }
 
 /// Canonical `Operation` state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationState {
+    /// The operation has been planned.
     Planned,
+    /// The operation is waiting for dispatch admission.
     Queued,
+    /// The operation is checking its target.
     Preflight,
+    /// The operation crossed the browser effect boundary.
     Dispatching,
+    /// The operation is waiting for user attention.
     AwaitingAttention,
+    /// The operation completed successfully.
     Succeeded,
+    /// The operation completed with a failure.
     Failed,
-    Uncertain,
-    Reconciling,
+    /// The operation deadline elapsed before completion.
     Expired,
+    /// The operation was cancelled before dispatch.
     Cancelled,
-}
-
-/// Private dispatch-journal phase for one effectful operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DispatchPhase {
-    /// Committed while the operation is in `Preflight`.
-    Prepared,
-    /// Committed with the move to `Dispatching`, before the extension receives
-    /// the command.
-    Dispatched,
 }
 
 impl SessionState {
@@ -86,7 +88,6 @@ impl RequestState {
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
             Self::Expired => "expired",
-            Self::ReconciliationRequired => "reconciliation_required",
         }
     }
 
@@ -94,11 +95,7 @@ impl RequestState {
     pub const fn terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded
-                | Self::Failed
-                | Self::Cancelled
-                | Self::Expired
-                | Self::ReconciliationRequired
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Expired
         )
     }
 }
@@ -114,30 +111,17 @@ impl OperationState {
             Self::AwaitingAttention => "awaiting_attention",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
-            Self::Uncertain => "uncertain",
-            Self::Reconciling => "reconciling",
             Self::Expired => "expired",
             Self::Cancelled => "cancelled",
         }
     }
 
-    /// Reports whether the operation may still be cancelled without reaching
-    /// the browser.
+    /// Reports whether the operation has not crossed the effect boundary.
     pub const fn before_dispatch(self) -> bool {
         matches!(
             self,
             Self::Planned | Self::Queued | Self::Preflight | Self::AwaitingAttention
         )
-    }
-}
-
-impl DispatchPhase {
-    /// Returns the stable stored value.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Prepared => "prepared",
-            Self::Dispatched => "dispatched",
-        }
     }
 }
 
@@ -154,12 +138,6 @@ impl fmt::Display for RequestState {
 }
 
 impl fmt::Display for OperationState {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl fmt::Display for DispatchPhase {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }

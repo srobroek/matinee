@@ -23,8 +23,8 @@
 
 ## Safety Boundary
 
-- [x] Every external effect has a durable pre-dispatch operation record
-- [x] Unknown outcomes reserve identity and cannot replay automatically
+- [x] No external effect is reported as successful unless the daemon observed it
+- [x] Unobserved outcomes terminate as failed and are never retried automatically
 - [x] Multiple tabs remain isolated by session, tab, and document generation
 - [x] Bootstrap, MCP, and extension transports are distinct and authenticated
 - [x] Secret and browser-owned data exclusions are explicit

@@ -40,12 +40,12 @@ negotiating down (`FR-014`, Constitution V).
 
 | Transition | Trigger |
 |---|---|
-| `starting` to `ready` | Store opened at version 1, recovery finished, endpoints bound |
-| `starting` to `failed` | Storage unavailable or corrupt, or state ownership lost |
+| `starting` to `ready` | Ownership acquired, instance identity generated, endpoints bound |
+| `starting` to `failed` | State-directory ownership unavailable or lost |
 | `ready` to `draining` | Authorized stop crosses the dispatch-admission boundary |
-| `draining` to exit | Every `dispatching` Operation reached a terminal result |
-| `draining` to `ready` | Never; a blocked stop stays `draining` (`adr-7`) |
-| `ready` to `failed` | Storage becomes unavailable or corrupt |
+| `draining` to exit | New operations rejected, in-memory state abandoned, extension disconnected, tabs left open |
+| `draining` to `ready` | Never |
+| `ready` to `failed` | State-directory ownership lost |
 
 ## Dispatch admission
 
@@ -55,9 +55,10 @@ One serialized boundary admits both a stop request and a `preflight` to
 
 ## Exclusive ownership
 
-Startup acquires an advisory lock inside the state directory before opening the
-store or binding any endpoint. Every loser returns `daemon.start_conflict` and
-mutates nothing (`FR-001`, `SC-005`).
+Startup acquires an advisory lock inside the state directory before binding any
+endpoint. Every loser returns `daemon.start_conflict` and mutates nothing
+(`FR-001`, `SC-005`). The operating system releases the lock when the owning
+process exits, so a crashed owner leaves no lock behind.
 
 ## Stop authority
 

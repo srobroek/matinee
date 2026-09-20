@@ -3,8 +3,9 @@
 **Feature**: [spec.md](../006.5-demonstrable-browser-mvp/spec.md) | Satisfies `FR-056`, `FR-057`, `FR-058`
 
 This procedure drives two visible Chrome tabs from one MCP client through the
-paired extension, then proves crash safety. Every boundary is a real process: no
-step substitutes an in-process fake.
+paired extension, then proves honest in-run failure reporting and restart
+detection. Every boundary is a real process: no step substitutes an in-process
+fake.
 
 ## Prerequisites
 
@@ -28,17 +29,19 @@ field and a counter. Leave it running.
 cargo run -p matinee -- setup --state-dir "$PWD/target/mvp-demo/state"
 ```
 
-Expect: a state id, schema version 1, and the created credential references.
-Running it twice must report ownership conflict rather than reinitializing.
+Expect: a state id, the created credential references, the ownership lock, and a
+daemon the setup command started for you. `FR-009` allows only setup and the MCP
+adapter to start one, so there is no public start command. Running setup twice
+must report ownership conflict rather than reinitializing.
 
-## 3. Start the daemon
+## 3. Confirm the daemon is ready
 
 ```bash
-cargo run -p matinee -- daemon --state-dir "$PWD/target/mvp-demo/state"
+cargo run -p matinee -- status --state-dir "$PWD/target/mvp-demo/state"
 ```
 
-Expect: `starting` then `ready`, the bound loopback endpoints, and zero recovered
-operations on a fresh store.
+Expect: `ready`, the bound loopback endpoints, the daemon instance identity, and
+zero sessions on a fresh run.
 
 ## 4. Pair the extension
 
@@ -102,26 +105,33 @@ Run 100 alternating operations across A and B with the third tab focused.
 Expect: `SC-003` holds. Distinct values, counters, generations, and histories per
 tab, with zero cross-tab mutation.
 
-## 9. Prove no replay after restart
+## 9. Prove honest reporting after a lost boundary
 
 1. Set the fixture to stall its counter route:
    `curl -X POST http://127.0.0.1:8787/control/stall?route=alpha`.
-2. Call `element_click` on A's counter. It will not return.
-3. Kill the daemon: `pkill -f 'matinee.*daemon'`.
-4. Read the fixture counter: `curl http://127.0.0.1:8787/alpha/counter`.
-5. Restart the daemon with the same state directory.
-6. Call `request_get` for the killed request.
+2. Call `element_click` on A's counter.
+3. Disconnect the extension before the click result arrives.
+4. Read the fixture counter:
+   `curl http://127.0.0.1:8787/alpha/counter`.
+5. Kill the daemon: `pkill -f 'matinee.*(daemon|setup)'`.
+6. Start the MCP adapter again, which brings a fresh daemon up.
+7. Call `request_get` for the disconnected request using the prior daemon
+   instance identity.
 
-Expect: the Operation is `uncertain`, the Request is `reconciliation_required`,
-and the fixture counter has not changed again. Matinee never re-sends the click.
+Expect: the disconnected Operation ends `failed` naming the lost boundary, the
+fixture counter is unchanged by any retry, and the restarted client's next call
+fails with `daemon.restarted` naming its last action sequence. The restarted
+daemon holds zero sessions, and the fixture counter has advanced at most once.
+Matinee never re-sends the click.
 
 ## 10. Prove stop safety
 
-With that Unknown Reservation outstanding, request stop.
+Request stop as the authenticated native principal.
 
-Expect: `daemon.stop_blocked`, the daemon stays `draining`, and every fixture tab
-stays open. Resolve the reservation, then stop again and expect a clean exit with
-tabs still open.
+Expect: stop always succeeds. The daemon enters `draining`, rejects new
+operations, abandons its in-memory state, disconnects the extension, leaves every
+fixture tab open, and exits. No stop request is blocked by an outstanding
+Operation.
 
 ## 11. Write the evidence report
 
@@ -129,18 +139,19 @@ tabs still open.
 cargo run -p matinee -- fixture --report target/mvp-demo/evidence.json
 ```
 
-Expect a sanitized report containing component versions, redacted identity
-fingerprints, session and tab identities, Request and Operation identities with
-canonical states, screenshot digests and resource-read results, restart
-checkpoints, and the reconciliation evidence. It must contain no secret, no raw
-page text, and no private browser data.
+Expect a sanitized machine-readable report containing component versions,
+redacted identity fingerprints, the daemon instance identity, session and tab
+identities, Request and Operation identities with canonical states and action
+sequences, screenshot artifact digests, resource-read results, and evidence that
+a lost boundary terminated an Operation as `failed`. It must contain no secret,
+raw page text, or private browser data.
 
 ## Cleanup
 
 ```bash
 cargo run -p matinee -- stop
-rm -rf target/mvp-demo/state
 ```
 
-Remove the unpacked extension from `chrome://extensions` and revoke the pairing if
-you will not repeat the demonstration.
+The stop command releases the ownership lock. Remove the unpacked extension from
+`chrome://extensions`; there is no state database to delete.
+

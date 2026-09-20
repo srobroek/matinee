@@ -43,23 +43,36 @@ and authorizes commands only after it completes.
 **Alternatives rejected**: `axum 0.8.9` adds a router and framework state for one
 upgrade endpoint. A raw TCP upgrade would reimplement the WebSocket protocol.
 
-## D3: Durable store uses bundled SQLite
+## D3: No storage engine; state lives in memory
 
-**Decision**: `rusqlite = "=0.34.0"` with `features = ["bundled"]`, resolving
-`libsqlite3-sys 0.32.0`. One daemon-owned writer, WAL journal,
-`PRAGMA synchronous = FULL`, and schema version 1 in `PRAGMA user_version`.
+**Decision**: Hold all MVP state in memory for one daemon run. Add no storage
+dependency.
 
-**Rationale**: `cargo +1.85.0 check` compiled this pin in this worktree, which
-settles the MSRV question that `rusqlite`'s published policy leaves open. In WAL
-mode, `synchronous = FULL` syncs the WAL after each commit, so a successful
-commit is the persistence barrier that `FR-034` requires. A transaction
-expresses the two-phase Dispatch Record directly.
+**Rationale**: `FR-018` confines the MVP to the deterministic local fixture, so
+repeating an action changes a counter the user can see. A durable pre-dispatch
+journal exists to stop duplicate consequential effects on real sites, which this
+MVP cannot reach, and Spec 007 already owns that store. `adr-10` records the
+decision, its Constitution III exception, and its expiry condition.
 
-**Alternatives rejected**: `redb 2.6.3` declares MSRV 1.85 and offers
-`Durability::Paranoid`, but 2.6.3 documents itself as beta and would require
-hand-managed schema metadata. `sled 1.0.0-alpha.124` documents a real `flush`
-barrier but calls itself unstable and recommends SQLite where reliability is
-primary, which disqualifies it for the dispatch journal.
+A client detects daemon loss from its dropped connection and a changed instance
+identity, so durability was never what told the client an outcome was unknown.
+Durability would only let the daemon distinguish never-sent from maybe-sent, which
+is an optimization rather than a safety property. The MVP therefore always gives
+the conservative answer: an operation whose outcome it did not observe terminates
+as `failed` naming the lost boundary.
+
+**Alternatives rejected**: `rusqlite =0.34.0` with `bundled` was implemented and
+then removed; it compiled under Rust 1.85 in this worktree, resolving
+`libsqlite3-sys 0.32.0`, but it bought crash safety the MVP does not claim.
+`redb 2.6.3` declares MSRV 1.85 yet documents itself as beta.
+`sled 1.0.0-alpha.124` calls itself unstable and recommends SQLite where
+reliability is primary.
+
+**Known gap**: with no server-side record surviving a restart, a client that
+retries after one can duplicate an effect. The fixture-only restriction bounds
+that risk. The cheapest fix for Spec 007 is a per-operation crash flag written
+before dispatch and removed on terminal result, which refuses a reused
+idempotency key after restart without a database.
 
 ## D4: Browser automation uses content scripts, not the debugger
 

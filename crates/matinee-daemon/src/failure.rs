@@ -1,25 +1,22 @@
 //! Stable public failure codes for the MVP boundaries.
 //!
-//! Contract: `specs/006.5-demonstrable-browser-mvp/contracts/mcp-tools.md`.
+//! The string form of each code is the wire value.
 
 use std::fmt;
 
 /// A stable, caller-visible failure code.
-///
-/// The string form is the wire value and MUST NOT change without a contract
-/// revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FailureCode {
     /// Another process owns the state directory.
     DaemonStartConflict,
-    /// Stop or recovery cancelled work that never reached the browser.
-    DaemonStoppedBeforeDispatch,
-    /// An uncertain operation blocks a clean stop.
-    DaemonStopBlocked,
-    /// The extension cannot prove the outcome of a dispatched effect.
-    OperationUncertain,
-    /// A dispatched effect has no authoritative result.
-    ReconciliationRequired,
+    /// The daemon instance changed after the client connected.
+    DaemonRestarted,
+    /// The extension disconnected before an operation outcome was observed.
+    ExtensionDisconnected,
+    /// The operation target disappeared before its outcome was observed.
+    TargetLost,
+    /// The operation deadline elapsed before its outcome was observed.
+    DeadlineExpired,
     /// The candidate revision expired or no longer matches.
     CandidateRevisionStale,
     /// The document generation changed before dispatch.
@@ -32,7 +29,7 @@ pub enum FailureCode {
     AuthorizationDenied,
     /// The origin is not the pinned fixture or extension origin.
     OriginRejected,
-    /// The durable store is unavailable or corrupt.
+    /// The state-directory lock or in-memory registry is unavailable.
     StorageUnavailable,
 }
 
@@ -41,10 +38,10 @@ impl FailureCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DaemonStartConflict => "daemon.start_conflict",
-            Self::DaemonStoppedBeforeDispatch => "daemon.stopped_before_dispatch",
-            Self::DaemonStopBlocked => "daemon.stop_blocked",
-            Self::OperationUncertain => "operation.uncertain",
-            Self::ReconciliationRequired => "reconciliation_required",
+            Self::DaemonRestarted => "daemon.restarted",
+            Self::ExtensionDisconnected => "operation.extension_disconnected",
+            Self::TargetLost => "operation.target_lost",
+            Self::DeadlineExpired => "operation.deadline_expired",
             Self::CandidateRevisionStale => "candidate.revision_stale",
             Self::GenerationStale => "generation.stale",
             Self::IncarnationStale => "incarnation.stale",
