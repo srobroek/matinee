@@ -49,7 +49,7 @@ One MCP client opens or adopts at least two visible tabs in the paired profile a
 
 **Why this priority**: Independent multi-tab control proves that Matinee routes operations by explicit ownership rather than ambient browser focus.
 
-**Independent Test**: Open fixture tabs A and B. Move user focus to an unrelated tab while A and B receive overlapping operations. Type distinct values, activate distinct controls, observe both documents, and capture both screenshots. Each result must remain attached to its selected session and tab.
+**Independent Test**: Open fixture tabs A and B. Move user focus to an unrelated tab while A and B receive overlapping operations. Type distinct values, activate distinct controls, and observe both documents while focus stays away. Capture each screenshot, which activates its owned tab for the capture and then restores the previously active tab. Each result must remain attached to its selected session and tab.
 
 **Acceptance Scenarios**:
 
@@ -60,7 +60,7 @@ One MCP client opens or adopts at least two visible tabs in the paired profile a
 5. **Given** current observations for both tabs, **When** `element_type` enters `alpha` in A and `beta` in B, **Then** `page_observe` returns the corresponding value only from each owning session.
 6. **Given** one current button reference per tab, **When** `element_click` activates each, **Then** each fixture counter changes once without cross-tab effects.
 7. **Given** click or type preflight, **When** the extension prepares the action, **Then** the visible indicator identifies the active tab, operation boundary, synthetic cursor, and target highlight before activation.
-8. **Given** either session, **When** `page_screenshot` runs, **Then** it returns a persisted redacted `ArtifactSummary` with an authorized MCP resource URI; an equivalent retry returns the same artifact.
+8. **Given** either session, **When** `page_screenshot` runs, **Then** it activates only its owned tab for the capture, restores the previously active tab, and returns a persisted redacted `ArtifactSummary` with an authorized MCP resource URI; an equivalent retry returns the same artifact.
 9. **Given** that resource URI, **When** the owning MCP principal reads it, **Then** the adapter reauthorizes the principal and streams at most 32 MiB.
 10. **Given** unsafe or unverifiable screenshot masking, **When** capture runs, **Then** it fails closed without persisting an artifact or returning image bytes.
 11. **Given** an element reference from A, **When** it is submitted to B or after A changes document generation, **Then** Matinee rejects it before dispatch.
@@ -163,7 +163,7 @@ A user can determine whether the MVP daemon, store, MCP adapter, and extension a
 - **FR-027**: The extension MUST assign each created or adopted tab a non-repeating opaque incarnation. A document generation MUST never repeat within that incarnation.
 - **FR-028**: During click and type, the extension MUST show the owning indicator, current operation boundary, synthetic cursor, and pre-activation target highlight.
 - **FR-029**: User closure, navigation, or ownership change MUST invalidate stale control state and MUST NOT cause implicit retargeting.
-- **FR-030**: `page_screenshot` MUST persist one bounded redacted artifact and return its canonical `ArtifactSummary` with a resource URI. The adapter MUST reauthorize each resource read against the owning MCP principal and stream at most 32 MiB. Image bytes and their digest MUST cross the persistence barrier before metadata becomes `available`. An equivalent retry MUST return the same artifact. Failed masking or incomplete persistence MUST expose no artifact identity or bytes. Orphaned unavailable bytes MAY be removed after restart.
+- **FR-030**: `page_screenshot` MUST persist one bounded redacted artifact and return its canonical `ArtifactSummary` with a resource URI. Capture MUST activate its owned tab, record that activation on the Operation, and restore the previously active tab before returning. The adapter MUST reauthorize each resource read against the owning MCP principal and stream at most 32 MiB. Image bytes and their digest MUST cross the persistence barrier before metadata becomes `available`. An equivalent retry MUST return the same artifact. Failed masking or incomplete persistence MUST expose no artifact identity or bytes. Orphaned unavailable bytes MAY be removed after restart.
 
 #### Durable Effect Boundary
 
@@ -224,7 +224,7 @@ A user can determine whether the MVP daemon, store, MCP adapter, and extension a
 
 - **SC-001**: A clean development checkout completes administrator bootstrap, MCP registration, explicit development-extension allowance, `/v1/pair` enrollment, MCP connection, and tool discovery through `specs/006.5-demonstrable-browser-mvp/quickstart.md`.
 - **SC-002**: One MCP client controls at least two visible fixture tabs in one paired profile during the same daemon run.
-- **SC-003**: While user focus remains on an unrelated third tab, tabs A and B retain distinct navigation, typed values, counters, generations, screenshots, and histories across 100 overlapping alternating operations without cross-tab mutation.
+- **SC-003**: While user focus remains on an unrelated third tab, tabs A and B retain distinct navigation, typed values, counters, generations, and histories across 100 overlapping alternating operations without cross-tab mutation.
 - **SC-004**: Every stale, cross-session, wrong-incarnation, wrong-generation, unknown-principal, and wrong-origin fixture is rejected before browser dispatch.
 - **SC-005**: In 100 concurrent setup/MCP starts, one process obtains exclusive state ownership, every loser returns `daemon.start_conflict`, and no loser mutates the store.
 - **SC-006**: At every crash point after the private `prepared` phase commits and before `dispatched` commits, recovery cancels the Operation and fails its Request with `daemon.stopped_before_dispatch`. For either `session_open` variant, it also moves the preallocated Session to `failed`. It dispatches zero browser commands.
@@ -240,6 +240,7 @@ A user can determine whether the MVP daemon, store, MCP adapter, and extension a
 - **SC-016**: Stop cancels every `planned`, `queued`, `preflight`, or `awaiting_attention` Operation with no Dispatch Record in phase `dispatched`, fails each owning Request with `daemon.stopped_before_dispatch`, and moves every preallocated `session_open` Session to `failed`. At every race between stop admission and a `preflight` to `dispatching` transition, exactly one wins the shared boundary. If dispatch wins, stop observes the Operation and cannot exit before its terminal result.
 - **SC-017**: Authorized stop leaves every visible fixture tab open and preserves terminal and reconciliation-required records. Unauthorized stop changes no lifecycle state.
 - **SC-018**: The demonstration produces `target/mvp-demo/evidence.json`, and schema validation confirms every FR-058 field while secret-seeding confirms zero prohibited values.
+- **SC-019**: Every screenshot activates only its owned tab, records that activation, and restores the previously active tab. No other operation changes the active tab.
 
 ## Assumptions
 
