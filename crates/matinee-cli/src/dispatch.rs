@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
 /// Help text for the supported Matinee command surface.
-pub(crate) const USAGE: &str = "Matinee checks headed-browser environments for coding agents.\n\nUsage: matinee <COMMAND>\n\nCommands:\n  doctor   Check for supported browser executables\n  setup    Start the local daemon setup path\n  status   Report local daemon status\n  stop     Stop the local daemon\n  mcp      Run the newline-delimited MCP adapter\n  fixture  Serve the deterministic local fixture\n  help     Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version";
+pub(crate) const USAGE: &str = "Matinee checks headed-browser environments for coding agents.\n\nUsage: matinee <COMMAND>\n\nCommands:\n  doctor   Check for supported browser executables\n  setup    Start the local daemon setup path; use 'setup pair-extension' for an invitation\n  status   Report local daemon status\n  stop     Stop the local daemon\n  mcp      Run the newline-delimited MCP adapter\n  fixture  Serve the deterministic local fixture\n  help     Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version";
 
 /// A command accepted by the released CLI, or the first argument of an invalid
 /// invocation for the caller to render with the released diagnostic format.
@@ -11,6 +11,7 @@ pub(crate) enum Dispatch {
     Version,
     Doctor,
     Setup,
+    SetupPairExtension,
     Status,
     Stop,
     Mcp,
@@ -49,7 +50,7 @@ where
 
     match command.to_string_lossy().as_ref() {
         "doctor" if arguments.next().is_none() => Dispatch::Doctor,
-        "setup" if arguments.next().is_none() => Dispatch::Setup,
+        "setup" => parse_setup(arguments),
         "status" if arguments.next().is_none() => Dispatch::Status,
         "stop" if arguments.next().is_none() => Dispatch::Stop,
         "mcp" if arguments.next().is_none() => Dispatch::Mcp,
@@ -78,5 +79,19 @@ where
     match port.to_string_lossy().parse::<u16>() {
         Ok(port) => Dispatch::Fixture { port },
         _ => Dispatch::Invalid(port),
+    }
+}
+
+fn parse_setup<I>(mut arguments: I) -> Dispatch
+where
+    I: Iterator<Item = OsString>,
+{
+    let Some(subcommand) = arguments.next() else {
+        return Dispatch::Setup;
+    };
+    if subcommand == "pair-extension" && arguments.next().is_none() {
+        Dispatch::SetupPairExtension
+    } else {
+        Dispatch::Invalid(subcommand)
     }
 }

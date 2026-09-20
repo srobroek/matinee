@@ -9,6 +9,8 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use matinee_security::{
@@ -18,8 +20,7 @@ use matinee_security::{
     ServerHandshakeConfig,
 };
 use ring::{
-    digest,
-    rand::SystemRandom,
+    rand::{SecureRandom, SystemRandom},
     signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair},
 };
 use serde::{Deserialize, Serialize};
@@ -30,8 +31,12 @@ use crate::registry::{PairingRecord, PrincipalRecord, Registry};
 pub const CONTROL_CONTRACT_MIN: u16 = 1;
 pub const CONTROL_CONTRACT_MAX: u16 = 1;
 pub const CREDENTIAL_FILE_NAME: &str = "daemon.control.credentials.json";
+/// The one-time extension enrollment remains usable for ten minutes, long
+/// enough to copy it into the unpacked extension without leaving a stale key
+/// around indefinitely if setup is abandoned.
+pub const EXTENSION_ENROLLMENT_TTL: Duration = Duration::from_secs(10 * 60);
+const EXTENSION_ENROLLMENT_KEY_BYTES: usize = 32;
 const MAX_HANDSHAKE: usize = 4_096;
-
 /// A signing key retained by one process. Its PKCS#8 bytes are included only in
 /// the local handoff file and never in a registry record.
 pub struct RingSigner {
@@ -112,7 +117,105 @@ struct Handoff {
     native: CredentialMaterial,
 }
 
-/// The registered control principals and daemon signing identity for one run.
+/// The process-local enrollment invitation shown to an authenticated operator.
+///
+/// The key never enters the endpoint or credential handoff files. It is held in
+/// this record until the control channel returns it or a valid extension hello
+/// consumes it.
+pub struct ExtensionEnrollment {
+    one_time_key: String,
+    origin: String,
+    created_at: i64,
+    expires_at: i64,
+    consumed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtensionEnrollmentDetails {
+    pub one_time_key: String,
+    pub origin: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtensionEnrollmentError {
+    AuthorizationDenied,
+    OriginRejected,
+    StorageUnavailable,
+}
+
+impl ExtensionEnrollment {
+    fn generate() -> io::Result<Self> {
+        let mut bytes = [0_u8; EXTENSION_ENROLLMENT_KEY_BYTES];
+        SystemRandom::new()
+            .fill(&mut bytes)
+            .map_err(|_| io::Error::other("extension enrollment key generation failed"))?;
+        let created_at = now_ms();
+        Ok(Self {
+            one_time_key: base64_url(&bytes),
+            origin: crate::server::EXTENSION_ORIGIN.to_owned(),
+            created_at,
+            expires_at: created_at.saturating_add(
+                i64::try_from(EXTENSION_ENROLLMENT_TTL.as_millis()).unwrap_or(i64::MAX),
+            ),
+            consumed: false,
+        })
+    }
+
+    pub fn details(&self) -> ExtensionEnrollmentDetails {
+        ExtensionEnrollmentDetails {
+            one_time_key: self.one_time_key.clone(),
+            origin: self.origin.clone(),
+            created_at: self.created_at,
+            expires_at: self.expires_at,
+        }
+    }
+
+    pub fn validate(
+        &self,
+        one_time_key: &str,
+        origin: &str,
+        now: i64,
+    ) -> Result<(), ExtensionEnrollmentError> {
+        if origin != self.origin {
+            return Err(ExtensionEnrollmentError::OriginRejected);
+        }
+        if self.consumed || one_time_key != self.one_time_key || now >= self.expires_at {
+            return Err(ExtensionEnrollmentError::AuthorizationDenied);
+        }
+        Ok(())
+    }
+
+    pub fn consume(
+        &mut self,
+        one_time_key: &str,
+        origin: &str,
+        now: i64,
+    ) -> Result<(), ExtensionEnrollmentError> {
+        self.validate(one_time_key, origin, now)?;
+        self.consumed = true;
+        Ok(())
+    }
+}
+
+fn base64_url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let mut buffer = [0_u8; 3];
+        buffer[..chunk.len()].copy_from_slice(chunk);
+        let value =
+            (u32::from(buffer[0]) << 16) | (u32::from(buffer[1]) << 8) | u32::from(buffer[2]);
+        let digits = chunk.len() + 1;
+        for index in 0..digits {
+            let shift = 18 - index * 6;
+            encoded.push(ALPHABET[((value >> shift) & 0x3f) as usize] as char);
+        }
+    }
+    encoded
+}
+
 pub struct ControlAuth {
     pub daemon_identity: IdentityId,
     pub daemon_public_key: PublicKey,
@@ -122,16 +225,12 @@ pub struct ControlAuth {
     native_signer: RingSigner,
     mcp_signer: RingSigner,
     handoff_path: PathBuf,
-    pub extension_public_key: Option<Vec<u8>>,
+    extension_enrollment: Arc<Mutex<ExtensionEnrollment>>,
 }
-
 impl ControlAuth {
-    /// Generates process-local identities and publishes the local credential handoff.
-    pub fn create(
-        endpoint: &str,
-        state_dir: &Path,
-        extension_public_key: Option<Vec<u8>>,
-    ) -> io::Result<Self> {
+    /// Generates process-local identities, the pending enrollment, and the
+    /// local credential handoff.
+    pub fn create(endpoint: &str, state_dir: &Path) -> io::Result<Self> {
         let daemon_identity = IdentityId::new(Uuid::now_v7());
         let state_identity = IdentityId::new(Uuid::now_v7());
         let daemon_signer = RingSigner::generate()?;
@@ -159,6 +258,7 @@ impl ControlAuth {
             vec![Capability::new(CapabilityAction::Read, "matinee").map_err(invalid_data)?],
         )?;
         let handoff_path = state_dir.join(CREDENTIAL_FILE_NAME);
+        let extension_enrollment = Arc::new(Mutex::new(ExtensionEnrollment::generate()?));
         let auth = Self {
             daemon_identity,
             daemon_public_key,
@@ -168,13 +268,13 @@ impl ControlAuth {
             native_signer,
             mcp_signer,
             handoff_path,
-            extension_public_key,
+            extension_enrollment,
         };
         auth.write_handoff(endpoint)?;
         Ok(auth)
     }
-
-    /// Inserts the two MVP principals and the development pairing into the process registry.
+    /// Registers only the native and MCP control principals. Extension pairing
+    /// is created from a valid one-time enrollment hello.
     pub fn register(&self, registry: &Registry) -> io::Result<()> {
         for (principal, kind, locator) in [
             (&self.native, "native_admin", "native-admin"),
@@ -191,24 +291,49 @@ impl ControlAuth {
                 })
                 .map_err(|error| invalid_data(error.detail()))?;
         }
-        if let Some(key) = &self.extension_public_key {
-            let extension_identity_id = Uuid::now_v7();
-            let fingerprint = hex_digest(key);
-            registry
-                .insert_pairing(PairingRecord {
-                    pairing_id: Uuid::now_v7(),
-                    extension_identity_id,
-                    origin: crate::server::EXTENSION_ORIGIN.to_owned(),
-                    public_key: key.clone(),
-                    fingerprint,
-                    development_allowance: true,
-                    status: "active".to_owned(),
-                    created_at: now_ms(),
-                    rotated_at: None,
-                })
-                .map_err(|error| invalid_data(error.detail()))?;
-        }
         Ok(())
+    }
+
+    pub fn extension_pairing_details(
+        &self,
+    ) -> Result<ExtensionEnrollmentDetails, ControlAuthError> {
+        self.extension_enrollment
+            .lock()
+            .map_err(|_| ControlAuthError::Denied)
+            .map(|enrollment| enrollment.details())
+    }
+
+    pub fn validate_extension_pairing(
+        &self,
+        one_time_key: &str,
+        origin: &str,
+        now: i64,
+    ) -> Result<(), ExtensionEnrollmentError> {
+        self.extension_enrollment
+            .lock()
+            .map_err(|_| ExtensionEnrollmentError::AuthorizationDenied)?
+            .validate(one_time_key, origin, now)
+    }
+
+    pub fn commit_extension_pairing(
+        &self,
+        one_time_key: &str,
+        origin: &str,
+        now: i64,
+        registry: &Registry,
+        record: PairingRecord,
+    ) -> Result<Uuid, ExtensionEnrollmentError> {
+        let mut enrollment = self
+            .extension_enrollment
+            .lock()
+            .map_err(|_| ExtensionEnrollmentError::AuthorizationDenied)?;
+        enrollment.validate(one_time_key, origin, now)?;
+        let pairing_id = record.pairing_id;
+        registry
+            .insert_pairing(record)
+            .map_err(|_| ExtensionEnrollmentError::StorageUnavailable)?;
+        enrollment.consume(one_time_key, origin, now)?;
+        Ok(pairing_id)
     }
 
     pub fn handoff_path(&self) -> &Path {
@@ -378,17 +503,6 @@ fn material(principal: &Principal, signer: &RingSigner) -> CredentialMaterial {
         public_key: signer.public_key().clone(),
         private_key_pkcs8: signer.pkcs8().to_vec(),
     }
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let digest = digest::digest(&digest::SHA256, bytes);
-    let mut encoded = String::with_capacity(digest.as_ref().len() * 2);
-    for byte in digest.as_ref() {
-        encoded.push(DIGITS[usize::from(byte >> 4)] as char);
-        encoded.push(DIGITS[usize::from(byte & 0x0f)] as char);
-    }
-    encoded
 }
 
 fn hello_principal_id(hello: &[u8]) -> Option<IdentityId> {

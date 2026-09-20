@@ -13,7 +13,10 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use ring::signature::{ECDSA_P256_SHA256_FIXED, UnparsedPublicKey};
+use ring::{
+    digest,
+    signature::{ECDSA_P256_SHA256_FIXED, UnparsedPublicKey},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -42,7 +45,7 @@ use crate::{
     failure::FailureCode,
     lifecycle::{Daemon, LifecycleError},
     record::{OperationState, RequestState},
-    registry::{BeginRequestResult, RequestSpec, TerminalResult},
+    registry::{BeginRequestResult, PairingRecord, RequestSpec, TerminalResult},
 };
 
 /// The control protocol version spoken by the daemon and its clients.
@@ -131,7 +134,10 @@ impl ControlClient {
             .parse::<SocketAddr>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let mut stream = TcpStream::connect(addr).await?;
-        let native = request.get("command").and_then(Value::as_str) == Some("stop");
+        let native = matches!(
+            request.get("command").and_then(Value::as_str),
+            Some("stop" | "pair_extension")
+        );
         let (principal, epoch, principal_key, daemon_key, daemon_id, signer) =
             control_auth::ControlAuth::client_material(
                 Path::new(&self.endpoint.credential_path),
@@ -245,21 +251,6 @@ struct ActiveChannel {
     pairing_id: Uuid,
 }
 
-/// Resolves the pairing record a proved fingerprint belongs to.
-///
-/// Returns `None` when no active pairing carries that fingerprint, so a revoked
-/// pairing cannot authorize a channel. The session's recorded pairing therefore
-/// always names the enrollment that owns the browser profile.
-fn resolve_pairing(service: &Service, fingerprint: &str) -> Option<Uuid> {
-    service
-        .daemon
-        .registry()
-        .active_pairing_by_fingerprint(fingerprint)
-        .ok()
-        .flatten()
-        .map(|record| record.pairing_id)
-}
-
 #[derive(Clone)]
 struct Service {
     daemon: Arc<Daemon>,
@@ -269,7 +260,6 @@ struct Service {
     channel: Arc<Mutex<Option<ActiveChannel>>>,
     next_generation: Arc<Mutex<u64>>,
     stop: Arc<Mutex<bool>>,
-    extension_public_key: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -289,12 +279,8 @@ pub async fn run(state_dir: impl AsRef<Path>) -> Result<Endpoint, LifecycleError
         .map_err(storage_error)?;
     let control_addr = control.local_addr().map_err(storage_error)?;
     let extension_addr = extension.local_addr().map_err(storage_error)?;
-    let extension_public_key = std::env::var("MATINEE_EXTENSION_PUBLIC_KEY")
-        .ok()
-        .and_then(|value| decode_key_material(&value));
     let auth = Arc::new(
-        ControlAuth::create(&control_addr.to_string(), &state_dir, extension_public_key)
-            .map_err(storage_error)?,
+        ControlAuth::create(&control_addr.to_string(), &state_dir).map_err(storage_error)?,
     );
     auth.register(daemon.registry()).map_err(storage_error)?;
     let endpoint = Endpoint {
@@ -318,7 +304,6 @@ pub async fn run(state_dir: impl AsRef<Path>) -> Result<Endpoint, LifecycleError
         channel: Arc::new(Mutex::new(None)),
         next_generation: Arc::new(Mutex::new(0)),
         stop: Arc::new(Mutex::new(false)),
-        extension_public_key: auth.extension_public_key.clone(),
     };
     let control_task = serve_control(control, service.clone());
     let extension_task = serve_extensions(extension, service.clone());
@@ -566,6 +551,34 @@ impl Service {
         match command {
             "status" => {
                 json!({"ok":true,"instance_id":instance_id,"state":self.daemon.state().map(|s|s.as_str()).unwrap_or("failed"),"control_addr":self.endpoint.control_addr,"extension_addr":self.endpoint.extension_addr})
+            }
+            "pair_extension" => {
+                if authenticated.principal_id != self.auth.native.id().get() {
+                    return error_response(
+                        instance_id,
+                        "authorization.denied",
+                        "native principal required",
+                    );
+                }
+                let details = match self.auth.extension_pairing_details() {
+                    Ok(details) => details,
+                    Err(_) => {
+                        return error_response(
+                            instance_id,
+                            "authorization.denied",
+                            "extension enrollment unavailable",
+                        );
+                    }
+                };
+                json!({
+                    "ok": true,
+                    "instance_id": instance_id,
+                    "one_time_key": details.one_time_key,
+                    "extension_addr": self.endpoint.extension_addr,
+                    "origin": details.origin,
+                    "created_at": details.created_at,
+                    "expires_at": details.expires_at,
+                })
             }
             "stop" => {
                 if authenticated.principal_id != self.auth.native.id().get() {
@@ -1178,6 +1191,8 @@ async fn handle_extension(stream: TcpStream, service: Service) -> io::Result<()>
     let mut authenticated = false;
     let mut presented_key: Option<Vec<u8>> = None;
     let mut presented_fingerprint = String::new();
+    let mut presented_one_time_key: Option<String> = None;
+    let mut presented_pairing_id: Option<Uuid> = None;
     loop {
         tokio::select! {
             outbound = receiver.recv() => { if let Some(frame) = outbound { if frame.get("channel_generation").and_then(Value::as_u64) == Some(generation_value) { sink.send(Message::Text(frame.to_string().into())).await.map_err(ws_io)?; } } else { break; } }
@@ -1185,25 +1200,146 @@ async fn handle_extension(stream: TcpStream, service: Service) -> io::Result<()>
                 let Some(Ok(message)) = inbound else { break; };
                 let Message::Text(text) = message else { continue; };
                 let Ok(frame) = serde_json::from_str::<Value>(&text) else { continue; };
-                if frame.get("channel_generation").and_then(Value::as_u64) != Some(generation_value) { continue; }
+                if frame.get("channel_generation").and_then(Value::as_u64) != Some(generation_value) {
+                    continue;
+                }
                 match frame.get("type").and_then(Value::as_str) {
                     Some("pairing_hello") => {
-                        let key = frame.get("public_key").and_then(Value::as_str).and_then(decode_key_material);
-                        let fingerprint = frame.get("fingerprint").and_then(Value::as_str).unwrap_or("");
-                        if key.is_some() && service.extension_public_key.as_ref() == key.as_ref() { presented_key = key; presented_fingerprint = fingerprint.to_owned(); }
-                    }
-                    Some("pairing_proof") if verify_extension_proof(presented_key.as_deref(), &presented_fingerprint, &challenge, &frame) => {
-                        // A verified signature is necessary but not sufficient: the
-                        // key must belong to an active pairing record, so a revoked
-                        // pairing cannot authorize this channel.
-                        let Some(pairing_id) = resolve_pairing(&service, &presented_fingerprint) else {
-                            sink.send(Message::Text(json!({"type":"pairing_rejected","protocol_version":EXTENSION_PROTOCOL_VERSION,"channel_generation":generation_value,"correlation_id":Uuid::now_v7(),"failure":{"code":FailureCode::AuthorizationDenied.as_str()}}).to_string().into())).await.map_err(ws_io)?;
+                        let origin = frame.get("origin").and_then(Value::as_str).unwrap_or("");
+                        if origin != EXTENSION_ORIGIN {
+                            sink.send(Message::Text(pairing_rejected(
+                                generation_value,
+                                FailureCode::OriginRejected,
+                            ).to_string().into())).await.map_err(ws_io)?;
+                            break;
+                        }
+                        let Some(key) = frame.get("public_key").and_then(Value::as_str).and_then(decode_key_material) else {
+                            sink.send(Message::Text(pairing_rejected(
+                                generation_value,
+                                FailureCode::AuthorizationDenied,
+                            ).to_string().into())).await.map_err(ws_io)?;
                             break;
                         };
+                        let client_fingerprint = frame.get("fingerprint").and_then(Value::as_str).unwrap_or("");
+                        let fingerprint = hex_digest(&key);
+                        if client_fingerprint != fingerprint {
+                            sink.send(Message::Text(pairing_rejected(
+                                generation_value,
+                                FailureCode::AuthorizationDenied,
+                            ).to_string().into())).await.map_err(ws_io)?;
+                            break;
+                        }
+                        if let Some(one_time_key) = frame.get("one_time_key").and_then(Value::as_str) {
+                            match service.auth.validate_extension_pairing(one_time_key, origin, now_ms()) {
+                                Ok(()) => {
+                                    presented_one_time_key = Some(one_time_key.to_owned());
+                                    presented_pairing_id = None;
+                                }
+                                Err(control_auth::ExtensionEnrollmentError::OriginRejected) => {
+                                    sink.send(Message::Text(pairing_rejected(
+                                        generation_value,
+                                        FailureCode::OriginRejected,
+                                    ).to_string().into())).await.map_err(ws_io)?;
+                                    break;
+                                }
+                                Err(control_auth::ExtensionEnrollmentError::AuthorizationDenied) => {
+                                    sink.send(Message::Text(pairing_rejected(
+                                        generation_value,
+                                        FailureCode::AuthorizationDenied,
+                                    ).to_string().into())).await.map_err(ws_io)?;
+                                    break;
+                                }
+                                Err(control_auth::ExtensionEnrollmentError::StorageUnavailable) => {
+                                    sink.send(Message::Text(pairing_rejected(
+                                        generation_value,
+                                        FailureCode::StorageUnavailable,
+                                    ).to_string().into())).await.map_err(ws_io)?;
+                                    break;
+                                }
+                            }
+                        } else {
+                            let Some(record) = service
+                                .daemon
+                                .registry()
+                                .active_pairing_by_fingerprint(&fingerprint)
+                                .ok()
+                                .flatten()
+                                .filter(|record| record.public_key == key)
+                            else {
+                                sink.send(Message::Text(pairing_rejected(
+                                    generation_value,
+                                    FailureCode::AuthorizationDenied,
+                                ).to_string().into())).await.map_err(ws_io)?;
+                                break;
+                            };
+                            presented_one_time_key = None;
+                            presented_pairing_id = Some(record.pairing_id);
+                        }
+                        presented_key = Some(key);
+                        presented_fingerprint = fingerprint;
+                    }
+                    Some("pairing_proof") if verify_extension_proof(presented_key.as_deref(), &presented_fingerprint, &challenge, &frame) => {
+                        let pairing_id = if let Some(pairing_id) = presented_pairing_id {
+                            pairing_id
+                        } else {
+                            let Some(one_time_key) = presented_one_time_key.as_deref() else {
+                                sink.send(Message::Text(pairing_rejected(
+                                    generation_value,
+                                    FailureCode::AuthorizationDenied,
+                                ).to_string().into())).await.map_err(ws_io)?;
+                                break;
+                            };
+                            let pairing_id = Uuid::now_v7();
+                            let Some(key) = presented_key.as_ref() else {
+                                sink.send(Message::Text(pairing_rejected(
+                                    generation_value,
+                                    FailureCode::AuthorizationDenied,
+                                ).to_string().into())).await.map_err(ws_io)?;
+                                break;
+                            };
+                            let record = PairingRecord {
+                                pairing_id,
+                                extension_identity_id: Uuid::now_v7(),
+                                origin: EXTENSION_ORIGIN.to_owned(),
+                                public_key: key.clone(),
+                                fingerprint: presented_fingerprint.clone(),
+                                development_allowance: true,
+                                status: "active".to_owned(),
+                                created_at: now_ms(),
+                                rotated_at: None,
+                            };
+                            match service.auth.commit_extension_pairing(
+                                one_time_key,
+                                EXTENSION_ORIGIN,
+                                now_ms(),
+                                service.daemon.registry(),
+                                record,
+                            ) {
+                                Ok(pairing_id) => pairing_id,
+                                Err(control_auth::ExtensionEnrollmentError::OriginRejected) => {
+                                    sink.send(Message::Text(pairing_rejected(
+                                        generation_value,
+                                        FailureCode::OriginRejected,
+                                    ).to_string().into())).await.map_err(ws_io)?;
+                                    break;
+                                }
+                                Err(control_auth::ExtensionEnrollmentError::AuthorizationDenied) => {
+                                    sink.send(Message::Text(pairing_rejected(
+                                        generation_value,
+                                        FailureCode::AuthorizationDenied,
+                                    ).to_string().into())).await.map_err(ws_io)?;
+                                    break;
+                                }
+                                Err(control_auth::ExtensionEnrollmentError::StorageUnavailable) => {
+                                    sink.send(Message::Text(pairing_rejected(
+                                        generation_value,
+                                        FailureCode::StorageUnavailable,
+                                    ).to_string().into())).await.map_err(ws_io)?;
+                                    break;
+                                }
+                            }
+                        };
                         authenticated = true;
-                        // Publish the channel only now. Registering it before the
-                        // proof would let a dispatch send commands to a peer that
-                        // proved nothing.
                         let mut active = service.channel.lock().await;
                         *active = Some(ActiveChannel {
                             generation: generation_value,
@@ -1558,12 +1694,36 @@ fn decode_base64_url(value: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+fn pairing_rejected(generation: u64, code: FailureCode) -> Value {
+    json!({
+        "type": "pairing_rejected",
+        "protocol_version": EXTENSION_PROTOCOL_VERSION,
+        "channel_generation": generation,
+        "correlation_id": Uuid::now_v7(),
+        "failure": {"code": code.as_str()},
+    })
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let digest = digest::digest(&digest::SHA256, bytes);
+    let mut encoded = String::with_capacity(digest.as_ref().len() * 2);
+    for byte in digest.as_ref() {
+        encoded.push(DIGITS[usize::from(byte >> 4)] as char);
+        encoded.push(DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
+}
 #[cfg(test)]
 mod tests {
     use super::{EXTENSION_ORIGIN, decode_key_material, verify_extension_proof};
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+    use serde_json::Value;
     use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+    use uuid::Uuid;
 
     fn base64_url(bytes: &[u8]) -> String {
         const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -1651,5 +1811,248 @@ mod tests {
             ),
             "a wrong signature must not verify"
         );
+    }
+    #[test]
+    fn failed_proof_leaves_enrollment_usable_and_unregistered() {
+        let state_dir =
+            std::env::temp_dir().join(format!("matinee-pairing-test-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&state_dir).expect("create state directory");
+        let auth = super::control_auth::ControlAuth::create("127.0.0.1:0", &state_dir)
+            .expect("create control auth");
+        let registry = crate::registry::Registry::new();
+        let details = auth
+            .extension_pairing_details()
+            .expect("enrollment details");
+        let rng = SystemRandom::new();
+        let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("generate signing key");
+        let pair =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, document.as_ref(), &rng)
+                .expect("load signing key");
+        let key = pair.public_key().as_ref().to_vec();
+        let fingerprint = super::hex_digest(&key);
+        let challenge = "test-challenge";
+        let wrong = json!({"signature": base64_url(&[7_u8; 64])});
+        assert!(!verify_extension_proof(
+            Some(&key),
+            &fingerprint,
+            challenge,
+            &wrong
+        ));
+        assert!(
+            registry
+                .active_pairing_by_fingerprint(&fingerprint)
+                .expect("read pairings")
+                .is_none()
+        );
+        auth.validate_extension_pairing(&details.one_time_key, EXTENSION_ORIGIN, i64::MIN)
+            .expect("failed proof must not consume the token");
+        let _ = std::fs::remove_dir_all(state_dir);
+    }
+
+    #[test]
+    fn valid_proof_commits_enrollment_and_allows_reconnect_lookup() {
+        let state_dir =
+            std::env::temp_dir().join(format!("matinee-pairing-test-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&state_dir).expect("create state directory");
+        let auth = super::control_auth::ControlAuth::create("127.0.0.1:0", &state_dir)
+            .expect("create control auth");
+        let registry = crate::registry::Registry::new();
+        let details = auth
+            .extension_pairing_details()
+            .expect("enrollment details");
+        let rng = SystemRandom::new();
+        let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("generate signing key");
+        let pair =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, document.as_ref(), &rng)
+                .expect("load signing key");
+        let key = pair.public_key().as_ref().to_vec();
+        let fingerprint = super::hex_digest(&key);
+        let challenge = "test-challenge";
+        let transcript = format!(
+            "matinee.browser.pairing.v1\0{}\0{}\0{}",
+            EXTENSION_ORIGIN, fingerprint, challenge
+        );
+        let signature = pair
+            .sign(&rng, transcript.as_bytes())
+            .expect("sign transcript");
+        let proof = json!({"signature": base64_url(signature.as_ref())});
+        assert!(verify_extension_proof(
+            Some(&key),
+            &fingerprint,
+            challenge,
+            &proof
+        ));
+        let pairing_id = Uuid::now_v7();
+        let committed = auth
+            .commit_extension_pairing(
+                &details.one_time_key,
+                EXTENSION_ORIGIN,
+                i64::MIN,
+                &registry,
+                crate::registry::PairingRecord {
+                    pairing_id,
+                    extension_identity_id: Uuid::now_v7(),
+                    origin: EXTENSION_ORIGIN.to_owned(),
+                    public_key: key.clone(),
+                    fingerprint: fingerprint.clone(),
+                    development_allowance: true,
+                    status: "active".to_owned(),
+                    created_at: 0,
+                    rotated_at: None,
+                },
+            )
+            .expect("commit pairing after proof");
+        assert_eq!(committed, pairing_id);
+        assert_eq!(
+            registry
+                .active_pairing_by_fingerprint(&fingerprint)
+                .expect("read pairings")
+                .expect("committed pairing")
+                .public_key,
+            key
+        );
+        assert!(
+            auth.validate_extension_pairing(&details.one_time_key, EXTENSION_ORIGIN, i64::MIN)
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(state_dir);
+    }
+    #[tokio::test]
+    async fn wrong_generation_cannot_enroll_or_authenticate() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::{connect_async, tungstenite::http::Request as ClientRequest};
+
+        let state_dir =
+            std::env::temp_dir().join(format!("matinee-generation-test-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&state_dir).expect("create state directory");
+        let daemon =
+            std::sync::Arc::new(crate::lifecycle::Daemon::start(&state_dir).expect("start daemon"));
+        let auth = std::sync::Arc::new(
+            super::control_auth::ControlAuth::create("127.0.0.1:0", &state_dir)
+                .expect("create control auth"),
+        );
+        auth.register(daemon.registry()).expect("register controls");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind extension listener");
+        let address = listener.local_addr().expect("extension address");
+        let endpoint = super::Endpoint {
+            instance_id: daemon.instance_id(),
+            control_addr: "127.0.0.1:0".to_owned(),
+            extension_addr: format!(
+                "ws://127.0.0.1:{}{}",
+                address.port(),
+                super::EXTENSION_CHANNEL_PATH
+            ),
+            extension_path: super::EXTENSION_CHANNEL_PATH.to_owned(),
+            credential_path: auth.handoff_path().display().to_string(),
+        };
+        let service = super::Service {
+            daemon: daemon.clone(),
+            auth: auth.clone(),
+            endpoint,
+            pending: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            channel: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            next_generation: std::sync::Arc::new(tokio::sync::Mutex::new(0)),
+            stop: std::sync::Arc::new(tokio::sync::Mutex::new(false)),
+        };
+        let server_service = service.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept extension");
+            super::handle_extension(stream, server_service).await
+        });
+        let request = ClientRequest::builder()
+            .uri(format!(
+                "ws://127.0.0.1:{}{}",
+                address.port(),
+                super::EXTENSION_CHANNEL_PATH
+            ))
+            .header("Host", format!("127.0.0.1:{}", address.port()))
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Origin", super::EXTENSION_ORIGIN)
+            .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("Sec-WebSocket-Version", "13")
+            .header("Sec-WebSocket-Protocol", super::EXTENSION_PROTOCOL_VERSION)
+            .body(())
+            .expect("websocket request");
+        let (mut client, _) = connect_async(request).await.expect("connect extension");
+        let Some(Ok(Message::Text(challenge))) = client.next().await else {
+            panic!("daemon did not send challenge");
+        };
+        let challenge: Value = serde_json::from_str(&challenge).expect("challenge JSON");
+        let generation = challenge
+            .get("channel_generation")
+            .and_then(Value::as_u64)
+            .expect("challenge generation");
+        let details = auth
+            .extension_pairing_details()
+            .expect("enrollment details");
+        let rng = SystemRandom::new();
+        let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("generate signing key");
+        let pair =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, document.as_ref(), &rng)
+                .expect("load signing key");
+        let key = pair.public_key().as_ref().to_vec();
+        let fingerprint = super::hex_digest(&key);
+        let challenge_text = challenge
+            .get("challenge")
+            .and_then(Value::as_str)
+            .expect("challenge text");
+        let transcript = format!(
+            "matinee.browser.pairing.v1\0{}\0{}\0{}",
+            EXTENSION_ORIGIN, fingerprint, challenge_text
+        );
+        let signature = pair
+            .sign(&rng, transcript.as_bytes())
+            .expect("sign transcript");
+        let stale_generation = generation + 1;
+        let stale = json!({
+            "type": "pairing_hello",
+            "channel_generation": stale_generation,
+            "origin": EXTENSION_ORIGIN,
+            "one_time_key": details.one_time_key.clone(),
+            "public_key": base64_url(&key),
+            "fingerprint": fingerprint,
+        });
+        client
+            .send(Message::Text(stale.to_string().into()))
+            .await
+            .expect("send stale hello");
+        client
+            .send(Message::Text(
+                json!({
+                    "type": "pairing_proof",
+                    "channel_generation": stale_generation,
+                    "signature": base64_url(signature.as_ref()),
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send stale proof");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            daemon
+                .registry()
+                .active_pairing_by_fingerprint(&fingerprint)
+                .expect("read pairings")
+                .is_none()
+        );
+        assert!(
+            auth.validate_extension_pairing(&details.one_time_key, EXTENSION_ORIGIN, i64::MIN)
+                .is_ok()
+        );
+        assert!(service.channel.lock().await.is_none());
+        client.close(None).await.expect("close extension");
+        server
+            .await
+            .expect("join extension server")
+            .expect("serve extension");
+        let _ = daemon.stop();
+        let _ = std::fs::remove_dir_all(state_dir);
     }
 }

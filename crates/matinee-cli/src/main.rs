@@ -22,6 +22,7 @@ fn main() -> ExitCode {
         }
         dispatch::Dispatch::Doctor => doctor::doctor(),
         dispatch::Dispatch::Setup => setup(),
+        dispatch::Dispatch::SetupPairExtension => pair_extension(),
         dispatch::Dispatch::Status => status(),
         dispatch::Dispatch::Stop => stop(),
         dispatch::Dispatch::Mcp => mcp(),
@@ -53,6 +54,49 @@ fn setup() -> ExitCode {
             );
             ExitCode::SUCCESS
         }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn pair_extension() -> ExitCode {
+    let runtime = runtime();
+    match runtime.block_on(async {
+        let endpoint = ensure_daemon(state_dir()).await?;
+        let response = ControlClient::new(endpoint)
+            .request(serde_json::json!({"command":"pair_extension"}))
+            .await?;
+        if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            let code = response
+                .get("code")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("authorization.denied");
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, code));
+        }
+        let key = response
+            .get("one_time_key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "pairing key missing"))?;
+        let extension_addr = response
+            .get("extension_addr")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "extension endpoint missing")
+            })?;
+        let origin = response
+            .get("origin")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "extension origin missing")
+            })?;
+        println!("extension pairing key: {key}");
+        println!("extension WebSocket: {extension_addr}");
+        println!("extension origin: {origin}");
+        Ok::<_, io::Error>(())
+    }) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
