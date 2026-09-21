@@ -1,23 +1,29 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.2.2 -> 1.2.3
-Bump rationale: PATCH -- advanced spec 006 from in-progress to verified after the merged-head conformance review and completed Beads ledger.
+Version change: 1.2.3 -> 2.0.0
+Bump rationale: MAJOR -- the project is shelved. Spec 006.5 moves to shelved,
+which blocks every entry depending on it. Recorded in docs/adr/0012.
 
 Changes this revision:
-  - Amended spec 006 status from in-progress to verified.
-  - Closed the implementation ledger against merge commit b467ddd3.
-  - Retained all existing scope, outcome, and entry history.
+  - Amended spec 006.5 status from specced to shelved.
+  - Added shelved to the status legend, distinct from abandoned.
+  - Added a project status banner naming adr-12 and the omp browser relay.
+  - Recorded what 006.5 built against what it never proved.
+  - Left specs 007-016 at their existing planned and deferred statuses. They
+    depend on 006.5 and are therefore blocked indefinitely, not shelved in
+    their own right.
+  - Retained all existing scope, outcome, and entry history. No specification
+    is retracted.
 
-Specs affected: 006
-Open questions added/resolved: none
+Specs affected: 006.5 only; 007-016 are blocked by dependency without a status
+change.
+Open questions added/resolved: none resolved; the revival question is recorded
+in adr-12 rather than here.
 
-  - Updated roadmap metadata while retaining all existing scope, outcome, and entry history.
-
-Specs affected: 006
-Open questions added/resolved: none
-
-Notes: The brief reports no outcome or scope drift and recommends proceeding. Its non-blocking F1 metadata discrepancy (Spec 005 roadmap status `verified` versus Spec 005 front matter `Implemented`) remains unresolved and is not changed by this roadmap-only amendment.
+Notes: Specs 001, 005 and 006 remain verified and merged. No specification is
+retracted by this amendment. The Beads ledger could not be updated because the
+embedded store was unreachable when this was recorded.
 -->
 
 # Matinee -- Spec Roadmap
@@ -26,8 +32,20 @@ This roadmap records Matinee's specifications and product constraints.
 The project [constitution](constitution.md) governs every entry. An entry's status
 records its lifecycle, not a delivery commitment.
 
+> **Project status: shelved as of 2026-09-21.** Browser control for agent work
+> uses the omp browser relay, which already drives real logged-in tabs. Matinee's
+> two defensible claims -- provable non-duplication of a real effect, and browser
+> control without the `debugger` permission -- were not delivered: `adr-10`
+> removed durable state and `FR-018` confined the MVP to a local fixture. The
+> reasoning, what was proven, what was not, and the cheapest revival path are in
+> [adr-12](../../docs/adr/0012-shelve-matinee-in-favour-of-the-omp-browser-relay.md).
+> Entries below are preserved as written.
+
 Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
-**in-progress** · **implemented** · **verified** · **deferred** · **abandoned**.
+**in-progress** · **implemented** · **verified** · **deferred** · **shelved** ·
+**abandoned**. **shelved** marks an entry that is specified and not disproven,
+whose implementation stopped by decision; **abandoned** marks one withdrawn on
+its merits.
 
 ---
 
@@ -148,7 +166,7 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Governed by:** C-01, C-02, C-03, C-06, C-09
 - **Spec dir:** `specs/006-identity-authorization-secure-channels/`
 
-### 006.5 -- Demonstrable Multi-Tab Browser MVP  [status: specced]
+### 006.5 -- Demonstrable Multi-Tab Browser MVP  [status: shelved]
 
 - **Description:** Prove the local product loop through one MCP client, one paired
   Chrome or Chromium profile, one daemon, and multiple visible browser tabs.
@@ -174,7 +192,15 @@ Status legend: **undecided** · **needs-info** · **planned** · **specced** ·
 - **Ownership:** Spec 006.5 is an integration and acceptance slice. It permits
   intentionally narrow implementations behind the established seams. Specs
   007-012 must retain MVP criteria SC-006 through SC-012 and SC-016.
-- **Decision:** `adr-9`
+- **Decision:** `adr-9`, shelved by
+  [adr-12](../../docs/adr/0012-shelve-matinee-in-favour-of-the-omp-browser-relay.md)
+- **Built, unproven:** Implementation reached an authenticated daemon, control
+  and extension channels, one-time-key enrollment, a ten-tool stdio MCP adapter,
+  a CLI, a deterministic fixture, and an unpacked extension that a real Chrome
+  profile loads and pairs. No browser operation ever completed: `session_open`
+  returns `operation.extension_disconnected` while the channel stays
+  authenticated. `SC-001` through `SC-019` and `FR-058` are unproven. Commits
+  are on `omp/agent/matinee-2im`.
 
 ### 007 -- Daemon Lifecycle and Durable Store Hardening  [status: deferred]
 
@@ -322,4 +348,4 @@ None. Deferred entries require a new product decision before their status change
 
 ---
 
-**Version**: 1.3.0 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-20
+**Version**: 2.0.0 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-21
