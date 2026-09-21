@@ -2,16 +2,22 @@
 SYNC IMPACT REPORT
 ==================
 Version change: 1.2.3 -> 2.0.0
-Bump rationale: MAJOR -- the project is shelved. Spec 006.5 moves to shelved and
-every entry that depends on it is unbuilt. Recorded in docs/adr/0012.
+Bump rationale: MAJOR -- the project is shelved. Spec 006.5 moves to shelved,
+which blocks every entry depending on it. Recorded in docs/adr/0012.
 
 Changes this revision:
   - Amended spec 006.5 status from specced to shelved.
+  - Added shelved to the status legend, distinct from abandoned.
   - Added a project status banner naming adr-12 and the omp browser relay.
-  - Retained all existing scope, outcome, and entry history, including specs
-    007-016, which are shelved unbuilt rather than withdrawn or disproven.
+  - Recorded what 006.5 built against what it never proved.
+  - Left specs 007-016 at their existing planned and deferred statuses. They
+    depend on 006.5 and are therefore blocked indefinitely, not shelved in
+    their own right.
+  - Retained all existing scope, outcome, and entry history. No specification
+    is retracted.
 
-Specs affected: 006.5, and 007-016 by dependency
+Specs affected: 006.5 only; 007-016 are blocked by dependency without a status
+change.
 Open questions added/resolved: none resolved; the revival question is recorded
 in adr-12 rather than here.
 

@@ -22,8 +22,11 @@ Stop building Matinee. The repository is archived read-only. Browser control
 for agent work uses the omp browser relay, which is already installed and
 already drives real logged-in tabs.
 
-Specs 001 and 005 through 016 are not withdrawn or disproven. They are shelved
-unbuilt.
+Specs 001, 005 and 006 are built, verified and merged to `main`, and this
+decision does not change them. Spec 006.5 is shelved: specified, implemented in
+part, and stopped. Specs 007 through 016 keep their existing `planned` and
+`deferred` statuses and are now blocked indefinitely behind 006.5. No
+specification is withdrawn or disproven.
 
 ## Context
 
