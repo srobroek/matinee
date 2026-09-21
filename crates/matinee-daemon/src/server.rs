@@ -558,7 +558,7 @@ impl Service {
             "status" => {
                 json!({"ok":true,"instance_id":instance_id,"state":self.daemon.state().map(|s|s.as_str()).unwrap_or("failed"),"control_addr":self.endpoint.control_addr,"extension_addr":self.endpoint.extension_addr})
             }
-            "evidence" => self.evidence(),
+            "evidence" => self.evidence().await,
             "pair_extension" => {
                 if authenticated.principal_id != self.auth.native.id().get() {
                     return error_response(
@@ -616,7 +616,7 @@ impl Service {
         }
     }
     /// Returns the sanitized, point-in-time evidence report for this daemon run.
-    fn evidence(&self) -> Value {
+    async fn evidence(&self) -> Value {
         let snapshot = match self.daemon.registry().snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -632,7 +632,13 @@ impl Service {
             .state()
             .map(|state| state.as_str())
             .unwrap_or("failed");
-        let report = evidence_report(self.daemon.instance_id(), state, snapshot);
+        let channel = self
+            .channel
+            .lock()
+            .await
+            .as_ref()
+            .map(|active| (active.generation, active.pairing_id));
+        let report = evidence_report(self.daemon.instance_id(), state, snapshot, channel);
         json!({"ok":true,"instance_id":self.endpoint.instance_id,"report":report})
     }
 
@@ -1759,6 +1765,7 @@ fn evidence_report(
     instance_id: Uuid,
     daemon_state: &str,
     snapshot: crate::registry::RegistrySnapshot,
+    channel: Option<(u64, Uuid)>,
 ) -> Value {
     let principal_fingerprints = snapshot
         .principals
@@ -1917,6 +1924,16 @@ fn evidence_report(
         "identity_fingerprints": {
             "principals": principal_fingerprints,
             "pairings": pairing_fingerprints,
+        },
+        // An operator cannot tell a missing pairing from a dropped channel
+        // without this, and every browser operation depends on it.
+        "extension_channel": match channel {
+            Some((generation, pairing_id)) => json!({
+                "authenticated": true,
+                "channel_generation": generation,
+                "pairing_id": pairing_id,
+            }),
+            None => json!({"authenticated": false}),
         },
         "daemon": {
             "instance_id": instance_id,
@@ -2498,6 +2515,7 @@ mod tests {
             crate::registry::Registry::new()
                 .snapshot()
                 .expect("empty registry snapshot"),
+            None,
         );
         assert_eq!(report.get("schema_version"), Some(&json!(1)));
         for field in [
@@ -2581,6 +2599,7 @@ mod tests {
             Uuid::now_v7(),
             "ready",
             registry.snapshot().expect("registry snapshot"),
+            None,
         );
         assert!(!report.to_string().contains(secret));
     }
@@ -2626,6 +2645,7 @@ mod tests {
             Uuid::now_v7(),
             "ready",
             registry.snapshot().expect("registry snapshot"),
+            None,
         );
         let lost = report
             .get("lost_boundary")
@@ -3156,6 +3176,7 @@ mod tests {
             second.daemon.instance_id(),
             "ready",
             second.daemon.registry().snapshot().unwrap(),
+            None,
         );
         assert!(
             report["lost_boundary"]["operations"]

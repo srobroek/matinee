@@ -692,7 +692,21 @@ async function receive(channel, message) {
     return;
   }
   if (["bind_session", "observe", "navigate", "click", "type", "screenshot", "release_session"].includes(message.type)) {
-    await dispatch(channel, message);
+    // A throwing handler used to be swallowed by the caller, so the daemon waited
+    // for a reply that never came and reported a disconnected extension. Report
+    // the failure instead: the daemon can only terminate an operation honestly if
+    // it hears about it.
+    try {
+      await dispatch(channel, message);
+    } catch (error) {
+      sendFailure(
+        channel,
+        message,
+        "operation.target_lost",
+        `the extension could not run ${message.type}: ${error instanceof Error ? error.message : String(error)}`,
+        "extension command"
+      );
+    }
   }
 }
 
