@@ -703,6 +703,29 @@ impl Service {
                 "principal does not match authenticated control peer",
             );
         }
+        // A session belongs to the pairing that owned the browser profile when it
+        // opened. This MUST be checked before `dispatch`, which crosses the browser
+        // effect boundary: after that the operation is already `dispatching`.
+        let active_pairing = self
+            .channel
+            .lock()
+            .await
+            .as_ref()
+            .map(|channel| channel.pairing_id);
+        if let Some(session_id) = operation.session_id {
+            let owning_pairing = self
+                .daemon
+                .registry()
+                .session(session_id)
+                .ok()
+                .flatten()
+                .map(|record| record.pairing_id);
+            if let (Some(owning), Some(active)) = (owning_pairing, active_pairing) {
+                if owning != active {
+                    return failure_response(instance_id, FailureCode::AuthorizationDenied);
+                }
+            }
+        }
         if let Err(error) = self.daemon.dispatch(operation_id) {
             return lifecycle_response(instance_id, error);
         }
@@ -1501,13 +1524,6 @@ impl Service {
     }
 
     async fn accept_incarnation_lost(&self, frame: Value, generation: u64) {
-        let Some(operation_id) = frame
-            .get("operation_id")
-            .and_then(Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
-        else {
-            return;
-        };
         let Some(session_id) = frame
             .get("session_id")
             .and_then(Value::as_str)
@@ -1515,15 +1531,41 @@ impl Service {
         else {
             return;
         };
+        let lost_incarnation = frame.get("tab_incarnation").and_then(Value::as_str);
+        // The extension reports a lost incarnation for an idle tab with no
+        // operation in flight, so `operation_id` is absent. FR-029 still requires
+        // the session's stale control state to be invalidated, otherwise a closed
+        // tab stays reusable.
+        let Some(operation_id) = frame
+            .get("operation_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+        else {
+            if let Some(tab_incarnation) = lost_incarnation {
+                let _ = self
+                    .daemon
+                    .registry()
+                    .fail_session_incarnation(session_id, tab_incarnation);
+            }
+            return;
+        };
         let mut pending = self.pending.lock().await;
         let Some(item) = pending.remove(&operation_id) else {
             return;
         };
-        let tab_matches =
-            frame.get("tab_incarnation").and_then(Value::as_str) == item.tab_incarnation.as_deref();
+        let tab_matches = lost_incarnation == item.tab_incarnation.as_deref();
         if item.generation != generation || item.session_id != Some(session_id) || !tab_matches {
             let _ = item.result.send(Err(FailureCode::GenerationStale));
             return;
+        }
+        drop(pending);
+        // The tab backing this session is gone, so the session must not stay
+        // usable for a later operation (FR-029).
+        if let Some(tab_incarnation) = lost_incarnation {
+            let _ = self
+                .daemon
+                .registry()
+                .fail_session_incarnation(session_id, tab_incarnation);
         }
         let _ = self
             .daemon

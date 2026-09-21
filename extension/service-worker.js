@@ -75,7 +75,10 @@ function frame(channel, type, fields = {}) {
   return {
     type,
     protocol_version: PROTOCOL_VERSION,
-    channel_generation: channel.generation,
+    // Echo the daemon's generation. Before the first inbound frame there is none
+    // to echo, so the local counter is sent and the daemon's reply establishes
+    // the authoritative value.
+    channel_generation: channel.daemonGeneration ?? channel.generation,
     correlation_id: fields.correlation_id ?? correlationId(),
     ...fields
   };
@@ -584,11 +587,21 @@ function rejectSupersededChannel(channel, message) {
 
 async function receive(channel, message) {
   if (!currentChannel(channel)) return;
-  if (message.channel_generation !== channel.generation) {
+  // The daemon owns channel generation numbering. This client cannot invent its
+  // own sequence and demand the daemon match it, so the first frame of a
+  // connection establishes the generation and every later frame must equal it.
+  // A frame from an older daemon generation is discarded.
+  if (channel.daemonGeneration === undefined) {
+    channel.daemonGeneration = message.channel_generation;
+  } else if (message.channel_generation !== channel.daemonGeneration) {
     rejectSupersededChannel(channel, message);
     return;
   }
   if (message.type === "pairing_challenge") {
+    // The daemon speaks first, so the hello waits until its generation is known.
+    // Sending the hello on socket open would carry an unknown generation and be
+    // discarded, leaving the proof unsupported.
+    await pairingHello(channel);
     await pairingProof(channel, message);
     return;
   }
@@ -623,10 +636,11 @@ async function connect(endpoint = null) {
   const generation = ++channelGeneration;
   const channel = { generation, socket: new WebSocket(url, PROTOCOL_VERSION), authenticated: false };
   activeChannel = channel;
-  channel.socket.onopen = async () => {
+  channel.socket.onopen = () => {
     if (!currentChannel(channel)) return;
     reconnectDelay = RECONNECT_MIN_MS;
-    await pairingHello(channel);
+    // The daemon sends its pairing challenge first; the hello follows in
+    // `receive` once its channel generation is known.
   };
   channel.socket.onmessage = (event) => {
     if (!currentChannel(channel)) return;

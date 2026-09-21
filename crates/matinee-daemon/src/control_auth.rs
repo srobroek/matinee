@@ -294,13 +294,22 @@ impl ControlAuth {
         Ok(())
     }
 
+    /// Returns a usable pairing invitation, minting a fresh one when needed.
+    ///
+    /// An invitation expires, and one-time keys are spent on use. Returning the
+    /// stale value would leave the operator holding a key the daemon always
+    /// rejects, with no way back except restarting the daemon.
     pub fn extension_pairing_details(
         &self,
     ) -> Result<ExtensionEnrollmentDetails, ControlAuthError> {
-        self.extension_enrollment
+        let mut enrollment = self
+            .extension_enrollment
             .lock()
-            .map_err(|_| ControlAuthError::Denied)
-            .map(|enrollment| enrollment.details())
+            .map_err(|_| ControlAuthError::Denied)?;
+        if enrollment.consumed || now_ms() >= enrollment.expires_at {
+            *enrollment = ExtensionEnrollment::generate().map_err(|_| ControlAuthError::Denied)?;
+        }
+        Ok(enrollment.details())
     }
 
     pub fn validate_extension_pairing(

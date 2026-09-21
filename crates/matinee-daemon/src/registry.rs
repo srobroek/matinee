@@ -621,6 +621,32 @@ impl Registry {
         Ok(())
     }
 
+    /// Fails a session whose tab the user closed or replaced.
+    ///
+    /// The extension reports a lost incarnation for an idle tab with no operation
+    /// in flight, so this path carries no operation identity. `FR-029` still
+    /// requires the stale control state to be invalidated, and a failed session
+    /// must never be reused for a later operation.
+    pub fn fail_session_incarnation(
+        &self,
+        session_id: Uuid,
+        tab_incarnation: &str,
+    ) -> Result<bool, RegistryError> {
+        let mut inner = self.lock()?;
+        let session = inner
+            .sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| RegistryError::invalid("session not found"))?;
+        if session.tab_incarnation.as_deref() != Some(tab_incarnation) {
+            return Err(RegistryError::invalid("session incarnation does not match"));
+        }
+        if session.state.terminal() {
+            return Ok(false);
+        }
+        session.state = SessionState::Failed;
+        Ok(true)
+    }
+
     /// Reads one request and its current operations.
     pub fn request(&self, request_id: Uuid) -> Result<Option<RequestRecord>, RegistryError> {
         let inner = self.lock()?;
