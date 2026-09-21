@@ -57,6 +57,12 @@ pub const EXTENSION_CHANNEL_PATH: &str = "/v1/extension";
 /// The only extension origin accepted by the daemon.
 pub const EXTENSION_ORIGIN: &str = "chrome-extension://ebdmpbapkdbgnhlglhggkdfbekgojgcm";
 
+/// How often the daemon heartbeats an authenticated extension channel.
+///
+/// Chrome stops an idle MV3 service worker after about thirty seconds, so this
+/// stays comfortably below that.
+const EXTENSION_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Connection metadata written while a daemon is running.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Endpoint {
@@ -1243,8 +1249,20 @@ async fn handle_extension(stream: TcpStream, service: Service) -> io::Result<()>
     let mut presented_fingerprint = String::new();
     let mut presented_one_time_key: Option<String> = None;
     let mut presented_pairing_id: Option<Uuid> = None;
+    // Chrome terminates an idle MV3 service worker after roughly thirty seconds,
+    // and only an incoming event resets that timer. A worker's own timers do not,
+    // so the daemon heartbeats the channel to keep the extension alive between
+    // operations. Without this the channel dies and every dispatch reports a
+    // disconnected extension.
+    let mut heartbeat = tokio::time::interval(EXTENSION_HEARTBEAT);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                if authenticated {
+                    sink.send(Message::Text(json!({"type":"keepalive","protocol_version":EXTENSION_PROTOCOL_VERSION,"channel_generation":generation_value,"correlation_id":Uuid::now_v7()}).to_string().into())).await.map_err(ws_io)?;
+                }
+            }
             outbound = receiver.recv() => { if let Some(frame) = outbound { if frame.get("channel_generation").and_then(Value::as_u64) == Some(generation_value) { sink.send(Message::Text(frame.to_string().into())).await.map_err(ws_io)?; } } else { break; } }
             inbound = source.next() => {
                 let Some(Ok(message)) = inbound else { break; };
@@ -2699,16 +2717,27 @@ mod tests {
                 bindings: HashMap::new(),
             }
         }
+        /// Reads the next command, skipping heartbeats.
+        ///
+        /// The daemon heartbeats an authenticated channel to keep Chrome from
+        /// stopping the extension's service worker, so a real client must
+        /// tolerate those frames arriving between commands.
         async fn next_command(&mut self) -> Value {
-            let message = timeout(Duration::from_secs(5), self.socket.next())
-                .await
-                .expect("command timeout")
-                .expect("command frame")
-                .expect("command message");
-            let Message::Text(text) = message else {
-                panic!("expected text command")
-            };
-            serde_json::from_str(&text).expect("command JSON")
+            loop {
+                let message = timeout(Duration::from_secs(5), self.socket.next())
+                    .await
+                    .expect("command timeout")
+                    .expect("command frame")
+                    .expect("command message");
+                let Message::Text(text) = message else {
+                    panic!("expected text command")
+                };
+                let frame: Value = serde_json::from_str(&text).expect("command JSON");
+                if frame["type"] == json!("keepalive") {
+                    continue;
+                }
+                return frame;
+            }
         }
         async fn send(&mut self, frame: Value) {
             self.socket

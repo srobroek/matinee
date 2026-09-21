@@ -9,6 +9,12 @@ const OPERATION_TIMEOUT_MS = 30_000;
 // A pairing handshake is two round trips on loopback, so anything slower than
 // this is a failure the operator needs to see rather than a hang.
 const PAIRING_TIMEOUT_MS = 10_000;
+// Chrome terminates an idle MV3 service worker after about thirty seconds, which
+// closes the channel and makes the daemon report a disconnected extension. The
+// daemon cannot wake a terminated worker, so the worker keeps its own channel
+// warm and an alarm revives it if Chrome stops it anyway.
+const KEEPALIVE_MS = 20_000;
+const KEEPALIVE_ALARM = "matinee-keepalive";
 
 let channelGeneration = 0;
 let activeChannel = null;
@@ -600,8 +606,33 @@ async function pairingAccepted(channel) {
   }
   channel.authenticated = true;
   reconnectDelay = RECONNECT_MIN_MS;
+  startKeepalive(channel);
   settlePairing({ ok: true, fingerprint: stored.matineePairing?.fingerprint ?? null });
 }
+
+// Sends a periodic keepalive so Chrome does not treat the worker as idle and
+// terminate it, which would close the channel mid-operation.
+function startKeepalive(channel) {
+  clearInterval(channel.keepalive);
+  channel.keepalive = setInterval(() => {
+    if (!currentChannel(channel) || !channel.authenticated) {
+      clearInterval(channel.keepalive);
+      return;
+    }
+    send(channel, "keepalive", {});
+  }, KEEPALIVE_MS);
+}
+
+// Revives a terminated worker. The daemon cannot reach a stopped worker, so an
+// alarm is the only way back to an authenticated channel without user action.
+chrome.alarms?.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+chrome.alarms?.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== KEEPALIVE_ALARM) return;
+  if (activeChannel?.authenticated) return;
+  const stored = await chrome.storage.local.get("matineePairing");
+  if (!stored.matineePairing?.endpoint) return;
+  await connect(stored.matineePairing.endpoint).catch(() => {});
+});
 
 // Outstanding `configure_pairing` reply, held open across the asynchronous
 // handshake. Acknowledging socket setup would report success for an enrollment
