@@ -6,6 +6,9 @@ const FIXTURE_HOST = "127.0.0.1";
 const RECONNECT_MIN_MS = 250;
 const RECONNECT_MAX_MS = 10_000;
 const OPERATION_TIMEOUT_MS = 30_000;
+// A pairing handshake is two round trips on loopback, so anything slower than
+// this is a failure the operator needs to see rather than a hang.
+const PAIRING_TIMEOUT_MS = 10_000;
 
 let channelGeneration = 0;
 let activeChannel = null;
@@ -529,31 +532,47 @@ async function dispatch(channel, command) {
   });
 }
 
+// Sends the pairing hello, or reports why it cannot. A silent return here left
+// the options page claiming success while enrollment never started, so every
+// abort now names its reason.
 async function pairingHello(channel) {
   const stored = await chrome.storage.local.get("matineePairing");
   const pairing = stored.matineePairing;
-  const identity = await loadIdentityKey().catch(() => null);
-  if (!pairing || !identity?.publicKey || !identity?.privateKey || pairing.fingerprint !== identity.fingerprint) {
-    pairingInProgress = false;
-    return false;
+  const identity = await loadIdentityKey().catch((error) => ({ error }));
+  if (!pairing) return failPairing("no pairing configuration is stored");
+  if (identity?.error) return failPairing(`the identity key could not be read: ${identity.error}`);
+  if (!identity?.publicKey || !identity?.privateKey) return failPairing("no identity key pair is stored");
+  if (pairing.fingerprint !== identity.fingerprint) {
+    return failPairing(
+      `the stored fingerprint ${String(pairing.fingerprint).slice(0, 12)} does not match the identity key ${String(identity.fingerprint).slice(0, 12)}`
+    );
   }
   pairingInProgress = true;
-  return send(channel, "pairing_hello", {
+  if (!send(channel, "pairing_hello", {
     origin: extensionOrigin(),
     one_time_key: pairing.oneTimeKey ?? null,
     public_key: pairing.publicKey,
     fingerprint: pairing.fingerprint
-  });
+  })) {
+    return failPairing("the channel closed before the hello was sent");
+  }
+  return true;
 }
 
 async function pairingProof(channel, message) {
-  if (!pairingInProgress || !currentChannel(channel)) return;
+  if (!pairingInProgress) return failPairing("the hello did not complete");
+  if (!currentChannel(channel)) return failPairing("the channel was superseded");
   const stored = await chrome.storage.local.get("matineePairing");
   const pairing = stored.matineePairing;
-  const identity = await loadIdentityKey();
-  if (!pairing || !identity?.privateKey || pairing.fingerprint !== identity.fingerprint) return;
+  const identity = await loadIdentityKey().catch((error) => ({ error }));
+  if (!pairing || identity?.error || !identity?.privateKey) {
+    return failPairing("the identity key is unavailable for signing");
+  }
+  if (pairing.fingerprint !== identity.fingerprint) {
+    return failPairing("the identity key changed while pairing");
+  }
   const challenge = message.challenge ?? message.challenge_bytes;
-  if (typeof challenge !== "string") return;
+  if (typeof challenge !== "string") return failPairing("the daemon challenge was malformed");
   const transcript = new TextEncoder().encode(
     `matinee.browser.pairing.v1\0${extensionOrigin()}\0${pairing.fingerprint}\0${challenge}`
   );
@@ -562,12 +581,15 @@ async function pairingProof(channel, message) {
     identity.privateKey,
     transcript
   );
-  send(channel, "pairing_proof", {
+  if (!send(channel, "pairing_proof", {
     public_key: pairing.publicKey,
     fingerprint: pairing.fingerprint,
     signature: base64Url(signature),
     challenge
-  });
+  })) {
+    return failPairing("the channel closed before the proof was sent");
+  }
+  return true;
 }
 
 async function pairingAccepted(channel) {
@@ -578,6 +600,28 @@ async function pairingAccepted(channel) {
   }
   channel.authenticated = true;
   reconnectDelay = RECONNECT_MIN_MS;
+  settlePairing({ ok: true, fingerprint: stored.matineePairing?.fingerprint ?? null });
+}
+
+// Outstanding `configure_pairing` reply, held open across the asynchronous
+// handshake. Acknowledging socket setup would report success for an enrollment
+// that later failed, so the reply waits for the daemon's decision.
+let pairingReply = null;
+
+function settlePairing(result) {
+  if (!pairingReply) return false;
+  const { respond, timer } = pairingReply;
+  pairingReply = null;
+  clearTimeout(timer);
+  respond(result);
+  return true;
+}
+
+// Reports a pairing abort to the waiting caller and stops the attempt.
+function failPairing(reason) {
+  pairingInProgress = false;
+  settlePairing({ ok: false, error: reason });
+  return false;
 }
 
 function rejectSupersededChannel(channel, message) {
@@ -601,8 +645,11 @@ async function receive(channel, message) {
     // The daemon speaks first, so the hello waits until its generation is known.
     // Sending the hello on socket open would carry an unknown generation and be
     // discarded, leaving the proof unsupported.
-    await pairingHello(channel);
-    await pairingProof(channel, message);
+    if (await pairingHello(channel)) await pairingProof(channel, message);
+    return;
+  }
+  if (message.type === "pairing_rejected") {
+    failPairing(`the daemon rejected pairing: ${message.failure?.code ?? "unknown"}`);
     return;
   }
   if (message.type === "pairing_complete" || message.type === "pairing_accepted") {
@@ -664,7 +711,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: false, error: "the daemon endpoint must use ws:// or wss:// on 127.0.0.1" });
     return false;
   }
-  connect(endpoint).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: String(error) }));
+  // Hold the reply open until the daemon accepts or rejects. Resolving when the
+  // socket is merely set up reported success for enrollments that then failed.
+  settlePairing({ ok: false, error: "superseded by a newer pairing attempt" });
+  pairingReply = {
+    respond: sendResponse,
+    timer: setTimeout(() => settlePairing({ ok: false, error: "the daemon did not answer the pairing handshake" }), PAIRING_TIMEOUT_MS)
+  };
+  connect(endpoint).catch((error) => settlePairing({ ok: false, error: String(error) }));
   return true;
 });
 

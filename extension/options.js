@@ -78,7 +78,7 @@ form.addEventListener("submit", async (event) => {
     });
     if (!response?.ok) throw new Error(response?.error ?? "the service worker rejected pairing");
     pairingKeyInput.value = "";
-    setStatus(`Pairing started. Public-key fingerprint: ${identity.fingerprint}`);
+    setStatus(`Pairing accepted by the daemon. Public-key fingerprint: ${identity.fingerprint}`);
   } catch (error) {
     setStatus(`Pairing failed: ${error instanceof Error ? error.message : String(error)}`, true);
   }
